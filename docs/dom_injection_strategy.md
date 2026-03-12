@@ -24,6 +24,26 @@ For performance:
 
 This avoids full-document rescans on every micro-change while still capturing lazy-loaded tweets.
 
+## Tweet Data Extraction
+When the user clicks `◇ Explore`, the extension resolves the closest tweet container using the same layered tweet selectors used for injection:
+
+- `article[data-testid="tweet"]`
+- `div[data-testid="tweet"]`
+- `article[role='article']`
+- `article`
+
+From that container, `extractTweetData(tweetElement)` parses:
+
+- text: `[data-testid="tweetText"]` with fallback to `div[lang]`
+- author handle: `[data-testid="User-Name"] a[href^="/"]`
+- tweet URL: `a[href*="/status/"]` and `time` parent link fallback
+- replies/reposts/likes:
+  - preferred source: `[data-testid="reply" | "retweet"/"repost" | "like"]`
+  - fallback source: control `aria-label` values containing reply/repost/like keywords
+
+Count parsing accepts compact formats such as `1.2K`, `4M`, and comma-separated values.
+If a field is missing, extraction returns `null` instead of throwing.
+
 ## Defensive Practices
 - Ignore non-element nodes.
 - Tolerate missing action bars.
