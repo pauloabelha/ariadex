@@ -24,6 +24,7 @@ No background service worker is required for this phase because all behavior is 
    - infers `reply_to` relationships
    - builds a typed conversation graph from `reply`, `quote`, and `repost` edges
    - runs ConversationRank over the graph
+   - renders top ranked threads in the Ariadex UI panel
    - logs `{ rootTweet, graph, ranking }` to console
 6. A `MutationObserver` watches subtree additions and rescans only newly added roots, throttled with `requestAnimationFrame`.
 
@@ -51,12 +52,23 @@ Tweet Extraction
 ↓
 Reply Inference
 ↓
-Conversation Graph
+Typed Conversation Graph
 ↓
 ConversationRank
 ↓
+UI Panel Rendering
+↓
 Future: Hybrid ranking signals
 ```
+
+## UI Panel Rendering
+The Ariadex panel uses deterministic floating placement:
+
+- always attached to `document.body`
+- fixed-position placement (`top/right`)
+- high z-index for guaranteed visibility
+
+This avoids brittle dependence on X sidebar selectors and layout changes.
 
 ## ConversationRank Layer
 ConversationRank runs after typed graph construction and computes influence scores via weighted PageRank-style propagation.

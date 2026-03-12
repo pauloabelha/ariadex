@@ -7,6 +7,9 @@
   const conversationRankApi = typeof module !== "undefined" && module.exports
     ? require("./conversation_rank.js")
     : (window.AriadexConversationRank || {});
+  const uiPanelApi = typeof module !== "undefined" && module.exports
+    ? require("./ui_panel.js")
+    : (window.AriadexUIPanel || {});
   const rootResolutionApi = typeof module !== "undefined" && module.exports
     ? require("./root_resolution.js")
     : (window.AriadexRootResolution || {});
@@ -16,6 +19,9 @@
   const rankConversationGraph = typeof conversationRankApi.rankConversationGraph === "function"
     ? conversationRankApi.rankConversationGraph
     : () => ({ scores: [], scoreById: {}, topTweetIds: [], iterations: 0, converged: true });
+  const renderTopThreads = typeof uiPanelApi.renderTopThreads === "function"
+    ? uiPanelApi.renderTopThreads
+    : () => {};
   const resolveConversationRoot = typeof rootResolutionApi.resolveConversationRoot === "function"
     ? rootResolutionApi.resolveConversationRoot
     : (tweetElement) => tweetElement;
@@ -594,6 +600,9 @@
       const graph = buildConversationGraph(inferredTweets);
       const ranking = rankConversationGraph(graph);
       const rootTweet = extractTweetData(rootTweetElement);
+      console.log("[Ariadex] Ranking computed", ranking);
+      console.log("[Ariadex] Rendering panel");
+      renderTopThreads((ranking.scores || []).slice(0, 5));
       console.log({ rootTweet, graph, ranking });
     });
 

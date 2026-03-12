@@ -36,6 +36,7 @@ ariadex/
     reply_inference.js
     root_resolution.js
     conversation_rank.js
+    ui_panel.js
     content.js
     styles.css
   docs/
@@ -43,6 +44,8 @@ ariadex/
     conversation_collection.md
     conversation_graph.md
     conversation_rank.md
+    ui_panel.md
+    ui_rendering.md
     extension_design.md
     dom_injection_strategy.md
     testing.md
@@ -56,6 +59,7 @@ ariadex/
     selector_test.js
     typed_conversation_graph_test.js
     tweet_extraction_test.js
+    ui_panel_render_test.js
   X_example.html
   package.json
   README.md
@@ -88,6 +92,7 @@ The tests use `jsdom` to simulate tweet-like DOM structures and validate selecto
 - Ariadex builds a typed graph with `reply`, `quote`, and `repost` edges.
 - Ariadex also keeps a reply-tree projection (`root`, `children`) for traversal.
 - Ariadex computes ConversationRank influence scores over the typed graph.
+- Ariadex renders top-ranked threads in a deterministic floating panel on `document.body`.
 - `MutationObserver` handles lazy-loaded tweets efficiently using batched processing.
 
 Pipeline:
@@ -103,12 +108,22 @@ Tweet Extraction
 ↓
 Reply Inference
 ↓
-Conversation Graph
+Typed Conversation Graph
 ↓
 ConversationRank
 ↓
+UI Rendering
+↓
 Future: Hybrid ranking signals
 ```
+
+## User Interface
+Ariadex shows ranked conversation threads directly inside X:
+
+- deterministic placement: floating panel attached to `document.body`
+- fixed position + high z-index for consistent visibility
+
+Each ranked item is clickable and scrolls/highlights the corresponding tweet.
 
 ## Conversation Reconstruction
 Ariadex reconstructs reply relationships from page layout because X often does not expose explicit parent IDs in visible tweet DOM.
@@ -139,6 +154,7 @@ See:
 - `docs/conversation_collection.md`
 - `docs/conversation_graph.md`
 - `docs/conversation_rank.md`
+- `docs/ui_panel.md`
 - `docs/extension_design.md`
 - `docs/dom_injection_strategy.md`
 - `docs/testing.md`

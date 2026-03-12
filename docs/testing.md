@@ -8,6 +8,7 @@
 - `tests/conversation_graph_test.js`
 - `tests/conversation_collection_test.js`
 - `tests/conversation_rank_test.js`
+- `tests/ui_panel_render_test.js`
 - `tests/reply_inference_test.js`
 - `tests/root_resolution_test.js`
 - `tests/selector_test.js`
@@ -27,6 +28,7 @@
 9. Root canonicalization for quote/reply entry points.
 10. Typed edge graph construction (`reply`, `quote`, `repost`).
 11. ConversationRank scoring behavior and edge-type weighting.
+12. UI panel creation, fallback rendering, and thread click interaction.
 
 ## Run Tests
 ```bash
