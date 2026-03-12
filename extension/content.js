@@ -23,6 +23,12 @@
     "a[href*='/status/']",
     "time"
   ];
+  const REPLY_TO_ATTRS = [
+    "data-reply-to",
+    "data-parent-tweet-id",
+    "data-conversation-parent-id",
+    "data-ariadex-reply-to"
+  ];
 
   const ACTION_HINTS = ["reply", "repost", "retweet", "like", "bookmark", "share", "view"];
 
@@ -73,6 +79,14 @@
     const multipliers = { K: 1_000, M: 1_000_000, B: 1_000_000_000 };
     const multiplier = multipliers[suffix] || 1;
     return Math.round(base * multiplier);
+  }
+
+  function parseTweetIdFromUrl(url) {
+    if (!url || typeof url !== "string") {
+      return null;
+    }
+    const match = url.match(/\/status\/(\d+)/);
+    return match ? match[1] : null;
   }
 
   function findClosestTweetContainer(node) {
@@ -268,22 +282,208 @@
   function extractTweetData(tweetElement) {
     if (!isElement(tweetElement)) {
       return {
+        id: null,
         author: null,
         text: null,
         url: null,
         replies: null,
         reposts: null,
-        likes: null
+        likes: null,
+        reply_to: null
       };
     }
 
+    const url = extractTweetUrl(tweetElement);
+    const id = parseTweetIdFromUrl(url)
+      || tweetElement.getAttribute("data-tweet-id")
+      || tweetElement.getAttribute("data-item-id")
+      || null;
+
+    let replyTo = null;
+    for (const attr of REPLY_TO_ATTRS) {
+      const value = tweetElement.getAttribute(attr);
+      if (!value) {
+        continue;
+      }
+      replyTo = parseTweetIdFromUrl(value) || value;
+      break;
+    }
+
     return {
+      id,
       author: extractAuthor(tweetElement),
       text: extractFirstText(tweetElement, TWEET_TEXT_SELECTORS),
-      url: extractTweetUrl(tweetElement),
+      url,
       replies: extractCount(tweetElement, ["reply"], ["reply"]),
       reposts: extractCount(tweetElement, ["retweet", "repost"], ["retweet", "repost"]),
-      likes: extractCount(tweetElement, ["like"], ["like"])
+      likes: extractCount(tweetElement, ["like"], ["like"]),
+      reply_to: replyTo
+    };
+  }
+
+  function getConversationScope(rootTweetElement) {
+    if (!isElement(rootTweetElement)) {
+      return document;
+    }
+
+    const scopedContainer = rootTweetElement.closest("section, main, [aria-label]");
+    return scopedContainer || document;
+  }
+
+  function buildTweetIdentity(tweetElement, tweetData) {
+    if (tweetData?.id) {
+      return `id:${tweetData.id}`;
+    }
+
+    if (tweetData?.url) {
+      return `url:${tweetData.url}`;
+    }
+
+    const author = tweetData?.author || "unknown";
+    const text = tweetData?.text || "";
+    const textPrefix = text.slice(0, 120);
+    const domHint = tweetElement.getAttribute("id") || tweetElement.getAttribute("data-testid") || "";
+    return `fallback:${author}:${textPrefix}:${domHint}`;
+  }
+
+  function collectConversationTweets(rootTweetElement) {
+    const scope = getConversationScope(rootTweetElement);
+    const tweetElements = getTweetCandidates(scope);
+    const seen = new Set();
+    const conversation = [];
+
+    const addTweet = (tweetElement) => {
+      if (!isElement(tweetElement)) {
+        return;
+      }
+
+      const tweetData = extractTweetData(tweetElement);
+      const identity = buildTweetIdentity(tweetElement, tweetData);
+      if (seen.has(identity)) {
+        return;
+      }
+
+      seen.add(identity);
+      conversation.push(tweetData);
+    };
+
+    // Keep clicked tweet first when available.
+    addTweet(rootTweetElement);
+
+    for (const tweetElement of tweetElements) {
+      if (tweetElement === rootTweetElement) {
+        continue;
+      }
+      addTweet(tweetElement);
+    }
+
+    return conversation;
+  }
+
+  function indexTweetsById(tweets) {
+    const index = {};
+    for (const tweet of tweets || []) {
+      if (!tweet || !tweet.id || index[tweet.id]) {
+        continue;
+      }
+      index[tweet.id] = tweet;
+    }
+    return index;
+  }
+
+  function attachReplies(tweets) {
+    const uniqueTweets = [];
+    const seen = new Set();
+
+    for (const tweet of tweets || []) {
+      if (!tweet) {
+        continue;
+      }
+
+      const identity = tweet.id || tweet.url || `${tweet.author || ""}:${tweet.text || ""}`;
+      if (!identity || seen.has(identity)) {
+        continue;
+      }
+      seen.add(identity);
+      uniqueTweets.push(tweet);
+    }
+
+    const nodeById = {};
+    const nodeByTweet = new Map();
+    const roots = [];
+
+    uniqueTweets.forEach((tweet, index) => {
+      const nodeKey = tweet.id || `fallback:${tweet.url || tweet.author || "unknown"}:${index}`;
+      const node = { tweet, children: [] };
+      nodeByTweet.set(tweet, { key: nodeKey, node });
+      nodeById[nodeKey] = node;
+    });
+
+    for (const tweet of uniqueTweets) {
+      const nodeEntry = nodeByTweet.get(tweet);
+      const node = nodeEntry ? nodeEntry.node : null;
+      if (!node) {
+        continue;
+      }
+
+      if (tweet.id) {
+        nodeById[tweet.id] = node;
+      }
+    }
+
+    for (const tweet of uniqueTweets) {
+      const nodeEntry = nodeByTweet.get(tweet);
+      const node = nodeEntry ? nodeEntry.node : null;
+      if (!node) {
+        continue;
+      }
+
+      const parentId = tweet.reply_to;
+      if (!parentId || parentId === tweet.id || !nodeById[parentId]) {
+        roots.push(node);
+        continue;
+      }
+
+      const parentNode = nodeById[parentId];
+      if (!parentNode.children.includes(node)) {
+        parentNode.children.push(node);
+      }
+    }
+
+    return {
+      index: indexTweetsById(uniqueTweets),
+      roots
+    };
+  }
+
+  function buildConversationGraph(tweets) {
+    const safeTweets = Array.isArray(tweets) ? tweets : [];
+    if (safeTweets.length === 0) {
+      return {
+        root: null,
+        children: []
+      };
+    }
+
+    const { index, roots } = attachReplies(safeTweets);
+    const explicitRootTweet = safeTweets.find((tweet) => tweet && tweet.reply_to == null && tweet.id && index[tweet.id]);
+    const fallbackRootNode = roots[0] || null;
+
+    const rootNode = explicitRootTweet && explicitRootTweet.id
+      ? roots.find((node) => node.tweet.id === explicitRootTweet.id) || fallbackRootNode
+      : fallbackRootNode;
+
+    if (!rootNode) {
+      return {
+        root: null,
+        children: []
+      };
+    }
+
+    const disconnected = roots.filter((node) => node !== rootNode);
+    return {
+      root: rootNode.tweet,
+      children: [...rootNode.children, ...disconnected]
     };
   }
 
@@ -300,8 +500,10 @@
       event.stopPropagation();
 
       const tweetElement = findClosestTweetContainer(event.currentTarget);
-      const tweetData = extractTweetData(tweetElement);
-      console.log(tweetData);
+      const tweets = collectConversationTweets(tweetElement);
+      const graph = buildConversationGraph(tweets);
+      const rootTweet = extractTweetData(tweetElement);
+      console.log({ rootTweet, graph });
     });
 
     return button;
@@ -404,6 +606,10 @@
     TWEET_SELECTORS,
     ACTION_HINTS,
     extractTweetData,
+    collectConversationTweets,
+    indexTweetsById,
+    attachReplies,
+    buildConversationGraph,
     findClosestTweetContainer,
     getTweetCandidates,
     locateActionBar,

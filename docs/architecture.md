@@ -17,7 +17,34 @@ No background service worker is required for this phase because all behavior is 
 2. `content.js` scans current DOM for tweet containers.
 3. For each tweet, it locates an action bar (`div[role="group"]`) using action-signal heuristics.
 4. If no Ariadex button exists, it appends `◇ Explore`.
-5. A `MutationObserver` watches subtree additions and rescans only newly added roots, throttled with `requestAnimationFrame`.
+5. On `◇ Explore` click, Ariadex:
+   - extracts tweet metadata
+   - collects visible conversation tweets from DOM
+   - builds a conversation graph from `id` / `reply_to` relationships
+   - logs `{ rootTweet, graph }` to console
+6. A `MutationObserver` watches subtree additions and rescans only newly added roots, throttled with `requestAnimationFrame`.
+
+## Conversation Graph Layer
+The conversation graph layer sits between DOM collection and future ranking:
+
+```text
+DOM Tweets
+↓
+Tweet Extraction
+↓
+Conversation Collection
+↓
+Conversation Graph
+↓
+Future: Thread Ranking
+```
+
+Core helpers in `extension/content.js`:
+- `indexTweetsById(tweets)`
+- `attachReplies(tweets)`
+- `buildConversationGraph(tweets)`
+
+The graph builder tolerates missing parents and incomplete datasets, deduplicates tweets, and stays fully client-side (no network/API dependency).
 
 ## Why This Is MV3-Aligned
 - Uses declarative `content_scripts` in `manifest_version: 3`.

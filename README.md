@@ -17,10 +17,13 @@ Conversations on X are high-volume and structurally complex. Ariadex starts with
 - dynamic tweet detection for React-rendered timelines
 - one `◇ Explore` button per tweet action bar
 - duplicate-injection protection
-- placeholder click action:
+- click action now logs a structured conversation graph:
 
 ```js
-alert("Explore conversation (Ariadex MVP)");
+console.log({
+  rootTweet,
+  graph
+});
 ```
 
 ## Repository Structure
@@ -33,12 +36,17 @@ ariadex/
     styles.css
   docs/
     architecture.md
+    conversation_collection.md
+    conversation_graph.md
     extension_design.md
     dom_injection_strategy.md
     testing.md
   tests/
+    conversation_collection_test.js
+    conversation_graph_test.js
     dom_injection_test.js
     selector_test.js
+    tweet_extraction_test.js
   X_example.html
   package.json
   README.md
@@ -65,10 +73,28 @@ The tests use `jsdom` to simulate tweet-like DOM structures and validate selecto
 - Content script (`content.js`) scans tweet candidates.
 - Action bar is selected via semantic `role='group'` + action-label hints.
 - Button is appended once per action bar.
+- On click, Ariadex extracts tweet metadata and collects visible conversation tweets.
+- Ariadex builds a parent-child conversation graph from `id` / `reply_to`.
 - `MutationObserver` handles lazy-loaded tweets efficiently using batched processing.
+
+Pipeline:
+
+```text
+DOM Tweets
+↓
+Tweet Extraction
+↓
+Conversation Collection
+↓
+Conversation Graph
+↓
+Future: Thread Ranking
+```
 
 See:
 - `docs/architecture.md`
+- `docs/conversation_collection.md`
+- `docs/conversation_graph.md`
 - `docs/extension_design.md`
 - `docs/dom_injection_strategy.md`
 - `docs/testing.md`

@@ -5,8 +5,11 @@
 - `jsdom` for DOM simulation
 
 ## Test Files
+- `tests/conversation_graph_test.js`
+- `tests/conversation_collection_test.js`
 - `tests/selector_test.js`
 - `tests/dom_injection_test.js`
+- `tests/tweet_extraction_test.js`
 
 ## What Is Covered
 1. Tweet selector detection (`article`, `data-testid` cases).
@@ -14,6 +17,8 @@
 3. Button injection behavior.
 4. Duplicate prevention (idempotent reinjection).
 5. Processing dynamically added tweet blocks.
+6. Conversation list collection from visible tweet DOM.
+7. Conversation graph construction (`reply_to` parent-child links, branching, missing parents, dedupe).
 
 ## Run Tests
 ```bash

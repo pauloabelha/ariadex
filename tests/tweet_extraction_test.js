@@ -53,12 +53,14 @@ test("extractTweetData parses tweet fields from tweet container", () => {
   const extracted = content.extractTweetData(tweet);
 
   assert.deepEqual(extracted, {
+    id: "1234567890",
     author: "@ariadex_user",
     text: "Ariadex explores conversation structure.",
     url: "https://x.com/ariadex_user/status/1234567890",
     replies: 14,
     reposts: 120,
-    likes: 449
+    likes: 449,
+    reply_to: null
   });
 });
 
@@ -80,16 +82,18 @@ test("extractTweetData tolerates missing fields", () => {
   const extracted = content.extractTweetData(tweet);
 
   assert.deepEqual(extracted, {
+    id: null,
     author: null,
     text: null,
     url: null,
     replies: null,
     reposts: null,
-    likes: null
+    likes: null,
+    reply_to: null
   });
 });
 
-test("clicking Explore logs extracted tweet data", () => {
+test("clicking Explore logs rootTweet/graph conversation object", () => {
   const dom = setDomFromExample();
   const root = dom.window.document.getElementById("react-root") || dom.window.document.body;
   const tweet = appendTweetFixture(root);
@@ -110,8 +114,11 @@ test("clicking Explore logs extracted tweet data", () => {
   console.log = originalLog;
 
   assert.ok(loggedPayload);
-  assert.equal(loggedPayload.author, "@ariadex_user");
-  assert.equal(loggedPayload.replies, 14);
-  assert.equal(loggedPayload.reposts, 120);
-  assert.equal(loggedPayload.likes, 449);
+  assert.ok(loggedPayload.rootTweet);
+  assert.ok(loggedPayload.graph);
+  assert.ok(Array.isArray(loggedPayload.graph.children));
+  assert.equal(loggedPayload.rootTweet.author, "@ariadex_user");
+  assert.equal(loggedPayload.rootTweet.replies, 14);
+  assert.equal(loggedPayload.rootTweet.reposts, 120);
+  assert.equal(loggedPayload.rootTweet.likes, 449);
 });
