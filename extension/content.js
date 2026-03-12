@@ -42,6 +42,16 @@
     "data-conversation-parent-id",
     "data-ariadex-reply-to"
   ];
+  const QUOTE_TO_ATTRS = [
+    "data-quoted-tweet-id",
+    "data-quote-tweet-id",
+    "data-ariadex-quote-of"
+  ];
+  const REPOST_TO_ATTRS = [
+    "data-repost-of",
+    "data-retweet-of",
+    "data-ariadex-repost-of"
+  ];
 
   const ACTION_HINTS = ["reply", "repost", "retweet", "like", "bookmark", "share", "view"];
 
@@ -100,6 +110,17 @@
     }
     const match = url.match(/\/status\/(\d+)/);
     return match ? match[1] : null;
+  }
+
+  function extractRelationFromAttrs(tweetElement, attrs) {
+    for (const attr of attrs) {
+      const value = tweetElement.getAttribute(attr);
+      if (!value) {
+        continue;
+      }
+      return parseTweetIdFromUrl(value) || value;
+    }
+    return null;
   }
 
   function findClosestTweetContainer(node) {
@@ -313,14 +334,9 @@
       || null;
 
     let replyTo = null;
-    for (const attr of REPLY_TO_ATTRS) {
-      const value = tweetElement.getAttribute(attr);
-      if (!value) {
-        continue;
-      }
-      replyTo = parseTweetIdFromUrl(value) || value;
-      break;
-    }
+    replyTo = extractRelationFromAttrs(tweetElement, REPLY_TO_ATTRS);
+    const quoteOf = extractRelationFromAttrs(tweetElement, QUOTE_TO_ATTRS);
+    const repostOf = extractRelationFromAttrs(tweetElement, REPOST_TO_ATTRS);
 
     return {
       id,
@@ -330,7 +346,9 @@
       replies: extractCount(tweetElement, ["reply"], ["reply"]),
       reposts: extractCount(tweetElement, ["retweet", "repost"], ["retweet", "repost"]),
       likes: extractCount(tweetElement, ["like"], ["like"]),
-      reply_to: replyTo
+      reply_to: replyTo,
+      quote_of: quoteOf,
+      repost_of: repostOf
     };
   }
 
@@ -473,21 +491,56 @@
     }
 
     return {
+      tweets: uniqueTweets,
       index: indexTweetsById(uniqueTweets),
       roots
     };
+  }
+
+  function buildTypedEdges(tweets, index) {
+    const edges = [];
+    const seen = new Set();
+    const safeIndex = index || {};
+
+    const maybePush = (source, target, type) => {
+      if (!source || !target || source === target || !safeIndex[source] || !safeIndex[target]) {
+        return;
+      }
+
+      const key = `${source}|${target}|${type}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      edges.push({ source, target, type });
+    };
+
+    for (const tweet of tweets || []) {
+      if (!tweet?.id) {
+        continue;
+      }
+
+      maybePush(tweet.id, tweet.reply_to, "reply");
+      maybePush(tweet.id, tweet.quote_of, "quote");
+      maybePush(tweet.id, tweet.repost_of, "repost");
+    }
+
+    return edges;
   }
 
   function buildConversationGraph(tweets) {
     const safeTweets = Array.isArray(tweets) ? tweets : [];
     if (safeTweets.length === 0) {
       return {
+        rootId: null,
+        nodes: [],
+        edges: [],
         root: null,
         children: []
       };
     }
 
-    const { index, roots } = attachReplies(safeTweets);
+    const { tweets: uniqueTweets, index, roots } = attachReplies(safeTweets);
     const explicitRootTweet = safeTweets.find((tweet) => tweet && tweet.reply_to == null && tweet.id && index[tweet.id]);
     const fallbackRootNode = roots[0] || null;
 
@@ -497,13 +550,20 @@
 
     if (!rootNode) {
       return {
+        rootId: null,
+        nodes: uniqueTweets,
+        edges: buildTypedEdges(uniqueTweets, index),
         root: null,
         children: []
       };
     }
 
     const disconnected = roots.filter((node) => node !== rootNode);
+    const edges = buildTypedEdges(uniqueTweets, index);
     return {
+      rootId: rootNode.tweet.id || null,
+      nodes: uniqueTweets,
+      edges,
       root: rootNode.tweet,
       children: [...rootNode.children, ...disconnected]
     };
@@ -636,6 +696,7 @@
     collectConversationTweets,
     indexTweetsById,
     attachReplies,
+    buildTypedEdges,
     buildConversationGraph,
     findClosestTweetContainer,
     getTweetCandidates,

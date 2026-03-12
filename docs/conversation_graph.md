@@ -29,6 +29,13 @@ Output graph shape:
 
 ```js
 {
+  rootId: "123",
+  nodes: [{ ...tweet }, { ...tweet }],
+  edges: [
+    { source: "124", target: "123", type: "reply" },
+    { source: "200", target: "123", type: "quote" },
+    { source: "201", target: "123", type: "repost" }
+  ],
   root: { ...tweet },
   children: [
     {
@@ -62,9 +69,19 @@ This keeps construction resilient when DOM extraction is incomplete.
 
 1. validates/normalizes input list
 2. finds explicit root candidate (`reply_to == null`) when present
-3. uses attached nodes to produce final graph
-4. avoids duplicate nodes in output
-5. handles empty and partial datasets safely
+3. builds typed edges for `reply`, `quote`, and `repost` relationships
+4. keeps tree projection (`root`, `children`) for traversal/debugging
+5. avoids duplicate nodes/edges in output
+6. handles empty and partial datasets safely
+
+## Typed Relationships
+The graph uses relationship-aware edges:
+
+- `reply`: sourced from `reply_to`
+- `quote`: sourced from `quote_of`
+- `repost`: sourced from `repost_of`
+
+Tweets can have multiple edge types in the same dataset (for example, a quote in one branch and reply chains in another).
 
 ## Reply Relationship Inference
 X usually does not expose an explicit `reply_to` field in the visible DOM. Ariadex therefore infers reply edges before graph building.

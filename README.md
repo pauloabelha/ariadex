@@ -50,6 +50,7 @@ ariadex/
     reply_inference_test.js
     root_resolution_test.js
     selector_test.js
+    typed_conversation_graph_test.js
     tweet_extraction_test.js
   X_example.html
   package.json
@@ -80,7 +81,8 @@ The tests use `jsdom` to simulate tweet-like DOM structures and validate selecto
 - On click, Ariadex extracts tweet metadata and collects visible conversation tweets.
 - On click, Ariadex resolves the canonical conversation root (quote/reply aware).
 - Ariadex infers `reply_to` from DOM structure and reply context text.
-- Ariadex builds a parent-child conversation graph from `id` / inferred `reply_to`.
+- Ariadex builds a typed graph with `reply`, `quote`, and `repost` edges.
+- Ariadex also keeps a reply-tree projection (`root`, `children`) for traversal.
 - `MutationObserver` handles lazy-loaded tweets efficiently using batched processing.
 
 Pipeline:

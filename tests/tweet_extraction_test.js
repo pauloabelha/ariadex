@@ -60,7 +60,9 @@ test("extractTweetData parses tweet fields from tweet container", () => {
     replies: 14,
     reposts: 120,
     likes: 449,
-    reply_to: null
+    reply_to: null,
+    quote_of: null,
+    repost_of: null
   });
 });
 
@@ -89,7 +91,9 @@ test("extractTweetData tolerates missing fields", () => {
     replies: null,
     reposts: null,
     likes: null,
-    reply_to: null
+    reply_to: null,
+    quote_of: null,
+    repost_of: null
   });
 });
 

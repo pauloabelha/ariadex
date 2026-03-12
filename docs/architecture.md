@@ -22,7 +22,7 @@ No background service worker is required for this phase because all behavior is 
    - extracts tweet metadata
    - collects visible conversation tweets from DOM around the resolved root
    - infers `reply_to` relationships
-   - builds a conversation graph from `id` / `reply_to` relationships
+   - builds a typed conversation graph from `reply`, `quote`, and `repost` edges
    - logs `{ rootTweet, graph }` to console
 6. A `MutationObserver` watches subtree additions and rescans only newly added roots, throttled with `requestAnimationFrame`.
 
@@ -58,6 +58,7 @@ Future: ConversationRank
 Core helpers in `extension/content.js`:
 - `indexTweetsById(tweets)`
 - `attachReplies(tweets)`
+- `buildTypedEdges(tweets, index)`
 - `buildConversationGraph(tweets)`
 
 Reply inference helper module:
