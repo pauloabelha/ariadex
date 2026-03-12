@@ -7,6 +7,9 @@
   const conversationRankApi = typeof module !== "undefined" && module.exports
     ? require("./conversation_rank.js")
     : (window.AriadexConversationRank || {});
+  const threadCollapseApi = typeof module !== "undefined" && module.exports
+    ? require("./thread_collapse.js")
+    : (window.AriadexThreadCollapse || {});
   const uiPanelApi = typeof module !== "undefined" && module.exports
     ? require("./ui_panel.js")
     : (window.AriadexUIPanel || {});
@@ -19,6 +22,9 @@
   const rankConversationGraph = typeof conversationRankApi.rankConversationGraph === "function"
     ? conversationRankApi.rankConversationGraph
     : () => ({ scores: [], scoreById: {}, topTweetIds: [], iterations: 0, converged: true });
+  const collapseAuthorThread = typeof threadCollapseApi.collapseAuthorThread === "function"
+    ? threadCollapseApi.collapseAuthorThread
+    : (graph) => graph;
   const renderTopThreads = typeof uiPanelApi.renderTopThreads === "function"
     ? uiPanelApi.renderTopThreads
     : () => {};
@@ -598,12 +604,13 @@
       const { tweetElements, tweets } = collectConversationBundle(rootTweetElement);
       const inferredTweets = inferReplyStructure(tweetElements, tweets);
       const graph = buildConversationGraph(inferredTweets);
-      const ranking = rankConversationGraph(graph);
+      const collapsedGraph = collapseAuthorThread(graph);
+      const ranking = rankConversationGraph(collapsedGraph);
       const rootTweet = extractTweetData(rootTweetElement);
       console.log("[Ariadex] Ranking computed", ranking);
       console.log("[Ariadex] Rendering panel");
       renderTopThreads((ranking.scores || []).slice(0, 5));
-      console.log({ rootTweet, graph, ranking });
+      console.log({ rootTweet, graph: collapsedGraph, ranking });
     });
 
     return button;
@@ -714,6 +721,7 @@
     attachReplies,
     buildTypedEdges,
     buildConversationGraph,
+    collapseAuthorThread,
     rankConversationGraph,
     findClosestTweetContainer,
     getTweetCandidates,

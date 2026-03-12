@@ -23,6 +23,7 @@ No background service worker is required for this phase because all behavior is 
    - collects visible conversation tweets from DOM around the resolved root
    - infers `reply_to` relationships
    - builds a typed conversation graph from `reply`, `quote`, and `repost` edges
+   - collapses root-author continuation tweets into one `author_thread` discourse node
    - runs ConversationRank over the graph
    - renders top ranked threads in the Ariadex UI panel
    - logs `{ rootTweet, graph, ranking }` to console
@@ -53,6 +54,8 @@ Tweet Extraction
 Reply Inference
 ↓
 Typed Conversation Graph
+↓
+Thread Collapsing
 ↓
 ConversationRank
 ↓
@@ -88,6 +91,10 @@ Core helpers in `extension/content.js`:
 Reply inference helper module:
 - `extension/reply_inference.js`
 - `inferReplyStructure(tweetElements, tweetData)`
+
+Thread collapsing helper module:
+- `extension/thread_collapse.js`
+- `collapseAuthorThread(graph)`
 
 The graph builder tolerates missing parents and incomplete datasets, deduplicates tweets, and stays fully client-side (no network/API dependency).
 

@@ -73,3 +73,28 @@ test("clicking a rendered thread scrolls to the tweet element", () => {
 
   assert.equal(scrolled, true);
 });
+
+test("author_thread entry renders collapsed thread label", () => {
+  setupDom();
+
+  uiPanel.renderTopThreads([
+    {
+      id: "author_thread:@a",
+      score: 0.55,
+      tweet: {
+        id: "author_thread:@a",
+        type: "author_thread",
+        author: "@a",
+        text: "Root text",
+        tweets: [
+          { id: "101", text: "Root text", author: "@a" },
+          { id: "102", text: "follow-up", author: "@a" }
+        ]
+      }
+    }
+  ]);
+
+  const item = document.querySelector(".ariadex-thread");
+  assert.match(item.textContent, /Author thread \(@a\)/);
+  assert.match(item.textContent, /2 tweets/);
+});

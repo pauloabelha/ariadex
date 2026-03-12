@@ -125,22 +125,40 @@
 
     top.forEach((entry, index) => {
       const tweet = entry.tweet || entry;
+      const isAuthorThread = tweet.type === "author_thread";
       const tweetId = entry.id || tweet.id;
       const author = tweet.author || "@unknown";
-      const snippet = truncateText(tweet.text || "");
+      const primaryTweetForThread = isAuthorThread ? (tweet.tweets?.[0] || null) : null;
+      const snippet = truncateText(
+        (isAuthorThread ? (tweet.text || primaryTweetForThread?.text || "") : (tweet.text || ""))
+      );
       const score = typeof entry.score === "number" ? entry.score : 0;
+      const targetTweetId = isAuthorThread
+        ? (primaryTweetForThread?.id || null)
+        : tweetId;
 
       const item = document.createElement("li");
       item.className = THREAD_CLASS;
       item.setAttribute("data-tweet-id", tweetId || "");
-      item.innerHTML = `
-        <div><strong>${index + 1}</strong> <span class="ariadex-author">${author}</span></div>
-        <div class="ariadex-snippet">${snippet}</div>
-        <div class="ariadex-score">score: ${score.toFixed(3)}</div>
-      `;
+      if (isAuthorThread) {
+        const count = Array.isArray(tweet.tweets) ? tweet.tweets.length : 0;
+        item.innerHTML = `
+          <div><strong>${index + 1} Author thread (${author})</strong></div>
+          <div class="ariadex-snippet">${snippet}</div>
+          <div class="ariadex-score">${count} tweets · score: ${score.toFixed(3)}</div>
+        `;
+      } else {
+        item.innerHTML = `
+          <div><strong>${index + 1}</strong> <span class="ariadex-author">${author}</span></div>
+          <div class="ariadex-snippet">${snippet}</div>
+          <div class="ariadex-score">score: ${score.toFixed(3)}</div>
+        `;
+      }
 
       item.addEventListener("click", () => {
-        scrollToTweet(tweetId);
+        if (targetTweetId) {
+          scrollToTweet(targetTweetId);
+        }
       });
 
       list.appendChild(item);

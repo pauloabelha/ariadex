@@ -36,6 +36,7 @@ ariadex/
     reply_inference.js
     root_resolution.js
     conversation_rank.js
+    thread_collapse.js
     ui_panel.js
     content.js
     styles.css
@@ -44,6 +45,7 @@ ariadex/
     conversation_collection.md
     conversation_graph.md
     conversation_rank.md
+    thread_collapsing.md
     ui_panel.md
     ui_rendering.md
     extension_design.md
@@ -54,6 +56,7 @@ ariadex/
     conversation_rank_test.js
     conversation_graph_test.js
     dom_injection_test.js
+    thread_collapse_test.js
     reply_inference_test.js
     root_resolution_test.js
     selector_test.js
@@ -90,6 +93,7 @@ The tests use `jsdom` to simulate tweet-like DOM structures and validate selecto
 - On click, Ariadex resolves the canonical conversation root (quote/reply aware).
 - Ariadex infers `reply_to` from DOM structure and reply context text.
 - Ariadex builds a typed graph with `reply`, `quote`, and `repost` edges.
+- Ariadex collapses root-author tweet chains into one author-thread discourse node.
 - Ariadex also keeps a reply-tree projection (`root`, `children`) for traversal.
 - Ariadex computes ConversationRank influence scores over the typed graph.
 - Ariadex renders top-ranked threads in a deterministic floating panel on `document.body`.
@@ -109,6 +113,8 @@ Tweet Extraction
 Reply Inference
 ↓
 Typed Conversation Graph
+↓
+Thread Collapsing
 ↓
 ConversationRank
 ↓
@@ -154,6 +160,7 @@ See:
 - `docs/conversation_collection.md`
 - `docs/conversation_graph.md`
 - `docs/conversation_rank.md`
+- `docs/thread_collapsing.md`
 - `docs/ui_panel.md`
 - `docs/extension_design.md`
 - `docs/dom_injection_strategy.md`
