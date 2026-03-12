@@ -1,0 +1,17 @@
+{
+  "name": "ariadex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ariadex Chrome extension MVP",
+  "engines": {
+    "node": ">=18 <23",
+    "npm": ">=9"
+  },
+  "packageManager": "npm@10",
+  "scripts": {
+    "test": "node --test tests/*.js"
+  },
+  "devDependencies": {
+    "jsdom": "26.0.0"
+  }
+}

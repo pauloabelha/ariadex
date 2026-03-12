@@ -1,0 +1,18 @@
+# Ariadex dependency manifest bridge
+#
+# This repository is implemented in JavaScript (Chrome Extension MV3).
+# Python is not used in runtime or tests for this MVP.
+#
+# Source of truth for dependencies:
+# - package.json
+# - package-lock.json
+#
+# Required toolchain:
+# - Node.js >=18 <23
+# - npm >=9
+#
+# Install JS dependencies with:
+#   npm install
+#
+# Run tests with:
+#   npm test
