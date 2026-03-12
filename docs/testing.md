@@ -7,6 +7,7 @@
 ## Test Files
 - `tests/conversation_graph_test.js`
 - `tests/conversation_collection_test.js`
+- `tests/reply_inference_test.js`
 - `tests/selector_test.js`
 - `tests/dom_injection_test.js`
 - `tests/tweet_extraction_test.js`
@@ -19,6 +20,7 @@
 5. Processing dynamically added tweet blocks.
 6. Conversation list collection from visible tweet DOM.
 7. Conversation graph construction (`reply_to` parent-child links, branching, missing parents, dedupe).
+8. Reply relationship inference (indentation depth, reply context, fallback behavior).
 
 ## Run Tests
 ```bash

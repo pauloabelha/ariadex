@@ -66,6 +66,24 @@ This keeps construction resilient when DOM extraction is incomplete.
 4. avoids duplicate nodes in output
 5. handles empty and partial datasets safely
 
+## Reply Relationship Inference
+X usually does not expose an explicit `reply_to` field in the visible DOM. Ariadex therefore infers reply edges before graph building.
+
+`inferReplyStructure(tweetElements, tweetData)` uses three heuristics:
+
+1. DOM indentation depth:
+   - reads indentation once per tweet (`getBoundingClientRect().left`, fallback to `margin-left + padding-left`)
+   - computes depth buckets
+   - assigns parent as the nearest previous tweet with smaller depth
+2. Reply context text:
+   - parses strings like `Replying to @username`
+   - matches handle to earlier tweets and uses matching tweet as parent when possible
+3. Fallback:
+   - if depth is ambiguous, uses nearest previous tweet with smaller indentation
+   - if no reliable parent exists, leaves `reply_to: null`
+
+This inference is deterministic, local to current DOM state, and designed to stay performant by avoiding repeated layout reads.
+
 ## DOM-Only Limitations
 - only visible tweets are included
 - unloaded/collapsed replies are absent

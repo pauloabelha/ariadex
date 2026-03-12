@@ -32,6 +32,8 @@ console.log({
 ariadex/
   extension/
     manifest.json
+    reply_inference.js
+    root_resolution.js
     content.js
     styles.css
   docs/
@@ -45,6 +47,8 @@ ariadex/
     conversation_collection_test.js
     conversation_graph_test.js
     dom_injection_test.js
+    reply_inference_test.js
+    root_resolution_test.js
     selector_test.js
     tweet_extraction_test.js
   X_example.html
@@ -74,22 +78,43 @@ The tests use `jsdom` to simulate tweet-like DOM structures and validate selecto
 - Action bar is selected via semantic `role='group'` + action-label hints.
 - Button is appended once per action bar.
 - On click, Ariadex extracts tweet metadata and collects visible conversation tweets.
-- Ariadex builds a parent-child conversation graph from `id` / `reply_to`.
+- On click, Ariadex resolves the canonical conversation root (quote/reply aware).
+- Ariadex infers `reply_to` from DOM structure and reply context text.
+- Ariadex builds a parent-child conversation graph from `id` / inferred `reply_to`.
 - `MutationObserver` handles lazy-loaded tweets efficiently using batched processing.
 
 Pipeline:
 
 ```text
+Clicked Tweet
+↓
+Root Resolution
+↓
 DOM Tweets
 ↓
 Tweet Extraction
 ↓
-Conversation Collection
+Reply Inference
 ↓
 Conversation Graph
 ↓
-Future: Thread Ranking
+Future: ConversationRank
 ```
+
+## Conversation Reconstruction
+Ariadex reconstructs reply relationships from page layout because X often does not expose explicit parent IDs in visible tweet DOM.
+
+Inference strategy:
+- indentation depth (left offset / margin / padding)
+- `Replying to @username` context matching
+- fallback to nearest previous tweet with smaller indentation
+
+Root canonicalization strategy:
+- quote tweet detection (embedded tweet becomes root)
+- embedded tweet ancestry detection
+- fallback to earliest local tweet in thread scope
+
+If no confident parent is found, `reply_to` remains `null`, and graph construction still proceeds safely.
 
 See:
 - `docs/architecture.md`

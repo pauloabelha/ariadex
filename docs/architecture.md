@@ -18,31 +18,51 @@ No background service worker is required for this phase because all behavior is 
 3. For each tweet, it locates an action bar (`div[role="group"]`) using action-signal heuristics.
 4. If no Ariadex button exists, it appends `◇ Explore`.
 5. On `◇ Explore` click, Ariadex:
+   - resolves the canonical conversation root from the clicked tweet
    - extracts tweet metadata
-   - collects visible conversation tweets from DOM
+   - collects visible conversation tweets from DOM around the resolved root
+   - infers `reply_to` relationships
    - builds a conversation graph from `id` / `reply_to` relationships
    - logs `{ rootTweet, graph }` to console
 6. A `MutationObserver` watches subtree additions and rescans only newly added roots, throttled with `requestAnimationFrame`.
+
+## Conversation Root Resolution
+The clicked tweet is not always the true thread root. Ariadex canonicalizes root before extraction:
+
+- quote tweets: if clicked tweet contains embedded tweet, use embedded tweet as root
+- embedded replies: if clicked tweet is inside a parent tweet card, use nearest ancestor tweet
+- normal reply threads: use earliest local tweet container in scope
+
+Root resolution is implemented in `extension/root_resolution.js` via:
+- `resolveConversationRoot(tweetElement)`
 
 ## Conversation Graph Layer
 The conversation graph layer sits between DOM collection and future ranking:
 
 ```text
+Clicked Tweet
+↓
+Root Resolution
+↓
 DOM Tweets
 ↓
 Tweet Extraction
 ↓
-Conversation Collection
+Reply Inference
 ↓
 Conversation Graph
 ↓
-Future: Thread Ranking
+Future: ConversationRank
 ```
 
 Core helpers in `extension/content.js`:
 - `indexTweetsById(tweets)`
 - `attachReplies(tweets)`
 - `buildConversationGraph(tweets)`
+
+Reply inference helper module:
+- `extension/reply_inference.js`
+- `inferReplyStructure(tweetElements, tweetData)`
 
 The graph builder tolerates missing parents and incomplete datasets, deduplicates tweets, and stays fully client-side (no network/API dependency).
 

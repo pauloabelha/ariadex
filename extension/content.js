@@ -1,6 +1,19 @@
 (() => {
   "use strict";
 
+  const replyInferenceApi = typeof module !== "undefined" && module.exports
+    ? require("./reply_inference.js")
+    : (window.AriadexReplyInference || {});
+  const rootResolutionApi = typeof module !== "undefined" && module.exports
+    ? require("./root_resolution.js")
+    : (window.AriadexRootResolution || {});
+  const inferReplyStructure = typeof replyInferenceApi.inferReplyStructure === "function"
+    ? replyInferenceApi.inferReplyStructure
+    : (_tweetElements, tweetData) => tweetData;
+  const resolveConversationRoot = typeof rootResolutionApi.resolveConversationRoot === "function"
+    ? rootResolutionApi.resolveConversationRoot
+    : (tweetElement) => tweetElement;
+
   const EXTENSION_ROOT_ATTR = "data-ariadex-initialized";
   const BUTTON_CLASS = "ariadex-explore-button";
   const BUTTON_ATTR = "data-ariadex-explore-button";
@@ -346,11 +359,12 @@
     return `fallback:${author}:${textPrefix}:${domHint}`;
   }
 
-  function collectConversationTweets(rootTweetElement) {
+  function collectConversationBundle(rootTweetElement) {
     const scope = getConversationScope(rootTweetElement);
     const tweetElements = getTweetCandidates(scope);
     const seen = new Set();
     const conversation = [];
+    const orderedElements = [];
 
     const addTweet = (tweetElement) => {
       if (!isElement(tweetElement)) {
@@ -364,6 +378,7 @@
       }
 
       seen.add(identity);
+      orderedElements.push(tweetElement);
       conversation.push(tweetData);
     };
 
@@ -377,7 +392,14 @@
       addTweet(tweetElement);
     }
 
-    return conversation;
+    return {
+      tweetElements: orderedElements,
+      tweets: conversation
+    };
+  }
+
+  function collectConversationTweets(rootTweetElement) {
+    return collectConversationBundle(rootTweetElement).tweets;
   }
 
   function indexTweetsById(tweets) {
@@ -499,10 +521,12 @@
       event.preventDefault();
       event.stopPropagation();
 
-      const tweetElement = findClosestTweetContainer(event.currentTarget);
-      const tweets = collectConversationTweets(tweetElement);
-      const graph = buildConversationGraph(tweets);
-      const rootTweet = extractTweetData(tweetElement);
+      const clickedTweet = findClosestTweetContainer(event.currentTarget);
+      const rootTweetElement = resolveConversationRoot(clickedTweet) || clickedTweet;
+      const { tweetElements, tweets } = collectConversationBundle(rootTweetElement);
+      const inferredTweets = inferReplyStructure(tweetElements, tweets);
+      const graph = buildConversationGraph(inferredTweets);
+      const rootTweet = extractTweetData(rootTweetElement);
       console.log({ rootTweet, graph });
     });
 
@@ -606,6 +630,9 @@
     TWEET_SELECTORS,
     ACTION_HINTS,
     extractTweetData,
+    resolveConversationRoot,
+    inferReplyStructure,
+    collectConversationBundle,
     collectConversationTweets,
     indexTweetsById,
     attachReplies,
