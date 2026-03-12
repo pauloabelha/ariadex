@@ -8,6 +8,11 @@ The MVP uses a single **Manifest V3 content script** architecture:
 
 - `extension/manifest.json`
 - `extension/content.js`
+- `extension/reply_inference.js`
+- `extension/root_resolution.js`
+- `extension/thread_collapse.js`
+- `extension/conversation_rank.js`
+- `extension/ui_panel.js`
 - `extension/styles.css`
 
 No background service worker is required for this phase because all behavior is local DOM augmentation.

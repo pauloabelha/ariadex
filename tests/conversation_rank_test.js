@@ -64,3 +64,19 @@ test("ignores edges with unknown endpoints", () => {
   assert.ok(Number.isFinite(ranking.scoreById.A));
   assert.ok(Number.isFinite(ranking.scoreById.B));
 });
+
+test("engagement priors separate scores when edges are sparse", () => {
+  const g = graph(
+    [
+      { id: "A", likes: 120, replies: 25, reposts: 10 },
+      { id: "B", likes: 2, replies: 0, reposts: 0 },
+      { id: "C", likes: 1, replies: 0, reposts: 0 }
+    ],
+    []
+  );
+
+  const ranking = ranker.rankConversationGraph(g);
+
+  assert.equal(ranking.topTweetIds[0], "A");
+  assert.ok(ranking.scoreSpread > 0);
+});

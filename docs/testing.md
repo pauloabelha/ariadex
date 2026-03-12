@@ -44,4 +44,5 @@ npm test
 3. Click **Load unpacked** and select `ariadex/extension`.
 4. Visit `https://x.com` and scroll timeline.
 5. Confirm each tweet action bar gets one `◇ Explore` button.
-6. Click button and verify structured graph plus ranking output appears in DevTools console.
+6. Click button and verify the Ariadex floating panel appears with top-ranked threads.
+7. Verify structured graph plus ranking output appears in DevTools console.
