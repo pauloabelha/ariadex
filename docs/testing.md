@@ -7,6 +7,7 @@
 ## Test Files
 - `tests/conversation_graph_test.js`
 - `tests/conversation_collection_test.js`
+- `tests/conversation_rank_test.js`
 - `tests/reply_inference_test.js`
 - `tests/root_resolution_test.js`
 - `tests/selector_test.js`
@@ -25,6 +26,7 @@
 8. Reply relationship inference (indentation depth, reply context, fallback behavior).
 9. Root canonicalization for quote/reply entry points.
 10. Typed edge graph construction (`reply`, `quote`, `repost`).
+11. ConversationRank scoring behavior and edge-type weighting.
 
 ## Run Tests
 ```bash
@@ -38,4 +40,4 @@ npm test
 3. Click **Load unpacked** and select `ariadex/extension`.
 4. Visit `https://x.com` and scroll timeline.
 5. Confirm each tweet action bar gets one `◇ Explore` button.
-6. Click button and verify structured graph output appears in DevTools console.
+6. Click button and verify structured graph plus ranking output appears in DevTools console.

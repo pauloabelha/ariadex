@@ -4,12 +4,18 @@
   const replyInferenceApi = typeof module !== "undefined" && module.exports
     ? require("./reply_inference.js")
     : (window.AriadexReplyInference || {});
+  const conversationRankApi = typeof module !== "undefined" && module.exports
+    ? require("./conversation_rank.js")
+    : (window.AriadexConversationRank || {});
   const rootResolutionApi = typeof module !== "undefined" && module.exports
     ? require("./root_resolution.js")
     : (window.AriadexRootResolution || {});
   const inferReplyStructure = typeof replyInferenceApi.inferReplyStructure === "function"
     ? replyInferenceApi.inferReplyStructure
     : (_tweetElements, tweetData) => tweetData;
+  const rankConversationGraph = typeof conversationRankApi.rankConversationGraph === "function"
+    ? conversationRankApi.rankConversationGraph
+    : () => ({ scores: [], scoreById: {}, topTweetIds: [], iterations: 0, converged: true });
   const resolveConversationRoot = typeof rootResolutionApi.resolveConversationRoot === "function"
     ? rootResolutionApi.resolveConversationRoot
     : (tweetElement) => tweetElement;
@@ -586,8 +592,9 @@
       const { tweetElements, tweets } = collectConversationBundle(rootTweetElement);
       const inferredTweets = inferReplyStructure(tweetElements, tweets);
       const graph = buildConversationGraph(inferredTweets);
+      const ranking = rankConversationGraph(graph);
       const rootTweet = extractTweetData(rootTweetElement);
-      console.log({ rootTweet, graph });
+      console.log({ rootTweet, graph, ranking });
     });
 
     return button;
@@ -698,6 +705,7 @@
     attachReplies,
     buildTypedEdges,
     buildConversationGraph,
+    rankConversationGraph,
     findClosestTweetContainer,
     getTweetCandidates,
     locateActionBar,

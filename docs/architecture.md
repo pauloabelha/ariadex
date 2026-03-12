@@ -23,7 +23,8 @@ No background service worker is required for this phase because all behavior is 
    - collects visible conversation tweets from DOM around the resolved root
    - infers `reply_to` relationships
    - builds a typed conversation graph from `reply`, `quote`, and `repost` edges
-   - logs `{ rootTweet, graph }` to console
+   - runs ConversationRank over the graph
+   - logs `{ rootTweet, graph, ranking }` to console
 6. A `MutationObserver` watches subtree additions and rescans only newly added roots, throttled with `requestAnimationFrame`.
 
 ## Conversation Root Resolution
@@ -52,8 +53,19 @@ Reply Inference
 ↓
 Conversation Graph
 ↓
-Future: ConversationRank
+ConversationRank
+↓
+Future: Hybrid ranking signals
 ```
+
+## ConversationRank Layer
+ConversationRank runs after typed graph construction and computes influence scores via weighted PageRank-style propagation.
+
+Core helper module:
+- `extension/conversation_rank.js`
+- `rankConversationGraph(graph, options)`
+
+Output includes ordered tweet scores (`topTweetIds`) and convergence metadata.
 
 Core helpers in `extension/content.js`:
 - `indexTweetsById(tweets)`

@@ -22,7 +22,8 @@ Conversations on X are high-volume and structurally complex. Ariadex starts with
 ```js
 console.log({
   rootTweet,
-  graph
+  graph,
+  ranking
 });
 ```
 
@@ -34,17 +35,20 @@ ariadex/
     manifest.json
     reply_inference.js
     root_resolution.js
+    conversation_rank.js
     content.js
     styles.css
   docs/
     architecture.md
     conversation_collection.md
     conversation_graph.md
+    conversation_rank.md
     extension_design.md
     dom_injection_strategy.md
     testing.md
   tests/
     conversation_collection_test.js
+    conversation_rank_test.js
     conversation_graph_test.js
     dom_injection_test.js
     reply_inference_test.js
@@ -83,6 +87,7 @@ The tests use `jsdom` to simulate tweet-like DOM structures and validate selecto
 - Ariadex infers `reply_to` from DOM structure and reply context text.
 - Ariadex builds a typed graph with `reply`, `quote`, and `repost` edges.
 - Ariadex also keeps a reply-tree projection (`root`, `children`) for traversal.
+- Ariadex computes ConversationRank influence scores over the typed graph.
 - `MutationObserver` handles lazy-loaded tweets efficiently using batched processing.
 
 Pipeline:
@@ -100,7 +105,9 @@ Reply Inference
 ↓
 Conversation Graph
 ↓
-Future: ConversationRank
+ConversationRank
+↓
+Future: Hybrid ranking signals
 ```
 
 ## Conversation Reconstruction
@@ -118,10 +125,20 @@ Root canonicalization strategy:
 
 If no confident parent is found, `reply_to` remains `null`, and graph construction still proceeds safely.
 
+## ConversationRank
+ConversationRank is a weighted PageRank-style algorithm over typed edges:
+
+- `reply`: `1.0`
+- `quote`: `1.25`
+- `repost`: `0.75`
+
+It ranks the most influential tweets in the current visible conversation graph.
+
 See:
 - `docs/architecture.md`
 - `docs/conversation_collection.md`
 - `docs/conversation_graph.md`
+- `docs/conversation_rank.md`
 - `docs/extension_design.md`
 - `docs/dom_injection_strategy.md`
 - `docs/testing.md`

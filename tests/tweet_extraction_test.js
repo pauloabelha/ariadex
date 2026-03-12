@@ -121,6 +121,8 @@ test("clicking Explore logs rootTweet/graph conversation object", () => {
   assert.ok(loggedPayload.rootTweet);
   assert.ok(loggedPayload.graph);
   assert.ok(Array.isArray(loggedPayload.graph.children));
+  assert.ok(loggedPayload.ranking);
+  assert.ok(Array.isArray(loggedPayload.ranking.scores));
   assert.equal(loggedPayload.rootTweet.author, "@ariadex_user");
   assert.equal(loggedPayload.rootTweet.replies, 14);
   assert.equal(loggedPayload.rootTweet.reposts, 120);
