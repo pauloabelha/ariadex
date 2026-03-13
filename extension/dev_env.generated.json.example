@@ -1,0 +1,6 @@
+{
+  "bearerToken": "YOUR_X_BEARER_TOKEN",
+  "followingIds": [
+    "123456789"
+  ]
+}

@@ -1,37 +1,52 @@
 # UI Panel
 
-## Overview
-Ariadex renders ranked conversation results in a deterministic floating panel after `◇ Explore` is clicked.
+## Purpose
+The UI layer turns ranked engine output into an interactive panel.
 
-## Rendering Strategy
-The panel is always attached to `document.body` and uses fixed positioning.
+Implementation:
+- `ui/panel_renderer.js`
+- `ui/tweet_highlight.js`
 
-Why this is deterministic:
-- independent of X sidebar structure changes
-- not blocked by timeline layout shifts
-- visible with high z-index above page content
+## Inputs
 
-## Panel Lifecycle
-1. `createPanelContainer()` creates panel once and appends to `document.body`.
-2. `ensurePanelExists()` reuses existing panel instead of duplicating.
-3. `renderTopThreads(rankedTweets)` updates list content on each Explore click.
+```js
+{
+  nodes,
+  scoreById,
+  followingSet,
+  networkLimit = 5,
+  topLimit = 10
+}
+```
 
-## Interaction Model
-Each ranked item includes:
-- rank index
-- author
-- text snippet
-- score
+## Two-Tier Ranking Logic
+`buildPanelSections(...)` uses:
+1. one deterministic sort by ThinkerRank (`O(N log N)`)
+2. one traversal to build both sections (`O(N)`)
 
-Click behavior:
-- locate tweet by `status/{id}`
-- scroll into view
-- apply temporary highlight
+Sections:
+- `⭐ From Your Network`: followed authors only, top 5
+- `🔥 Top Thinkers`: highest remaining tweets, top 10
 
-## Debug Logs
-UI pipeline logs:
-- `[Ariadex] Ranking computed`
-- `[Ariadex] Rendering panel`
-- `[Ariadex] Panel attached`
+De-duplication is enforced across sections with a `Set`.
 
-These confirm ranking, panel rendering, and attachment success at runtime.
+## Deterministic Ordering
+Tie-breaking is explicit:
+1. score desc
+2. input index asc
+3. lexical tweet id
+
+This prevents unstable card ordering between renders.
+
+## Rendering Behavior
+`renderConversationPanel(...)`:
+- ensures a single panel attached to `document.body`
+- clears/rebuilds panel body per render
+- renders empty-state rows when sections are empty
+- binds click handlers for scroll/highlight
+
+## Interaction
+On card click:
+1. locate tweet element by status id
+2. smooth scroll to tweet
+3. apply temporary highlight class

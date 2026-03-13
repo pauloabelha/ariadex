@@ -1,48 +1,56 @@
 # Testing
 
 ## Test Stack
-- Node.js built-in test runner (`node:test`)
-- `jsdom` for DOM simulation
+- Node built-in test runner (`node:test`)
+- `jsdom` for DOM/UI tests only
 
-## Test Files
-- `tests/conversation_graph_test.js`
-- `tests/conversation_collection_test.js`
-- `tests/conversation_rank_test.js`
-- `tests/ui_panel_render_test.js`
-- `tests/thread_collapse_test.js`
-- `tests/reply_inference_test.js`
-- `tests/root_resolution_test.js`
-- `tests/selector_test.js`
-- `tests/dom_injection_test.js`
-- `tests/typed_conversation_graph_test.js`
-- `tests/tweet_extraction_test.js`
+## Run
 
-## What Is Covered
-1. Tweet selector detection (`article`, `data-testid` cases).
-2. Action bar identification (`div[role='group']` with action hints).
-3. Button injection behavior.
-4. Duplicate prevention (idempotent reinjection).
-5. Processing dynamically added tweet blocks.
-6. Conversation list collection from visible tweet DOM.
-7. Conversation graph construction (`reply_to` parent-child links, branching, missing parents, dedupe).
-8. Reply relationship inference (indentation depth, reply context, fallback behavior).
-9. Root canonicalization for quote/reply entry points.
-10. Typed edge graph construction (`reply`, `quote`, `repost`).
-11. ConversationRank scoring behavior and edge-type weighting.
-12. UI panel creation, fallback rendering, and thread click interaction.
-13. Root-author thread collapsing and edge remapping.
-
-## Run Tests
 ```bash
-npm install
-npm test
+node --test tests/*.js
 ```
 
-## Manual Verification on X
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Click **Load unpacked** and select `ariadex/extension`.
-4. Visit `https://x.com` and scroll timeline.
-5. Confirm each tweet action bar gets one `◇ Explore` button.
-6. Click button and verify the Ariadex floating panel appears with top-ranked threads.
-7. Verify structured graph plus ranking output appears in DevTools console.
+## Core (No Browser APIs)
+These tests run pure engine/data logic:
+- `tests/conversation_graph_test.js`
+- `tests/conversation_adjacency_test.js`
+- `tests/conversation_rank_test.js`
+- `tests/core_conversation_engine_test.js`
+- `tests/core_layer_boundary_test.js`
+- `tests/core_root_resolution_test.js`
+- `tests/reply_inference_test.js`
+- `tests/root_resolution_test.js`
+- `tests/thread_collapse_test.js`
+- `tests/typed_conversation_graph_test.js`
+- `tests/x_api_conversation_test.js`
+
+## Data Layer
+- `tests/conversation_collection_test.js`
+- `tests/data_dom_collector_test.js`
+- `tests/tweet_extraction_test.js`
+
+## UI / Extension DOM
+- `tests/ui_panel_render_test.js`
+- `tests/ui_panel_renderer_layer_test.js`
+- `tests/dom_injection_test.js`
+- `tests/selector_test.js`
+
+## Required Scenario Coverage
+- graph construction correctness: `conversation_graph_test.js`, `typed_conversation_graph_test.js`
+- reply edge detection: `conversation_graph_test.js`, `typed_conversation_graph_test.js`
+- quote edge detection: `typed_conversation_graph_test.js`, `core_conversation_engine_test.js`
+- ThinkerRank stability/determinism: `conversation_rank_test.js`, `core_conversation_engine_test.js`
+- panel duplicate removal: `ui_panel_render_test.js`, `ui_panel_renderer_layer_test.js`
+- empty following set: `ui_panel_render_test.js`
+- large graphs (1000+): `conversation_adjacency_test.js`, `core_conversation_engine_test.js`, `ui_panel_render_test.js`
+- missing parents: `conversation_graph_test.js`
+- equal score deterministic ordering: `conversation_rank_test.js`, `ui_panel_render_test.js`
+- adjacency integrity: `conversation_adjacency_test.js`
+- core layer has no DOM/extension API usage: `core_layer_boundary_test.js`
+
+## Manual Extension Smoke Test
+1. Run `node scripts/sync_env_to_generated_config.js`
+2. Reload unpacked extension (`ariadex/extension`) in Chrome
+3. Open `https://x.com`
+4. Click `◇ Explore` on a tweet
+5. Verify panel renders and clicking cards scrolls/highlights tweets

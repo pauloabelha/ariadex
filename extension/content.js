@@ -1,623 +1,412 @@
 (() => {
   "use strict";
 
-  const replyInferenceApi = typeof module !== "undefined" && module.exports
-    ? require("./reply_inference.js")
-    : (window.AriadexReplyInference || {});
-  const conversationRankApi = typeof module !== "undefined" && module.exports
-    ? require("./conversation_rank.js")
-    : (window.AriadexConversationRank || {});
-  const threadCollapseApi = typeof module !== "undefined" && module.exports
-    ? require("./thread_collapse.js")
-    : (window.AriadexThreadCollapse || {});
-  const uiPanelApi = typeof module !== "undefined" && module.exports
-    ? require("./ui_panel.js")
-    : (window.AriadexUIPanel || {});
+  const globalScope = typeof globalThis !== "undefined" ? globalThis : {};
+
+  const domCollectorApi = typeof module !== "undefined" && module.exports
+    ? require("./dom_collector.js")
+    : (globalScope.AriadexDataDomCollector || {});
+  const xApiClientApi = typeof module !== "undefined" && module.exports
+    ? require("./x_api_client.js")
+    : (globalScope.AriadexDataXApiClient || {});
+  const conversationEngineApi = typeof module !== "undefined" && module.exports
+    ? require("./conversation_engine.js")
+    : (globalScope.AriadexConversationEngine || {});
+  const panelRendererApi = typeof module !== "undefined" && module.exports
+    ? require("./panel_renderer.js")
+    : (globalScope.AriadexUIPanelRenderer || {});
   const rootResolutionApi = typeof module !== "undefined" && module.exports
     ? require("./root_resolution.js")
-    : (window.AriadexRootResolution || {});
-  const inferReplyStructure = typeof replyInferenceApi.inferReplyStructure === "function"
-    ? replyInferenceApi.inferReplyStructure
-    : (_tweetElements, tweetData) => tweetData;
-  const rankConversationGraph = typeof conversationRankApi.rankConversationGraph === "function"
-    ? conversationRankApi.rankConversationGraph
-    : () => ({ scores: [], scoreById: {}, topTweetIds: [], iterations: 0, converged: true });
-  const collapseAuthorThread = typeof threadCollapseApi.collapseAuthorThread === "function"
-    ? threadCollapseApi.collapseAuthorThread
-    : (graph) => graph;
-  const renderTopThreads = typeof uiPanelApi.renderTopThreads === "function"
-    ? uiPanelApi.renderTopThreads
-    : () => {};
-  const resolveConversationRoot = typeof rootResolutionApi.resolveConversationRoot === "function"
-    ? rootResolutionApi.resolveConversationRoot
-    : (tweetElement) => tweetElement;
+    : (globalScope.AriadexRootResolution || {});
+
+  // Compatibility exports for legacy tests/integration points.
+  const replyInferenceApi = typeof module !== "undefined" && module.exports
+    ? require("./reply_inference.js")
+    : (globalScope.AriadexReplyInference || {});
+  const conversationGraphApi = typeof module !== "undefined" && module.exports
+    ? require("./conversation_graph.js")
+    : (globalScope.AriadexConversationGraph || {});
+  const threadCollapseApi = typeof module !== "undefined" && module.exports
+    ? require("./thread_collapse.js")
+    : (globalScope.AriadexThreadCollapse || {});
+  const conversationRankApi = typeof module !== "undefined" && module.exports
+    ? require("./conversation_rank.js")
+    : (globalScope.AriadexConversationRank || {});
 
   const EXTENSION_ROOT_ATTR = "data-ariadex-initialized";
   const BUTTON_CLASS = "ariadex-explore-button";
   const BUTTON_ATTR = "data-ariadex-explore-button";
   const INJECTED_ATTR = "data-ariadex-injected";
 
-  const TWEET_SELECTORS = [
-    'article[data-testid="tweet"]',
-    'div[data-testid="tweet"]',
-    "article[role='article']",
-    "article"
-  ];
-  const TWEET_SELECTOR_QUERY = TWEET_SELECTORS.join(", ");
+  const extractTweetData = typeof domCollectorApi.extractTweetData === "function"
+    ? domCollectorApi.extractTweetData
+    : () => ({ id: null, author: null, text: null, url: null, replies: null, reposts: null, likes: null, reply_to: null, quote_of: null, repost_of: null });
+  const collectConversationBundle = typeof domCollectorApi.collectConversationBundle === "function"
+    ? domCollectorApi.collectConversationBundle
+    : () => ({ tweetElements: [], tweets: [] });
+  const collectConversationTweets = typeof domCollectorApi.collectConversationTweets === "function"
+    ? domCollectorApi.collectConversationTweets
+    : () => [];
+  const findClosestTweetContainer = typeof domCollectorApi.findClosestTweetContainer === "function"
+    ? domCollectorApi.findClosestTweetContainer
+    : () => null;
+  const getTweetCandidates = typeof domCollectorApi.getTweetCandidates === "function"
+    ? domCollectorApi.getTweetCandidates
+    : () => [];
+  const locateActionBar = typeof domCollectorApi.locateActionBar === "function"
+    ? domCollectorApi.locateActionBar
+    : () => null;
 
-  const TWEET_TEXT_SELECTORS = ['[data-testid="tweetText"]', "div[lang]"];
-  const AUTHOR_SELECTORS = [
-    '[data-testid="User-Name"] a[href^="/"]',
-    "a[href^='/'][role='link']"
-  ];
-  const TWEET_URL_SELECTORS = [
-    "a[href*='/status/']",
-    "time"
-  ];
-  const REPLY_TO_ATTRS = [
-    "data-reply-to",
-    "data-parent-tweet-id",
-    "data-conversation-parent-id",
-    "data-ariadex-reply-to"
-  ];
-  const QUOTE_TO_ATTRS = [
-    "data-quoted-tweet-id",
-    "data-quote-tweet-id",
-    "data-ariadex-quote-of"
-  ];
-  const REPOST_TO_ATTRS = [
-    "data-repost-of",
-    "data-retweet-of",
-    "data-ariadex-repost-of"
-  ];
+  const resolveConversationRoot = typeof rootResolutionApi.resolveConversationRoot === "function"
+    ? rootResolutionApi.resolveConversationRoot
+    : (tweetElement) => tweetElement;
 
-  const ACTION_HINTS = ["reply", "repost", "retweet", "like", "bookmark", "share", "view"];
+  const buildConversationDataset = typeof xApiClientApi.buildConversationDataset === "function"
+    ? xApiClientApi.buildConversationDataset
+    : null;
+  const runConversationEngine = typeof conversationEngineApi.runConversationEngine === "function"
+    ? conversationEngineApi.runConversationEngine
+    : () => ({ rootId: null, root: null, nodes: [], edges: [], ranking: [], rankingMeta: { scoreById: new Map() } });
 
-  function isElement(node) {
-    return typeof Element !== "undefined" && node instanceof Element;
-  }
+  const renderConversationPanel = typeof panelRendererApi.renderConversationPanel === "function"
+    ? panelRendererApi.renderConversationPanel
+    : null;
+  const renderTopThreads = typeof panelRendererApi.renderTopThreads === "function"
+    ? panelRendererApi.renderTopThreads
+    : () => {};
 
-  function uniqueElements(elements) {
-    return [...new Set(elements.filter(isElement))];
-  }
+  const inferReplyStructure = typeof replyInferenceApi.inferReplyStructure === "function"
+    ? replyInferenceApi.inferReplyStructure
+    : (_elements, tweets) => tweets;
+  const indexTweetsById = typeof conversationGraphApi.indexTweetsById === "function"
+    ? conversationGraphApi.indexTweetsById
+    : () => ({});
+  const attachReplies = typeof conversationGraphApi.attachReplies === "function"
+    ? conversationGraphApi.attachReplies
+    : () => ({ tweets: [], index: {}, roots: [] });
+  const buildTypedEdges = typeof conversationGraphApi.buildTypedEdges === "function"
+    ? conversationGraphApi.buildTypedEdges
+    : () => [];
+  const buildConversationGraph = typeof conversationGraphApi.buildConversationGraph === "function"
+    ? conversationGraphApi.buildConversationGraph
+    : () => ({ rootId: null, nodes: [], edges: [], root: null, children: [] });
+  const collapseAuthorThread = typeof threadCollapseApi.collapseAuthorThread === "function"
+    ? threadCollapseApi.collapseAuthorThread
+    : (graph) => graph;
+  const rankConversationGraph = typeof conversationRankApi.rankConversationGraph === "function"
+    ? conversationRankApi.rankConversationGraph
+    : () => ({ scores: [], scoreById: new Map(), topTweetIds: [], iterations: 0, converged: true });
 
-  function safeText(value) {
-    if (typeof value !== "string") {
-      return "";
-    }
-    return value.replace(/\s+/g, " ").trim();
-  }
-
-  function toAbsoluteUrl(href) {
-    if (!href || typeof href !== "string") {
+  function readLocalStorageValue(key) {
+    if (!key || typeof globalScope.window === "undefined" || !globalScope.window.localStorage) {
       return null;
     }
 
     try {
-      return new URL(href, window.location.origin).toString();
+      return globalScope.window.localStorage.getItem(key);
     } catch {
       return null;
     }
   }
 
-  function parseCompactNumber(raw) {
-    if (!raw) {
-      return null;
+  function parseFollowingSet(rawValue) {
+    if (!rawValue) {
+      return new Set();
     }
 
-    const normalized = safeText(String(raw)).replace(/,/g, "");
-    const match = normalized.match(/(\d+(?:\.\d+)?)([KMB])?/i);
-    if (!match) {
-      return null;
-    }
-
-    const base = Number.parseFloat(match[1]);
-    if (Number.isNaN(base)) {
-      return null;
-    }
-
-    const suffix = (match[2] || "").toUpperCase();
-    const multipliers = { K: 1_000, M: 1_000_000, B: 1_000_000_000 };
-    const multiplier = multipliers[suffix] || 1;
-    return Math.round(base * multiplier);
-  }
-
-  function parseTweetIdFromUrl(url) {
-    if (!url || typeof url !== "string") {
-      return null;
-    }
-    const match = url.match(/\/status\/(\d+)/);
-    return match ? match[1] : null;
-  }
-
-  function extractRelationFromAttrs(tweetElement, attrs) {
-    for (const attr of attrs) {
-      const value = tweetElement.getAttribute(attr);
-      if (!value) {
-        continue;
-      }
-      return parseTweetIdFromUrl(value) || value;
-    }
-    return null;
-  }
-
-  function findClosestTweetContainer(node) {
-    if (!isElement(node)) {
-      return null;
-    }
-    return node.closest(TWEET_SELECTOR_QUERY);
-  }
-
-  function getTweetCandidates(root = document) {
-    if (!root || typeof root.querySelectorAll !== "function") {
-      return [];
-    }
-
-    const matches = [];
-    for (const selector of TWEET_SELECTORS) {
-      matches.push(...root.querySelectorAll(selector));
-    }
-
-    return uniqueElements(matches);
-  }
-
-  function getActionSignalScore(group) {
-    if (!isElement(group)) {
-      return 0;
-    }
-
-    let score = 0;
-    const directLabel = (group.getAttribute("aria-label") || "").toLowerCase();
-    for (const hint of ACTION_HINTS) {
-      if (directLabel.includes(hint)) {
-        score += 2;
-      }
-    }
-
-    const controls = group.querySelectorAll("button, a, [role='button']");
-    for (const control of controls) {
-      const label = [
-        control.getAttribute("aria-label") || "",
-        control.getAttribute("title") || "",
-        control.textContent || ""
-      ]
-        .join(" ")
-        .toLowerCase();
-
-      for (const hint of ACTION_HINTS) {
-        if (label.includes(hint)) {
-          score += 1;
-          break;
-        }
-      }
-    }
-
-    if (controls.length >= 4) {
-      score += 1;
-    }
-
-    return score;
-  }
-
-  function locateActionBar(tweet) {
-    if (!isElement(tweet)) {
-      return null;
-    }
-
-    const groups = tweet.querySelectorAll("div[role='group']");
-    let bestGroup = null;
-    let bestScore = 0;
-
-    for (const group of groups) {
-      const score = getActionSignalScore(group);
-      if (score > bestScore) {
-        bestScore = score;
-        bestGroup = group;
-      }
-    }
-
-    if (bestGroup && bestScore >= 2) {
-      return bestGroup;
-    }
-
-    return null;
-  }
-
-  function extractFirstText(tweet, selectors) {
-    for (const selector of selectors) {
-      const element = tweet.querySelector(selector);
-      if (element) {
-        const text = safeText(element.textContent || "");
-        if (text) {
-          return text;
-        }
-      }
-    }
-    return null;
-  }
-
-  function extractAuthor(tweet) {
-    for (const selector of AUTHOR_SELECTORS) {
-      const candidates = tweet.querySelectorAll(selector);
-      for (const candidate of candidates) {
-        const href = candidate.getAttribute("href") || "";
-        if (!href.startsWith("/") || href.includes("/status/")) {
+    if (rawValue instanceof Set) {
+      const normalized = new Set();
+      for (const value of rawValue) {
+        if (value == null) {
           continue;
         }
-
-        const handle = href.split("/").filter(Boolean)[0];
-        if (handle) {
-          return `@${handle}`;
+        const parsed = String(value).trim();
+        if (parsed) {
+          normalized.add(parsed);
         }
       }
+      return normalized;
     }
-    return null;
-  }
 
-  function extractTweetUrl(tweet) {
-    for (const selector of TWEET_URL_SELECTORS) {
-      const candidates = tweet.querySelectorAll(selector);
-      for (const candidate of candidates) {
-        if (candidate.tagName === "TIME" && candidate.parentElement?.tagName === "A") {
-          const absoluteFromTime = toAbsoluteUrl(candidate.parentElement.getAttribute("href"));
-          if (absoluteFromTime && absoluteFromTime.includes("/status/")) {
-            return absoluteFromTime;
-          }
+    if (Array.isArray(rawValue)) {
+      const normalized = new Set();
+      for (const value of rawValue) {
+        if (value == null) {
           continue;
         }
-
-        if (candidate.tagName === "A") {
-          const absolute = toAbsoluteUrl(candidate.getAttribute("href"));
-          if (absolute && absolute.includes("/status/")) {
-            return absolute;
-          }
+        const parsed = String(value).trim();
+        if (parsed) {
+          normalized.add(parsed);
         }
       }
+      return normalized;
     }
-    return null;
+
+    if (typeof rawValue === "string") {
+      const trimmed = rawValue.trim();
+      if (!trimmed) {
+        return new Set();
+      }
+
+      try {
+        return parseFollowingSet(JSON.parse(trimmed));
+      } catch {
+        const normalized = new Set();
+        for (const part of trimmed.split(",")) {
+          const token = part.trim();
+          if (token) {
+            normalized.add(token);
+          }
+        }
+        return normalized;
+      }
+    }
+
+    return new Set();
   }
 
-  function extractCountByDataTestId(tweet, testIds) {
-    for (const id of testIds) {
-      const base = tweet.querySelector(`[data-testid="${id}"]`);
-      if (!base) {
-        continue;
-      }
+  function readXApiRuntimeConfig() {
+    const settings = typeof globalScope.window !== "undefined" && globalScope.window.AriadexXApiSettings && typeof globalScope.window.AriadexXApiSettings === "object"
+      ? globalScope.window.AriadexXApiSettings
+      : {};
 
-      const textFromContainer = extractFirstText(base, [
-        '[data-testid="app-text-transition-container"] span',
-        "span"
-      ]);
-      const parsed = parseCompactNumber(textFromContainer);
-      if (parsed !== null) {
-        return parsed;
-      }
-    }
-    return null;
+    const tokenCandidates = [
+      { source: "settings.bearerToken", value: settings.bearerToken },
+      { source: "window.AriadexXApiBearerToken", value: typeof globalScope.window !== "undefined" ? globalScope.window.AriadexXApiBearerToken : null },
+      { source: "localStorage.ariadex.x_api_bearer_token", value: readLocalStorageValue("ariadex.x_api_bearer_token") },
+      { source: "localStorage.ariadex.xApiBearerToken", value: readLocalStorageValue("ariadex.xApiBearerToken") }
+    ];
+
+    const selectedToken = tokenCandidates.find((candidate) => typeof candidate.value === "string" && candidate.value.trim().length > 0) || null;
+    const bearerToken = selectedToken ? selectedToken.value : null;
+    const tokenSource = selectedToken ? selectedToken.source : null;
+    const apiBaseUrl = typeof settings.apiBaseUrl === "string" && settings.apiBaseUrl.trim().length > 0
+      ? settings.apiBaseUrl.trim()
+      : null;
+
+    const followingSource = settings.followingSet
+      || settings.followingIds
+      || (typeof globalScope.window !== "undefined" ? globalScope.window.AriadexFollowingSet : null)
+      || readLocalStorageValue("ariadex.following_ids")
+      || readLocalStorageValue("ariadex.x_api_following_ids");
+
+    return {
+      bearerToken: bearerToken ? bearerToken.trim() : null,
+      tokenSource,
+      apiBaseUrl,
+      followingSet: parseFollowingSet(followingSource),
+      tokenDiagnostics: tokenCandidates.map((candidate) => ({
+        source: candidate.source,
+        present: typeof candidate.value === "string" && candidate.value.trim().length > 0
+      }))
+    };
   }
 
-  function extractCountFromAriaLabel(tweet, hints) {
-    const controls = tweet.querySelectorAll("button, a, [role='button']");
-    for (const control of controls) {
-      const label = safeText(control.getAttribute("aria-label") || "");
-      if (!label) {
-        continue;
-      }
-
-      const lower = label.toLowerCase();
-      if (!hints.some((hint) => lower.includes(hint))) {
-        continue;
-      }
-
-      const parsed = parseCompactNumber(label);
-      if (parsed !== null) {
-        return parsed;
-      }
-    }
-    return null;
+  async function hydrateRuntimeConfigFromGeneratedConfig(runtimeConfig) {
+    // Do not fetch extension resources during click handling.
+    // This avoids noisy chrome-extension://invalid fetch failures in stale contexts.
+    return runtimeConfig;
   }
 
-  function extractCount(tweet, dataTestIds, hints) {
-    const fromDataTestId = extractCountByDataTestId(tweet, dataTestIds);
-    if (fromDataTestId !== null) {
-      return fromDataTestId;
+  async function buildConversationSnapshot(options = {}) {
+    if (typeof buildConversationDataset !== "function") {
+      throw new Error("X API data client is not available");
     }
 
-    const fromAria = extractCountFromAriaLabel(tweet, hints);
-    if (fromAria !== null) {
-      return fromAria;
+    const dataset = await buildConversationDataset(options);
+    if (typeof options.onProgress === "function") {
+      options.onProgress({
+        phase: "data_retrieved",
+        dataset
+      });
     }
-
-    return null;
-  }
-
-  function extractTweetData(tweetElement) {
-    if (!isElement(tweetElement)) {
+    if (!dataset?.canonicalRootId) {
       return {
-        id: null,
-        author: null,
-        text: null,
-        url: null,
-        replies: null,
-        reposts: null,
-        likes: null,
-        reply_to: null
-      };
-    }
-
-    const url = extractTweetUrl(tweetElement);
-    const id = parseTweetIdFromUrl(url)
-      || tweetElement.getAttribute("data-tweet-id")
-      || tweetElement.getAttribute("data-item-id")
-      || null;
-
-    let replyTo = null;
-    replyTo = extractRelationFromAttrs(tweetElement, REPLY_TO_ATTRS);
-    const quoteOf = extractRelationFromAttrs(tweetElement, QUOTE_TO_ATTRS);
-    const repostOf = extractRelationFromAttrs(tweetElement, REPOST_TO_ATTRS);
-
-    return {
-      id,
-      author: extractAuthor(tweetElement),
-      text: extractFirstText(tweetElement, TWEET_TEXT_SELECTORS),
-      url,
-      replies: extractCount(tweetElement, ["reply"], ["reply"]),
-      reposts: extractCount(tweetElement, ["retweet", "repost"], ["retweet", "repost"]),
-      likes: extractCount(tweetElement, ["like"], ["like"]),
-      reply_to: replyTo,
-      quote_of: quoteOf,
-      repost_of: repostOf
-    };
-  }
-
-  function getConversationScope(rootTweetElement) {
-    if (!isElement(rootTweetElement)) {
-      return document;
-    }
-
-    const scopedContainer = rootTweetElement.closest("section, main, [aria-label]");
-    return scopedContainer || document;
-  }
-
-  function buildTweetIdentity(tweetElement, tweetData) {
-    if (tweetData?.id) {
-      return `id:${tweetData.id}`;
-    }
-
-    if (tweetData?.url) {
-      return `url:${tweetData.url}`;
-    }
-
-    const author = tweetData?.author || "unknown";
-    const text = tweetData?.text || "";
-    const textPrefix = text.slice(0, 120);
-    const domHint = tweetElement.getAttribute("id") || tweetElement.getAttribute("data-testid") || "";
-    return `fallback:${author}:${textPrefix}:${domHint}`;
-  }
-
-  function collectConversationBundle(rootTweetElement) {
-    const scope = getConversationScope(rootTweetElement);
-    const tweetElements = getTweetCandidates(scope);
-    const seen = new Set();
-    const conversation = [];
-    const orderedElements = [];
-
-    const addTweet = (tweetElement) => {
-      if (!isElement(tweetElement)) {
-        return;
-      }
-
-      const tweetData = extractTweetData(tweetElement);
-      const identity = buildTweetIdentity(tweetElement, tweetData);
-      if (seen.has(identity)) {
-        return;
-      }
-
-      seen.add(identity);
-      orderedElements.push(tweetElement);
-      conversation.push(tweetData);
-    };
-
-    // Keep clicked tweet first when available.
-    addTweet(rootTweetElement);
-
-    for (const tweetElement of tweetElements) {
-      if (tweetElement === rootTweetElement) {
-        continue;
-      }
-      addTweet(tweetElement);
-    }
-
-    return {
-      tweetElements: orderedElements,
-      tweets: conversation
-    };
-  }
-
-  function collectConversationTweets(rootTweetElement) {
-    return collectConversationBundle(rootTweetElement).tweets;
-  }
-
-  function indexTweetsById(tweets) {
-    const index = {};
-    for (const tweet of tweets || []) {
-      if (!tweet || !tweet.id || index[tweet.id]) {
-        continue;
-      }
-      index[tweet.id] = tweet;
-    }
-    return index;
-  }
-
-  function attachReplies(tweets) {
-    const uniqueTweets = [];
-    const seen = new Set();
-
-    for (const tweet of tweets || []) {
-      if (!tweet) {
-        continue;
-      }
-
-      const identity = tweet.id || tweet.url || `${tweet.author || ""}:${tweet.text || ""}`;
-      if (!identity || seen.has(identity)) {
-        continue;
-      }
-      seen.add(identity);
-      uniqueTweets.push(tweet);
-    }
-
-    const nodeById = {};
-    const nodeByTweet = new Map();
-    const roots = [];
-
-    uniqueTweets.forEach((tweet, index) => {
-      const nodeKey = tweet.id || `fallback:${tweet.url || tweet.author || "unknown"}:${index}`;
-      const node = { tweet, children: [] };
-      nodeByTweet.set(tweet, { key: nodeKey, node });
-      nodeById[nodeKey] = node;
-    });
-
-    for (const tweet of uniqueTweets) {
-      const nodeEntry = nodeByTweet.get(tweet);
-      const node = nodeEntry ? nodeEntry.node : null;
-      if (!node) {
-        continue;
-      }
-
-      if (tweet.id) {
-        nodeById[tweet.id] = node;
-      }
-    }
-
-    for (const tweet of uniqueTweets) {
-      const nodeEntry = nodeByTweet.get(tweet);
-      const node = nodeEntry ? nodeEntry.node : null;
-      if (!node) {
-        continue;
-      }
-
-      const parentId = tweet.reply_to;
-      if (!parentId || parentId === tweet.id || !nodeById[parentId]) {
-        roots.push(node);
-        continue;
-      }
-
-      const parentNode = nodeById[parentId];
-      if (!parentNode.children.includes(node)) {
-        parentNode.children.push(node);
-      }
-    }
-
-    return {
-      tweets: uniqueTweets,
-      index: indexTweetsById(uniqueTweets),
-      roots
-    };
-  }
-
-  function buildTypedEdges(tweets, index) {
-    const edges = [];
-    const seen = new Set();
-    const safeIndex = index || {};
-
-    const maybePush = (source, target, type) => {
-      if (!source || !target || source === target || !safeIndex[source] || !safeIndex[target]) {
-        return;
-      }
-
-      const key = `${source}|${target}|${type}`;
-      if (seen.has(key)) {
-        return;
-      }
-      seen.add(key);
-      edges.push({ source, target, type });
-    };
-
-    for (const tweet of tweets || []) {
-      if (!tweet?.id) {
-        continue;
-      }
-
-      maybePush(tweet.id, tweet.reply_to, "reply");
-      maybePush(tweet.id, tweet.quote_of, "quote");
-      maybePush(tweet.id, tweet.repost_of, "repost");
-    }
-
-    return edges;
-  }
-
-  function buildConversationGraph(tweets) {
-    const safeTweets = Array.isArray(tweets) ? tweets : [];
-    if (safeTweets.length === 0) {
-      return {
+        canonicalRootId: null,
         rootId: null,
+        root: null,
         nodes: [],
         edges: [],
-        root: null,
-        children: []
+        ranking: [],
+        rankingMeta: { scoreById: new Map() },
+        warnings: Array.isArray(dataset?.warnings) ? dataset.warnings : []
       };
     }
 
-    const { tweets: uniqueTweets, index, roots } = attachReplies(safeTweets);
-    const explicitRootTweet = safeTweets.find((tweet) => tweet && tweet.reply_to == null && tweet.id && index[tweet.id]);
-    const fallbackRootNode = roots[0] || null;
-
-    const rootNode = explicitRootTweet && explicitRootTweet.id
-      ? roots.find((node) => node.tweet.id === explicitRootTweet.id) || fallbackRootNode
-      : fallbackRootNode;
-
-    if (!rootNode) {
-      return {
-        rootId: null,
-        nodes: uniqueTweets,
-        edges: buildTypedEdges(uniqueTweets, index),
-        root: null,
-        children: []
-      };
+    const engineResult = runConversationEngine({
+      tweets: dataset.tweets || [],
+      rankOptions: options.rankOptions || {}
+    });
+    if (typeof options.onProgress === "function") {
+      options.onProgress({
+        phase: "ranking_complete",
+        dataset,
+        engineResult
+      });
     }
 
-    const disconnected = roots.filter((node) => node !== rootNode);
-    const edges = buildTypedEdges(uniqueTweets, index);
     return {
-      rootId: rootNode.tweet.id || null,
-      nodes: uniqueTweets,
-      edges,
-      root: rootNode.tweet,
-      children: [...rootNode.children, ...disconnected]
+      canonicalRootId: dataset.canonicalRootId,
+      rootId: engineResult.rootId,
+      root: engineResult.root || dataset.rootTweet || null,
+      nodes: engineResult.nodes || [],
+      edges: engineResult.edges || [],
+      ranking: engineResult.ranking || [],
+      rankingMeta: engineResult.rankingMeta || { scoreById: new Map() },
+      warnings: Array.isArray(dataset.warnings) ? dataset.warnings : []
     };
   }
 
   function createExploreButton() {
-    const button = document.createElement("button");
+    const button = globalScope.document.createElement("button");
     button.type = "button";
     button.className = BUTTON_CLASS;
     button.setAttribute(BUTTON_ATTR, "true");
     button.setAttribute("aria-label", "Explore conversation");
     button.textContent = "◇ Explore";
 
-    button.addEventListener("click", (event) => {
+    button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
 
       const clickedTweet = findClosestTweetContainer(event.currentTarget);
+      const clickedTweetData = extractTweetData(clickedTweet);
       const rootTweetElement = resolveConversationRoot(clickedTweet) || clickedTweet;
-      const { tweetElements, tweets } = collectConversationBundle(rootTweetElement);
-      const inferredTweets = inferReplyStructure(tweetElements, tweets);
-      const graph = buildConversationGraph(inferredTweets);
-      const collapsedGraph = collapseAuthorThread(graph);
-      const ranking = rankConversationGraph(collapsedGraph);
-      const rootTweet = extractTweetData(rootTweetElement);
-      console.log("[Ariadex] Ranking computed", ranking);
-      console.log("[Ariadex] Rendering panel");
-      renderTopThreads((ranking.scores || []).slice(0, 5));
-      console.log({ rootTweet, graph: collapsedGraph, ranking });
+      const rootTweetData = extractTweetData(rootTweetElement);
+
+      const clickedTweetId = clickedTweetData.id || rootTweetData.id;
+      if (!clickedTweetId) {
+        console.error("[Ariadex] Unable to resolve clicked tweet id");
+        return;
+      }
+
+      if (renderConversationPanel) {
+        const seedTweet = clickedTweetData?.id
+          ? clickedTweetData
+          : (rootTweetData?.id ? rootTweetData : null);
+        const seedNodes = seedTweet ? [seedTweet] : [];
+        const seedScoreById = new Map(seedNodes.map((tweet) => [tweet.id, 1]));
+        renderConversationPanel({
+          nodes: seedNodes,
+          scoreById: seedScoreById,
+          followingSet: new Set(),
+          networkLimit: 0,
+          topLimit: 3,
+          statusMessage: "Exploring conversation…",
+          root: globalScope.document
+        });
+      }
+
+      let runtimeConfig = readXApiRuntimeConfig();
+      if (!runtimeConfig.bearerToken) {
+        runtimeConfig = await hydrateRuntimeConfigFromGeneratedConfig(runtimeConfig);
+      }
+
+      if (!runtimeConfig.bearerToken) {
+        if (renderConversationPanel) {
+          renderConversationPanel({
+            nodes: [],
+            scoreById: new Map(),
+            followingSet: runtimeConfig.followingSet,
+            networkLimit: 5,
+            topLimit: 10,
+            statusMessage: "Missing X API token. Configure token to fetch conversation data.",
+            root: globalScope.document
+          });
+        }
+        return;
+      }
+
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+
+      try {
+        const snapshot = await buildConversationSnapshot({
+          clickedTweetId,
+          rootHintTweetId: rootTweetData.id || null,
+          bearerToken: runtimeConfig.bearerToken,
+          apiBaseUrl: runtimeConfig.apiBaseUrl || undefined,
+          rankOptions: {
+            followingSet: runtimeConfig.followingSet
+          },
+          fetchImpl: typeof globalScope.window !== "undefined" && typeof globalScope.window.fetch === "function"
+            ? globalScope.window.fetch.bind(globalScope.window)
+            : undefined,
+          onProgress: (progress) => {
+            if (!renderConversationPanel) {
+              return;
+            }
+
+            if (progress?.phase === "data_retrieved") {
+              const tweets = Array.isArray(progress?.dataset?.tweets) ? progress.dataset.tweets : [];
+              const limitedTweets = tweets.slice(0, 25);
+              const provisionalScores = new Map(limitedTweets.map((tweet, index) => [tweet.id, limitedTweets.length - index]));
+              renderConversationPanel({
+                nodes: limitedTweets,
+                scoreById: provisionalScores,
+                followingSet: runtimeConfig.followingSet,
+                networkLimit: 5,
+                topLimit: 10,
+                statusMessage: `Fetched ${tweets.length} tweets. Running ThinkerRank…`,
+                root: globalScope.document
+              });
+            }
+          }
+        });
+
+        const ranking = {
+          scores: Array.isArray(snapshot.ranking) ? snapshot.ranking : []
+        };
+        const scoreById = snapshot?.rankingMeta?.scoreById || new Map();
+
+        const panelSections = renderConversationPanel
+          ? renderConversationPanel({
+            nodes: snapshot.nodes || [],
+            scoreById,
+            followingSet: runtimeConfig.followingSet,
+            networkLimit: 5,
+            topLimit: 10,
+            statusMessage: `Done. Ranked ${Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0} nodes.`,
+            root: globalScope.document
+          })
+          : renderTopThreads((ranking.scores || []).slice(0, 5), globalScope.document);
+
+        console.log({
+          rootTweet: snapshot.root || rootTweetData,
+          graph: {
+            rootId: snapshot.rootId,
+            nodes: snapshot.nodes || [],
+            edges: snapshot.edges || []
+          },
+          ranking,
+          panelSections,
+          canonicalRootId: snapshot.canonicalRootId,
+          warnings: snapshot.warnings || []
+        });
+      } catch (error) {
+        console.error("[Ariadex] Failed to build conversation via layered engine", error);
+        if (renderConversationPanel) {
+          renderConversationPanel({
+            nodes: [],
+            scoreById: new Map(),
+            followingSet: runtimeConfig.followingSet,
+            networkLimit: 5,
+            topLimit: 10,
+            statusMessage: "Request failed or rate-limited. Showing no data.",
+            root: globalScope.document
+          });
+        }
+      } finally {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      }
     });
 
     return button;
   }
 
   function injectExploreButton(tweet) {
-    if (!isElement(tweet)) {
+    if (!tweet || typeof tweet.querySelector !== "function") {
       return false;
     }
 
@@ -636,7 +425,7 @@
     return true;
   }
 
-  function processRoot(root = document) {
+  function processRoot(root = globalScope.document) {
     const tweets = getTweetCandidates(root);
     for (const tweet of tweets) {
       injectExploreButton(tweet);
@@ -663,8 +452,8 @@
       }
       scheduled = true;
 
-      const raf = typeof requestAnimationFrame === "function"
-        ? requestAnimationFrame
+      const raf = typeof globalScope.requestAnimationFrame === "function"
+        ? globalScope.requestAnimationFrame
         : (cb) => setTimeout(cb, 16);
 
       raf(flush);
@@ -677,7 +466,7 @@
         }
 
         for (const node of mutation.addedNodes) {
-          if (isElement(node)) {
+          if (node && typeof node.closest === "function") {
             pendingRoots.add(node);
           }
         }
@@ -688,21 +477,21 @@
   }
 
   function init() {
-    if (!document || !document.documentElement) {
+    if (!globalScope.document || !globalScope.document.documentElement) {
       return;
     }
 
-    if (document.documentElement.hasAttribute(EXTENSION_ROOT_ATTR)) {
+    if (globalScope.document.documentElement.hasAttribute(EXTENSION_ROOT_ATTR)) {
       return;
     }
 
-    document.documentElement.setAttribute(EXTENSION_ROOT_ATTR, "true");
+    globalScope.document.documentElement.setAttribute(EXTENSION_ROOT_ATTR, "true");
 
-    processRoot(document);
+    processRoot(globalScope.document);
 
     const observer = createObserver();
-    if (document.body) {
-      observer.observe(document.body, {
+    if (globalScope.document.body) {
+      observer.observe(globalScope.document.body, {
         childList: true,
         subtree: true
       });
@@ -710,8 +499,8 @@
   }
 
   const api = {
-    TWEET_SELECTORS,
-    ACTION_HINTS,
+    TWEET_SELECTORS: domCollectorApi.TWEET_SELECTORS || [],
+    ACTION_HINTS: domCollectorApi.ACTION_HINTS || [],
     extractTweetData,
     resolveConversationRoot,
     inferReplyStructure,
@@ -723,6 +512,9 @@
     buildConversationGraph,
     collapseAuthorThread,
     rankConversationGraph,
+    buildConversationSnapshot,
+    parseFollowingSet,
+    readXApiRuntimeConfig,
     findClosestTweetContainer,
     getTweetCandidates,
     locateActionBar,
@@ -737,8 +529,8 @@
   }
 
   if (!(typeof module !== "undefined" && module.exports)) {
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", init, { once: true });
+    if (globalScope.document.readyState === "loading") {
+      globalScope.document.addEventListener("DOMContentLoaded", init, { once: true });
     } else {
       init();
     }

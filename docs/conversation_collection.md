@@ -1,39 +1,75 @@
 # Conversation Collection
 
 ## Overview
-When the user clicks `◇ Explore`, Ariadex now builds a DOM-only conversation snapshot:
+Collection lives in the `data/` layer.
+
+- `data/dom_collector.js` handles tweet extraction from X DOM and optional local root hints.
+- `data/x_api_client.js` resolves canonical roots and retrieves connected tweets from the X API.
+
+Both modules normalize output so `core/` receives a consistent tweet schema.
+
+## Unified Tweet Schema
 
 ```js
 {
-  rootTweet: { ...tweetData },
-  replies: [{ ...tweetData }, ...]
+  id,
+  author_id,
+  author,
+  text,
+  referenced_tweets,
+  metrics,
+  reply_to,
+  quote_of,
+  repost_of,
+  replies,
+  reposts,
+  likes,
+  quote_count
 }
 ```
 
-`rootTweet` is extracted from the clicked tweet container. `replies` are all other visible tweet containers discovered in the same local conversation scope.
+## Canonical Root Resolution
+Canonicalization happens before graph retrieval:
+1. if clicked tweet quotes another tweet, quoted tweet is root
+2. otherwise follow `replied_to` links upward until origin
+3. DOM ancestor hint can seed the starting id
 
-## How Replies Are Detected
-Ariadex uses existing tweet container selectors:
+Implemented in `resolveCanonicalRootTweetId(...)` inside `data/x_api_client.js`.
 
-- `article[data-testid="tweet"]`
-- `article[role="article"]`
-- plus existing fallback selectors already used by injection
+## X API Endpoints
+Ariadex uses:
+- `GET /2/tweets/{id}` for root/reply-chain lookup
+- `GET /2/tweets/search/recent?query=conversation_id:<root>` for replies
+- `GET /2/tweets/{id}/quote_tweets` for quote branches
+- `GET /2/tweets/{id}/retweeted_by` for repost users
+- `GET /2/tweets` for missing referenced tweets
+- `GET /2/users` for missing author metadata
 
-Collection flow:
-1. Resolve clicked tweet via `closest(...)`.
-2. Resolve a local scope (`section`, `main`, or nearest labeled container) to avoid scanning unrelated page areas.
-3. Query visible tweet candidates in that scope.
-4. Reuse `extractTweetData(tweetElement)` for every candidate.
-5. Remove duplicates using URL-first identity, with fallback identity when URL is missing.
+Reposts are represented as deterministic synthetic events:
+- `id = repost:<rootTweetId>:<userId>`
+- `type = repost_event`
 
-## Limitations of DOM-Only Crawling
-- Only captures tweets currently rendered in the DOM.
-- Misses collapsed, paginated, or not-yet-loaded replies.
-- Cannot guarantee exact parent-child edges between replies.
-- Subject to X DOM changes over time.
+## Pagination and Limits
+`data/x_api_client.js` enforces configurable safety limits:
+- `maxPagesPerCollection`
+- `maxResultsPerPage`
+- `maxConversationRoots`
+- `maxConnectedTweets`
+- request timeout
 
-## Future Improvements
-- Add hierarchical reply inference from indentation/DOM grouping heuristics.
-- Track timeline mutation deltas to incrementally update conversation state.
-- Add optional background/service-worker persistence for snapshot history.
-- Introduce ranking over collected replies (engagement + graph heuristics).
+This keeps collection bounded and predictable under rate limits.
+
+## Data -> Core Boundary
+`buildConversationDataset(...)` returns:
+
+```js
+{
+  canonicalRootId,
+  tweets,
+  users,
+  rootTweet,
+  warnings
+}
+```
+
+`core/conversation_engine.js` consumes `tweets` directly.

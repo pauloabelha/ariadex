@@ -4,10 +4,25 @@
   "version": "0.1",
   "description": "Injects an Explore button into X tweets to bootstrap conversation exploration.",
   "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["https://api.x.com/*"],
   "content_scripts": [
     {
       "matches": ["https://x.com/*"],
-      "js": ["reply_inference.js", "root_resolution.js", "conversation_rank.js", "thread_collapse.js", "ui_panel.js", "content.js"],
+      "js": [
+        "dev_env_loader.js",
+        "dom_collector.js",
+        "reply_inference.js",
+        "root_resolution.js",
+        "conversation_graph.js",
+        "conversation_adjacency.js",
+        "conversation_rank.js",
+        "thread_collapse.js",
+        "x_api_client.js",
+        "tweet_highlight.js",
+        "panel_renderer.js",
+        "conversation_engine.js",
+        "content.js"
+      ],
       "css": ["styles.css"],
       "run_at": "document_idle"
     }

@@ -97,10 +97,94 @@ test("extractTweetData tolerates missing fields", () => {
   });
 });
 
-test("clicking Explore logs rootTweet/graph conversation object", () => {
+test("clicking Explore logs rootTweet/graph conversation object", async () => {
   const dom = setDomFromExample();
   const root = dom.window.document.getElementById("react-root") || dom.window.document.body;
   const tweet = appendTweetFixture(root);
+  dom.window.localStorage.setItem("ariadex.x_api_bearer_token", "test-token");
+
+  const apiRootId = "1234567890";
+  const apiRootTweet = {
+    id: apiRootId,
+    author_id: "u1",
+    text: "Ariadex explores conversation structure.",
+    public_metrics: {
+      reply_count: 14,
+      retweet_count: 120,
+      like_count: 449,
+      quote_count: 0
+    },
+    referenced_tweets: []
+  };
+  const apiReplyTweet = {
+    id: "2234567890",
+    author_id: "u2",
+    text: "reply",
+    public_metrics: {
+      reply_count: 0,
+      retweet_count: 0,
+      like_count: 1,
+      quote_count: 0
+    },
+    referenced_tweets: [{ type: "replied_to", id: apiRootId }]
+  };
+
+  dom.window.fetch = async (urlString) => {
+    const url = new URL(urlString);
+    const jsonResponse = (body) => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => body,
+      text: async () => JSON.stringify(body)
+    });
+
+    if (url.pathname === `/2/tweets/${apiRootId}`) {
+      return jsonResponse({
+        data: apiRootTweet,
+        includes: {
+          users: [{ id: "u1", username: "ariadex_user", name: "Ariadex User" }]
+        }
+      });
+    }
+
+    if (url.pathname === "/2/tweets/search/recent") {
+      return jsonResponse({
+        data: [apiRootTweet, apiReplyTweet],
+        includes: {
+          users: [
+            { id: "u1", username: "ariadex_user", name: "Ariadex User" },
+            { id: "u2", username: "reply_user", name: "Reply User" }
+          ]
+        },
+        meta: {}
+      });
+    }
+
+    if (url.pathname === `/2/tweets/${apiRootId}/quote_tweets`) {
+      return jsonResponse({
+        data: [],
+        includes: { users: [] },
+        meta: {}
+      });
+    }
+
+    if (url.pathname === `/2/tweets/${apiRootId}/retweeted_by`) {
+      return jsonResponse({
+        data: [],
+        meta: {}
+      });
+    }
+
+    if (url.pathname === "/2/tweets" || url.pathname === "/2/users") {
+      return jsonResponse({
+        data: [],
+        includes: { users: [] }
+      });
+    }
+
+    throw new Error(`Unexpected URL: ${url.toString()}`);
+  };
 
   const injected = content.injectExploreButton(tweet);
   assert.equal(injected, true);
@@ -110,17 +194,22 @@ test("clicking Explore logs rootTweet/graph conversation object", () => {
 
   let loggedPayload = null;
   const originalLog = console.log;
-  console.log = (payload) => {
-    loggedPayload = payload;
+  console.log = (...args) => {
+    const candidate = args.find((value) => value && typeof value === "object" && value.graph && value.ranking);
+    if (candidate) {
+      loggedPayload = candidate;
+    }
   };
 
   button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
   console.log = originalLog;
 
   assert.ok(loggedPayload);
   assert.ok(loggedPayload.rootTweet);
   assert.ok(loggedPayload.graph);
-  assert.ok(Array.isArray(loggedPayload.graph.children));
+  assert.ok(Array.isArray(loggedPayload.graph.nodes));
+  assert.ok(Array.isArray(loggedPayload.graph.edges));
   assert.ok(loggedPayload.ranking);
   assert.ok(Array.isArray(loggedPayload.ranking.scores));
   assert.equal(loggedPayload.rootTweet.author, "@ariadex_user");

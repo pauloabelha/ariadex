@@ -1,6 +1,16 @@
 (() => {
   "use strict";
 
+  const globalScope = typeof globalThis !== "undefined" ? globalThis : {};
+
+  const highlightApi = typeof module !== "undefined" && module.exports
+    ? require("./tweet_highlight.js")
+    : (globalScope.AriadexUITweetHighlight || {});
+
+  const scrollToTweet = typeof highlightApi.scrollToTweet === "function"
+    ? highlightApi.scrollToTweet
+    : () => false;
+
   const PANEL_SELECTOR = ".ariadex-panel";
   const PANEL_CLASS = "ariadex-panel";
   const PANEL_BODY_CLASS = "ariadex-panel-body";
@@ -10,8 +20,7 @@
   const LIST_CLASS = "ariadex-thread-list";
   const THREAD_CLASS = "ariadex-thread";
   const EMPTY_CLASS = "ariadex-empty";
-  const HIGHLIGHT_CLASS = "ariadex-highlight";
-  const TWEET_SELECTOR_QUERY = 'article[data-testid="tweet"], article[role="article"], div[data-testid="tweet"], article';
+  const STATUS_CLASS = "ariadex-status";
 
   function applyFloatingPanelStyles(panel) {
     panel.style.position = "fixed";
@@ -30,39 +39,37 @@
     panel.style.boxShadow = "0 6px 30px rgba(0,0,0,.4)";
   }
 
-  function createPanelContainer() {
-    let panel = document.querySelector(PANEL_SELECTOR);
+  function createPanelContainer(root = globalScope.document) {
+    let panel = root?.querySelector?.(PANEL_SELECTOR);
     if (panel) {
       return panel;
     }
 
-    panel = document.createElement("aside");
+    panel = root.createElement("aside");
     panel.className = PANEL_CLASS;
     applyFloatingPanelStyles(panel);
 
-    const header = document.createElement("div");
+    const header = root.createElement("div");
     header.className = HEADER_CLASS;
     header.textContent = "Ariadex Panel";
 
-    const body = document.createElement("div");
+    const body = root.createElement("div");
     body.className = PANEL_BODY_CLASS;
 
     panel.appendChild(header);
     panel.appendChild(body);
 
-    if (document.body) {
-      document.body.appendChild(panel);
-      console.log("[Ariadex] Panel attached", panel);
+    if (root.body) {
+      root.body.appendChild(panel);
     }
 
     return panel;
   }
 
-  function ensurePanelExists() {
-    const panel = createPanelContainer();
-    if (panel && panel.parentElement !== document.body && document.body) {
-      document.body.appendChild(panel);
-      console.log("[Ariadex] Panel attached", panel);
+  function ensurePanelExists(root = globalScope.document) {
+    const panel = createPanelContainer(root);
+    if (panel && panel.parentElement !== root.body && root.body) {
+      root.body.appendChild(panel);
     }
     return panel;
   }
@@ -80,40 +87,6 @@
     return `${normalized.slice(0, maxLen - 1)}…`;
   }
 
-  function findTweetElementById(tweetId) {
-    if (!tweetId) {
-      return null;
-    }
-
-    const links = document.querySelectorAll(`a[href*="/status/${tweetId}"]`);
-    for (const link of links) {
-      const tweet = link.closest(TWEET_SELECTOR_QUERY);
-      if (tweet) {
-        return tweet;
-      }
-    }
-
-    return document.querySelector(`[data-tweet-id="${tweetId}"]`) || null;
-  }
-
-  function scrollToTweet(tweetId) {
-    const tweet = findTweetElementById(tweetId);
-    if (!tweet) {
-      return false;
-    }
-
-    if (typeof tweet.scrollIntoView === "function") {
-      tweet.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-
-    tweet.classList.add(HIGHLIGHT_CLASS);
-    setTimeout(() => {
-      tweet.classList.remove(HIGHLIGHT_CLASS);
-    }, 1500);
-
-    return true;
-  }
-
   function normalizeFollowingSet(input) {
     if (!input) {
       return new Set();
@@ -125,6 +98,7 @@
         if (value == null) {
           continue;
         }
+
         const normalized = String(value).trim();
         if (normalized) {
           next.add(normalized);
@@ -218,19 +192,19 @@
     };
   }
 
-  function createSection(title, entries, emptyText) {
-    const section = document.createElement("section");
+  function createSection(root, title, entries, emptyText) {
+    const section = root.createElement("section");
     section.className = SECTION_CLASS;
 
-    const header = document.createElement("h3");
+    const header = root.createElement("h3");
     header.className = SECTION_TITLE_CLASS;
     header.textContent = title;
 
-    const list = document.createElement("ul");
+    const list = root.createElement("ul");
     list.className = LIST_CLASS;
 
     if (!Array.isArray(entries) || entries.length === 0) {
-      const empty = document.createElement("li");
+      const empty = root.createElement("li");
       empty.className = `${THREAD_CLASS} ${EMPTY_CLASS}`;
       empty.textContent = emptyText;
       list.appendChild(empty);
@@ -248,7 +222,7 @@
           ? (firstAuthorTweet?.id || null)
           : (tweet.id || entry.id || null);
 
-        const item = document.createElement("li");
+        const item = root.createElement("li");
         item.className = THREAD_CLASS;
         item.setAttribute("data-tweet-id", targetTweetId || "");
 
@@ -259,28 +233,29 @@
             : (tweet.text || "")
         );
         const score = Number.isFinite(entry.score) ? entry.score : 0;
-        const title = document.createElement("div");
-        const strong = document.createElement("strong");
-        strong.textContent = `${i + 1}. ${author}`;
-        title.appendChild(strong);
 
-        const snippet = document.createElement("div");
+        const titleNode = root.createElement("div");
+        const strong = root.createElement("strong");
+        strong.textContent = `${i + 1}. ${author}`;
+        titleNode.appendChild(strong);
+
+        const snippet = root.createElement("div");
         snippet.className = "ariadex-snippet";
         snippet.textContent = text;
 
-        const scoreLine = document.createElement("div");
+        const scoreLine = root.createElement("div");
         scoreLine.className = "ariadex-score";
         scoreLine.textContent = isAuthorThread
           ? `ThinkerRank: ${score.toFixed(4)} · Author thread`
           : `ThinkerRank: ${score.toFixed(4)}`;
 
-        item.appendChild(title);
+        item.appendChild(titleNode);
         item.appendChild(snippet);
         item.appendChild(scoreLine);
 
         item.addEventListener("click", () => {
           if (targetTweetId) {
-            scrollToTweet(targetTweetId);
+            scrollToTweet(targetTweetId, { root });
           }
         });
 
@@ -293,8 +268,8 @@
     return section;
   }
 
-  function renderConversationPanel({ nodes, scoreById, followingSet, networkLimit = 5, topLimit = 10 } = {}) {
-    const panel = ensurePanelExists();
+  function renderConversationPanel({ nodes, scoreById, followingSet, networkLimit = 5, topLimit = 10, statusMessage = "", root = globalScope.document } = {}) {
+    const panel = ensurePanelExists(root);
     const body = panel.querySelector(`.${PANEL_BODY_CLASS}`);
     if (!body) {
       return {
@@ -313,21 +288,25 @@
     });
 
     body.innerHTML = "";
-
-    const fragment = document.createDocumentFragment();
+    const fragment = root.createDocumentFragment();
+    if (statusMessage) {
+      const statusNode = root.createElement("div");
+      statusNode.className = STATUS_CLASS;
+      statusNode.textContent = statusMessage;
+      fragment.appendChild(statusNode);
+    }
     fragment.appendChild(
-      createSection("⭐ From Your Network", sections.fromNetwork, "No ranked tweets from followed accounts.")
+      createSection(root, "⭐ From Your Network", sections.fromNetwork, "No ranked tweets from followed accounts.")
     );
     fragment.appendChild(
-      createSection("🔥 Top Thinkers", sections.topThinkers, "No ranked tweets available.")
+      createSection(root, "🔥 Top Thinkers", sections.topThinkers, "No ranked tweets available.")
     );
 
     body.appendChild(fragment);
     return sections;
   }
 
-  // Compatibility wrapper used by older callers/tests.
-  function renderTopThreads(rankedTweets) {
+  function renderTopThreads(rankedTweets, root = globalScope.document) {
     const entries = Array.isArray(rankedTweets) ? rankedTweets : [];
     const nodes = [];
     const scoreById = new Map();
@@ -342,9 +321,7 @@
 
       const normalizedTweet = tweet.id ? tweet : { ...tweet, id };
       nodes.push(normalizedTweet);
-
-      const score = Number.isFinite(entry.score) ? entry.score : 0;
-      scoreById.set(id, score);
+      scoreById.set(id, Number.isFinite(entry.score) ? entry.score : 0);
     }
 
     return renderConversationPanel({
@@ -352,7 +329,8 @@
       scoreById,
       followingSet: new Set(),
       networkLimit: 0,
-      topLimit: 5
+      topLimit: 5,
+      root
     });
   }
 
@@ -361,14 +339,12 @@
     ensurePanelExists,
     buildPanelSections,
     renderConversationPanel,
-    renderTopThreads,
-    scrollToTweet,
-    findTweetElementById
+    renderTopThreads
   };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {
-    window.AriadexUIPanel = api;
+    globalScope.AriadexUIPanelRenderer = api;
   }
 })();

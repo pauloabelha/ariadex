@@ -1,37 +1,29 @@
 # UI Rendering
 
-## Overview
-Ariadex renders ranked conversation threads directly in-page after `◇ Explore` is clicked.
+## Layer Boundary
+UI code does not build graphs or compute rank.
 
-## Panel Injection Strategy
-Ariadex uses deterministic floating placement:
+- Receives precomputed `nodes` and `scoreById`.
+- Produces panel DOM and click interactions only.
 
-1. attach panel directly to `document.body`
-2. use fixed positioning (`top/right`) and high z-index
-
-This guarantees visibility even when X sidebar selectors or layout change.
+## Modules
+- `ui/panel_renderer.js`
+- `ui/tweet_highlight.js`
 
 ## Rendering Flow
-1. Ensure panel exists (`ensurePanelExists`).
-2. Render top ranked items (`renderTopThreads`) with:
-   - rank position
-   - author
-   - text snippet
-   - score
-3. Keep panel container and update list contents on each Explore click.
+1. Build panel sections from ranked nodes.
+2. Render `From Your Network` and `Top Thinkers` sections.
+3. Attach click handlers to jump to tweet anchors.
 
-## Interaction Model
-Each row is clickable:
+## Performance
+For `N` nodes:
+- section sort: `O(N log N)`
+- section split: `O(N)`
+- card rendering: bounded by limits (default max 15 cards)
 
-- finds tweet by `status/{id}` link (`findTweetElementById`)
-- calls `scrollIntoView`
-- applies temporary highlight class for visual focus
+No `O(N²)` operations are used in sectioning/rendering.
 
-## Debug Logging
-On Explore click, Ariadex logs:
-
-- `[Ariadex] Ranking computed`
-- `[Ariadex] Rendering panel`
-- `[Ariadex] Panel attached`
-
-These logs help diagnose rendering and placement issues quickly.
+## Resilience
+- missing tweet anchors fail safely
+- empty sections show placeholder text
+- panel attachment is idempotent

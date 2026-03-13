@@ -1,9 +1,11 @@
 (() => {
   "use strict";
 
+  const globalScope = typeof globalThis !== "undefined" ? globalThis : {};
+
   const adjacencyApi = typeof module !== "undefined" && module.exports
     ? require("./conversation_adjacency.js")
-    : (window.AriadexConversationAdjacency || {});
+    : (globalScope.AriadexCoreConversationAdjacency || {});
 
   const createConversationAdjacency = typeof adjacencyApi.createConversationAdjacency === "function"
     ? adjacencyApi.createConversationAdjacency
@@ -290,6 +292,6 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {
-    window.AriadexConversationRank = api;
+    globalScope.AriadexCoreConversationRank = api;
   }
 })();

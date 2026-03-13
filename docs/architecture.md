@@ -1,118 +1,200 @@
-# Ariadex MVP Architecture
+# Ariadex Layered Architecture
 
-## Purpose
-Ariadex MVP injects an `◇ Explore` button into each tweet on `https://x.com/*`. This button is the first UI anchor for future conversation exploration and graph ranking.
+## Goal
+Ariadex now uses a layered design so the conversation logic is reusable outside Chrome.
 
-## Architecture Overview
-The MVP uses a single **Manifest V3 content script** architecture:
+- `core/` contains the platform-independent Ariadex Conversation Engine.
+- `data/` retrieves and normalizes tweet data.
+- `ui/` renders ranked output.
+- `extension/` wires X page events to the three layers.
 
-- `extension/manifest.json`
-- `extension/content.js`
-- `extension/reply_inference.js`
-- `extension/root_resolution.js`
-- `extension/thread_collapse.js`
-- `extension/conversation_rank.js`
-- `extension/ui_panel.js`
-- `extension/styles.css`
+This refactor is structural only. Behavior is preserved.
 
-No background service worker is required for this phase because all behavior is local DOM augmentation.
-
-## Runtime Flow
-1. Chrome loads `content.js` and `styles.css` on `https://x.com/*` at `document_idle`.
-2. `content.js` scans current DOM for tweet containers.
-3. For each tweet, it locates an action bar (`div[role="group"]`) using action-signal heuristics.
-4. If no Ariadex button exists, it appends `◇ Explore`.
-5. On `◇ Explore` click, Ariadex:
-   - resolves the canonical conversation root from the clicked tweet
-   - extracts tweet metadata
-   - collects visible conversation tweets from DOM around the resolved root
-   - infers `reply_to` relationships
-   - builds a typed conversation graph from `reply`, `quote`, and `repost` edges
-   - collapses root-author continuation tweets into one `author_thread` discourse node
-   - runs ConversationRank over the graph
-   - renders top ranked threads in the Ariadex UI panel
-   - logs `{ rootTweet, graph, ranking }` to console
-6. A `MutationObserver` watches subtree additions and rescans only newly added roots, throttled with `requestAnimationFrame`.
-
-## Conversation Root Resolution
-The clicked tweet is not always the true thread root. Ariadex canonicalizes root before extraction:
-
-- quote tweets: if clicked tweet contains embedded tweet, use embedded tweet as root
-- embedded replies: if clicked tweet is inside a parent tweet card, use nearest ancestor tweet
-- normal reply threads: use earliest local tweet container in scope
-
-Root resolution is implemented in `extension/root_resolution.js` via:
-- `resolveConversationRoot(tweetElement)`
-
-## Conversation Graph Layer
-The conversation graph layer sits between DOM collection and future ranking:
+## Repository Layout
 
 ```text
-Clicked Tweet
-↓
-Root Resolution
-↓
-DOM Tweets
-↓
-Tweet Extraction
-↓
-Reply Inference
-↓
-Typed Conversation Graph
-↓
-Thread Collapsing
-↓
-ConversationRank
-↓
-UI Panel Rendering
-↓
-Future: Hybrid ranking signals
+ariadex/
+  core/
+    conversation_graph.js
+    conversation_adjacency.js
+    conversation_rank.js
+    thread_collapse.js
+    reply_inference.js
+    root_resolution.js
+    conversation_engine.js
+  data/
+    dom_collector.js
+    x_api_client.js
+  ui/
+    panel_renderer.js
+    tweet_highlight.js
+  extension/
+    manifest.json
+    content.js
+    styles.css
+    ...compatibility wrappers used by extension runtime/tests
+  tests/
+  docs/
 ```
 
-## UI Panel Rendering
-The Ariadex panel uses deterministic floating placement:
+## Layer Responsibilities
 
-- always attached to `document.body`
-- fixed-position placement (`top/right`)
-- high z-index for guaranteed visibility
+### Core Engine (`core/`)
+Responsibilities:
+- graph construction
+- typed edge generation
+- adjacency index construction
+- thread collapsing
+- ThinkerRank propagation
 
-This avoids brittle dependence on X sidebar selectors and layout changes.
+Constraints:
+- no `window`, `document`, DOM APIs, or extension APIs
+- pure-data inputs/outputs
 
-## ConversationRank Layer
-ConversationRank runs after typed graph construction and computes influence scores via weighted PageRank-style propagation.
+Primary entry point:
+- `runConversationEngine({ tweets, rankOptions, collapseThreads })`
 
-Core helper module:
-- `extension/conversation_rank.js`
-- `rankConversationGraph(graph, options)`
+Input:
 
-Output includes ordered tweet scores (`topTweetIds`) and convergence metadata.
+```js
+[{ id, author_id, text, referenced_tweets?, metrics?, reply_to?, quote_of?, repost_of?, ... }]
+```
 
-Core helpers in `extension/content.js`:
-- `indexTweetsById(tweets)`
-- `attachReplies(tweets)`
-- `buildTypedEdges(tweets, index)`
-- `buildConversationGraph(tweets)`
+Output:
 
-Reply inference helper module:
-- `extension/reply_inference.js`
-- `inferReplyStructure(tweetElements, tweetData)`
+```js
+{
+  rootId,
+  root,
+  nodes,
+  edges,
+  ranking,
+  rankingMeta
+}
+```
 
-Thread collapsing helper module:
-- `extension/thread_collapse.js`
-- `collapseAuthorThread(graph)`
+### Data Layer (`data/`)
+Responsibilities:
+- collect tweets from source-specific systems
+- normalize to a unified tweet schema
+- resolve canonical root before retrieval
 
-The graph builder tolerates missing parents and incomplete datasets, deduplicates tweets, and stays fully client-side (no network/API dependency).
+Modules:
+- `data/dom_collector.js`: DOM discovery/extraction + schema normalization helpers
+- `data/x_api_client.js`: X API retrieval client
 
-## Why This Is MV3-Aligned
-- Uses declarative `content_scripts` in `manifest_version: 3`.
-- Avoids remote code execution and dynamic script loading.
-- Keeps permission scope limited to requested MVP permissions (`activeTab`, `scripting`) and URL match pattern.
-- Uses no eval or inline script injection.
+Canonical root rules:
+1. if clicked tweet quotes another tweet, the quoted tweet is root
+2. else follow reply chain (`replied_to`) to origin
+3. DOM ancestor hint can be supplied as `rootHintTweetId`
 
-## Forward Evolution
-A future architecture can add:
+### UI Layer (`ui/`)
+Responsibilities:
+- sectioning ranked tweets into panel views
+- rendering panel/cards
+- scroll + highlight behavior
 
-- `service_worker` for extension-wide state and caching.
-- `chrome.storage` for preferences and per-user ranking settings.
-- conversation graph extraction from visible tweet/reply links.
-- local ranking pass inspired by candidate + signal design from `the-algorithm` (without direct integration).
+Modules:
+- `ui/panel_renderer.js`
+- `ui/tweet_highlight.js`
+
+No graph or ranking algorithms are implemented in UI.
+
+### Extension Layer (`extension/`)
+Responsibilities:
+- inject `◇ Explore`
+- collect runtime config (token/following)
+- call data layer
+- call core engine
+- call UI renderer
+
+`extension/content.js` is intentionally thin orchestration.
+
+## Graph Model
+
+Conversation edges are built as typed links:
+- `reply`
+- `quote`
+- `repost` (retrieval/display compatibility)
+
+ThinkerRank propagation uses adjacency lists over weighted edge types:
+- reply weight: `1.0`
+- quote weight: `1.3`
+
+Adjacency index:
+
+```js
+{
+  nodes: Map<tweetId, Node>,
+  incomingEdges: Map<tweetId, Edge[]>,
+  outgoingEdges: Map<tweetId, Edge[]>,
+  outgoingWeightSums: Map<tweetId, number>,
+  edges: Edge[],
+  nodeOrder: tweetId[]
+}
+```
+
+Complexity:
+- graph/adacency build: `O(N + E)`
+- ThinkerRank iterations: `O(kE)` (implemented as `O(k(N + E))` loop)
+- panel sectioning: `O(N log N)`
+
+## Runtime Flows
+
+### Chrome Extension Flow
+
+```text
+Click tweet
+-> DOM root hint
+-> canonical root via X API
+-> retrieve connected tweets (replies, quotes, repost users)
+-> run core conversation engine
+-> render network/global panel sections
+```
+
+### Standalone/Server Flow
+
+```text
+Receive normalized tweets
+-> runConversationEngine()
+-> consume { nodes, edges, ranking, rankingMeta }
+```
+
+No DOM is required for the standalone/server flow.
+
+## Integration Contracts
+
+Data layer emits normalized tweets used by core:
+
+```js
+{
+  id,
+  author_id,
+  author,
+  text,
+  referenced_tweets,
+  metrics,
+  reply_to,
+  quote_of,
+  repost_of
+}
+```
+
+UI expects:
+
+```js
+{
+  nodes,
+  scoreById,
+  followingSet
+}
+```
+
+## Determinism Guarantees
+- ranking sorts with deterministic tie-breakers
+- panel sections are built from one canonical sorted list
+- duplicate tweets are removed across panel sections
+- adjacency index deduplicates duplicate edges by `(source,target,type)`
+
+## Compatibility Notes
+Some `extension/*` modules mirror `core/data/ui` behavior to keep manifest loading and legacy tests stable. New feature work should target `core/`, `data/`, and `ui/` first.

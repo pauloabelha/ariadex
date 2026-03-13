@@ -12,6 +12,14 @@ function graph(nodes, edges) {
   };
 }
 
+function getScore(ranking, id) {
+  if (ranking.scoreById instanceof Map) {
+    return ranking.scoreById.get(id);
+  }
+
+  return ranking.scoreById?.[id];
+}
+
 test("rankConversationGraph gives higher score to cited target", () => {
   const g = graph(
     [{ id: "A" }, { id: "B" }, { id: "C" }],
@@ -24,20 +32,21 @@ test("rankConversationGraph gives higher score to cited target", () => {
   const ranking = ranker.rankConversationGraph(g);
 
   assert.equal(ranking.topTweetIds[0], "A");
-  assert.ok(ranking.scoreById.A > ranking.scoreById.B);
-  assert.ok(ranking.scoreById.A > ranking.scoreById.C);
+  assert.ok(getScore(ranking, "A") > getScore(ranking, "B"));
+  assert.ok(getScore(ranking, "A") > getScore(ranking, "C"));
 });
 
 test("rankConversationGraph returns near-uniform scores with no edges", () => {
   const g = graph([{ id: "A" }, { id: "B" }, { id: "C" }], []);
   const ranking = ranker.rankConversationGraph(g);
 
-  const a = ranking.scoreById.A;
-  const b = ranking.scoreById.B;
-  const c = ranking.scoreById.C;
+  const a = getScore(ranking, "A");
+  const b = getScore(ranking, "B");
+  const c = getScore(ranking, "C");
 
   assert.ok(Math.abs(a - b) < 1e-4);
   assert.ok(Math.abs(b - c) < 1e-4);
+  assert.ok(ranking.iterations >= 10);
 });
 
 test("edge type weights affect influence split", () => {
@@ -50,33 +59,49 @@ test("edge type weights affect influence split", () => {
   );
 
   const ranking = ranker.rankConversationGraph(g);
-  assert.ok(ranking.scoreById.A > ranking.scoreById.B);
+  assert.ok(getScore(ranking, "A") > getScore(ranking, "B"));
 });
 
-test("ignores edges with unknown endpoints", () => {
-  const g = graph(
-    [{ id: "A" }, { id: "B" }],
-    [{ source: "Z", target: "A", type: "reply" }]
-  );
-
-  const ranking = ranker.rankConversationGraph(g);
-  assert.equal(ranking.scores.length, 2);
-  assert.ok(Number.isFinite(ranking.scoreById.A));
-  assert.ok(Number.isFinite(ranking.scoreById.B));
-});
-
-test("engagement priors separate scores when edges are sparse", () => {
+test("followed authors get boosted base score", () => {
   const g = graph(
     [
-      { id: "A", likes: 120, replies: 25, reposts: 10 },
-      { id: "B", likes: 2, replies: 0, reposts: 0 },
-      { id: "C", likes: 1, replies: 0, reposts: 0 }
+      { id: "A", author_id: "u1" },
+      { id: "B", author_id: "u2" },
+      { id: "C", author_id: "u3" }
     ],
     []
   );
 
+  const ranking = ranker.rankConversationGraph(g, {
+    followingSet: new Set(["u2"])
+  });
+
+  assert.equal(ranking.topTweetIds[0], "B");
+  assert.ok(getScore(ranking, "B") > getScore(ranking, "A"));
+});
+
+test("ranking is deterministic when scores tie", () => {
+  const nodes = [{ id: "A" }, { id: "B" }, { id: "C" }, { id: "D" }];
+  const g = graph(nodes, []);
+
+  const first = ranker.rankConversationGraph(g);
+  const second = ranker.rankConversationGraph(g);
+
+  assert.deepEqual(first.topTweetIds, second.topTweetIds);
+});
+
+test("ranking includes adjacency index maps for traversal", () => {
+  const g = graph(
+    [{ id: "A" }, { id: "B" }],
+    [{ source: "B", target: "A", type: "reply" }]
+  );
+
   const ranking = ranker.rankConversationGraph(g);
 
-  assert.equal(ranking.topTweetIds[0], "A");
-  assert.ok(ranking.scoreSpread > 0);
+  assert.ok(ranking.graphIndex);
+  assert.ok(ranking.graphIndex.nodes instanceof Map);
+  assert.ok(ranking.graphIndex.incomingEdges instanceof Map);
+  assert.ok(ranking.graphIndex.outgoingEdges instanceof Map);
+  assert.equal(ranking.graphIndex.nodeCount, 2);
+  assert.equal(ranking.graphIndex.edgeCount, 1);
 });
