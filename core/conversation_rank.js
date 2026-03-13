@@ -95,6 +95,28 @@
     return new Set();
   }
 
+  function normalizeHandle(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) {
+      return "";
+    }
+    return raw.startsWith("@") ? raw : `@${raw}`;
+  }
+
+  function isFollowedAuthor(followingSet, rawNode) {
+    const authorId = rawNode?.author_id != null ? String(rawNode.author_id).trim() : "";
+    if (authorId && (followingSet.has(authorId) || followingSet.has(authorId.toLowerCase()))) {
+      return true;
+    }
+
+    const handle = normalizeHandle(rawNode?.author);
+    if (!handle) {
+      return false;
+    }
+
+    return followingSet.has(handle) || followingSet.has(handle.slice(1));
+  }
+
   function buildBaseScores(index, followingSet, config) {
     const n = index.nodeOrder.length;
     const baseScores = new Float64Array(n);
@@ -104,8 +126,7 @@
       const id = index.nodeOrder[i];
       const node = index.nodes.get(id);
       const rawNode = node?.raw || {};
-      const authorId = rawNode.author_id != null ? String(rawNode.author_id) : "";
-      const base = authorId && followingSet.has(authorId)
+      const base = isFollowedAuthor(followingSet, rawNode)
         ? config.followedAuthorWeight
         : config.defaultAuthorWeight;
 

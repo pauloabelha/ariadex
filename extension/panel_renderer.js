@@ -21,6 +21,9 @@
   const THREAD_CLASS = "ariadex-thread";
   const EMPTY_CLASS = "ariadex-empty";
   const STATUS_CLASS = "ariadex-status";
+  const MODE_TOGGLE_CLASS = "ariadex-mode-toggle";
+  const MODE_BUTTON_CLASS = "ariadex-mode-button";
+  const MODE_BUTTON_ACTIVE_CLASS = "is-active";
 
   function applyFloatingPanelStyles(panel) {
     panel.style.position = "fixed";
@@ -72,6 +75,47 @@
       root.body.appendChild(panel);
     }
     return panel;
+  }
+
+  function normalizeExploreMode(mode) {
+    return String(mode || "").toLowerCase() === "deep" ? "deep" : "fast";
+  }
+
+  function ensureModeToggle(panel, root, { exploreMode = "fast", onExploreModeChange } = {}) {
+    if (!panel || !root) {
+      return;
+    }
+
+    const mode = normalizeExploreMode(exploreMode);
+    let toggle = panel.querySelector(`.${MODE_TOGGLE_CLASS}`);
+    if (!toggle) {
+      toggle = root.createElement("div");
+      toggle.className = MODE_TOGGLE_CLASS;
+      panel.insertBefore(toggle, panel.querySelector(`.${PANEL_BODY_CLASS}`));
+    }
+
+    const entries = [
+      { mode: "fast", label: "Fast" },
+      { mode: "deep", label: "Deep" }
+    ];
+
+    toggle.innerHTML = "";
+    for (const entry of entries) {
+      const button = root.createElement("button");
+      button.type = "button";
+      button.className = `${MODE_BUTTON_CLASS}${entry.mode === mode ? ` ${MODE_BUTTON_ACTIVE_CLASS}` : ""}`;
+      button.textContent = entry.label;
+      button.setAttribute("aria-pressed", entry.mode === mode ? "true" : "false");
+      button.addEventListener("click", () => {
+        if (entry.mode === mode) {
+          return;
+        }
+        if (typeof onExploreModeChange === "function") {
+          onExploreModeChange(entry.mode);
+        }
+      });
+      toggle.appendChild(button);
+    }
   }
 
   function truncateText(text, maxLen = 160) {
@@ -272,6 +316,9 @@
         const targetTweetId = isAuthorThread
           ? (firstAuthorTweet?.id || null)
           : (tweet.id || entry.id || null);
+        const targetTweetUrl = isAuthorThread
+          ? (firstAuthorTweet?.url || null)
+          : (tweet.url || null);
 
         const item = root.createElement("li");
         item.className = THREAD_CLASS;
@@ -305,8 +352,15 @@
         item.appendChild(scoreLine);
 
         item.addEventListener("click", () => {
-          if (targetTweetId) {
-            scrollToTweet(targetTweetId, { root });
+          const scrolled = targetTweetId
+            ? scrollToTweet(targetTweetId, { root })
+            : false;
+
+          if (!scrolled && targetTweetUrl) {
+            const view = root?.defaultView || globalScope;
+            if (view?.location && typeof view.location.assign === "function") {
+              view.location.assign(targetTweetUrl);
+            }
           }
         });
 
@@ -319,8 +373,9 @@
     return section;
   }
 
-  function renderConversationPanel({ nodes, scoreById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, statusMessage = "", root = globalScope.document } = {}) {
+  function renderConversationPanel({ nodes, scoreById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, statusMessage = "", exploreMode = "fast", onExploreModeChange = null, root = globalScope.document } = {}) {
     const panel = ensurePanelExists(root);
+    ensureModeToggle(panel, root, { exploreMode, onExploreModeChange });
     const body = panel.querySelector(`.${PANEL_BODY_CLASS}`);
     if (!body) {
       return {

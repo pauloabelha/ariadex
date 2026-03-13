@@ -48,3 +48,30 @@ test("panel renderer renders into document body", () => {
   assert.match(panel.textContent, /From Your Network/);
   assert.match(panel.textContent, /Top Thinkers/);
 });
+
+test("panel renderer excludes canonical root and clicked tweet ids when requested", () => {
+  const nodes = [
+    { id: "ROOT", author_id: "u_root", author: "@root", text: "root tweet" },
+    { id: "CLICKED", author_id: "u_clicked", author: "@clicked", text: "clicked quote" },
+    { id: "A", author_id: "u1", author: "@u1", text: "A" },
+    { id: "B", author_id: "u2", author: "@u2", text: "B" }
+  ];
+
+  const scoreById = new Map([
+    ["ROOT", 0.99],
+    ["CLICKED", 0.95],
+    ["A", 0.9],
+    ["B", 0.8]
+  ]);
+
+  const sections = panelRenderer.buildPanelSections({
+    nodes,
+    scoreById,
+    followingSet: new Set(),
+    excludedTweetIds: new Set(["ROOT", "CLICKED"]),
+    networkLimit: 5,
+    topLimit: 10
+  });
+
+  assert.deepEqual(sections.topThinkers.map((entry) => entry.id), ["A", "B"]);
+});

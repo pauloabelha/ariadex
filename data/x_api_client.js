@@ -12,6 +12,7 @@
     maxConcurrentRootExpansions: 4,
     maxConcurrentRequests: 6,
     maxConnectedTweets: 1500,
+    includeQuoteTweets: false,
     includeRetweets: false,
     includeQuoteReplies: false,
     requestTimeoutMs: 30000
@@ -36,6 +37,7 @@
   const DEFAULT_EXPANSIONS = [
     "author_id"
   ];
+  const GLOBAL_RATE_LIMIT_UNTIL_MS_BY_BUCKET = new Map();
 
   function ensureArray(value) {
     if (Array.isArray(value)) {
@@ -132,6 +134,53 @@
     return url;
   }
 
+  function endpointRateLimitBucket(path) {
+    const normalized = String(path || "");
+    if (normalized.includes("/quote_tweets")) {
+      return "quote_tweets";
+    }
+    if (normalized.includes("/retweeted_by")) {
+      return "retweeted_by";
+    }
+    if (normalized.includes("/tweets/search/recent")) {
+      return "search_recent";
+    }
+    return null;
+  }
+
+  function parseHeaderNumber(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function setGlobalRateLimitCooldown(bucket, response) {
+    if (!bucket || !response || !response.headers) {
+      return;
+    }
+
+    const retryAfterSeconds = parseHeaderNumber(response.headers.get("retry-after"));
+    const resetEpochSeconds = parseHeaderNumber(response.headers.get("x-rate-limit-reset"));
+
+    let untilMs = null;
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      untilMs = Date.now() + (retryAfterSeconds * 1000);
+    } else if (Number.isFinite(resetEpochSeconds) && resetEpochSeconds > 0) {
+      untilMs = resetEpochSeconds * 1000;
+    } else {
+      untilMs = Date.now() + 60_000;
+    }
+
+    GLOBAL_RATE_LIMIT_UNTIL_MS_BY_BUCKET.set(bucket, untilMs);
+  }
+
+  function buildRateLimitedError(path, bucket, untilMs) {
+    const error = new Error(`X API request skipped due to active ${bucket} cooldown for ${path}`);
+    error.status = 429;
+    error.rateLimited = true;
+    error.cooldownUntilMs = untilMs;
+    return error;
+  }
+
   function createTimeoutSignal(timeoutMs) {
     if (typeof AbortController === "undefined") {
       return { signal: undefined, cancel: () => {} };
@@ -189,6 +238,14 @@
     const normalizedOptions = normalizeOptions(options);
 
     async function request(path, params = {}) {
+      const rateLimitBucket = endpointRateLimitBucket(path);
+      if (rateLimitBucket) {
+        const cooldownUntilMs = GLOBAL_RATE_LIMIT_UNTIL_MS_BY_BUCKET.get(rateLimitBucket) || 0;
+        if (cooldownUntilMs > Date.now()) {
+          throw buildRateLimitedError(path, rateLimitBucket, cooldownUntilMs);
+        }
+      }
+
       const url = buildApiUrl(normalizedOptions.apiBaseUrl, path, params);
       const timeout = createTimeoutSignal(normalizedOptions.requestTimeoutMs);
 
@@ -202,6 +259,10 @@
         });
 
         if (!response.ok) {
+          if (response.status === 429 && rateLimitBucket) {
+            setGlobalRateLimitCooldown(rateLimitBucket, response);
+          }
+
           const body = await response.text();
           const snippet = body ? body.slice(0, 500) : "";
           const error = new Error(`X API request failed (${response.status} ${response.statusText}) for ${url.pathname}: ${snippet}`);
@@ -524,7 +585,7 @@
       }
 
       let quoteTweets = { tweets: [], users: [] };
-      if (!quoteRateLimited) {
+      if (client.options.includeQuoteTweets && !quoteRateLimited) {
         try {
           quoteTweets = await fetchPaginated(client, `/tweets/${rootId}/quote_tweets`, {
             ...baseTweetParams(client.options.maxResultsPerPage)

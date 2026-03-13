@@ -37,6 +37,7 @@
   const BUTTON_CLASS = "ariadex-explore-button";
   const BUTTON_ATTR = "data-ariadex-explore-button";
   const INJECTED_ATTR = "data-ariadex-injected";
+  const EXPLORE_MODE_STORAGE_KEY = "ariadex.explore_mode";
 
   const extractTweetData = typeof domCollectorApi.extractTweetData === "function"
     ? domCollectorApi.extractTweetData
@@ -107,6 +108,29 @@
     } catch {
       return null;
     }
+  }
+
+  function normalizeExploreMode(value) {
+    return String(value || "").toLowerCase() === "deep" ? "deep" : "fast";
+  }
+
+  function readExploreMode() {
+    const fromSettings = typeof globalScope.window !== "undefined"
+      ? globalScope.window.AriadexExploreMode
+      : null;
+    const fromStorage = readLocalStorageValue(EXPLORE_MODE_STORAGE_KEY);
+    return normalizeExploreMode(fromSettings || fromStorage || "fast");
+  }
+
+  function writeExploreMode(mode) {
+    const normalized = normalizeExploreMode(mode);
+    if (typeof globalScope.window !== "undefined") {
+      globalScope.window.AriadexExploreMode = normalized;
+      try {
+        globalScope.window.localStorage.setItem(EXPLORE_MODE_STORAGE_KEY, normalized);
+      } catch {}
+    }
+    return normalized;
   }
 
   function parseFollowingSet(rawValue) {
@@ -281,6 +305,7 @@
       }
 
       if (renderConversationPanel) {
+        const exploreMode = readExploreMode();
         const seedTweet = clickedTweetData?.id
           ? clickedTweetData
           : (rootTweetData?.id ? rootTweetData : null);
@@ -290,14 +315,32 @@
           nodes: seedNodes,
           scoreById: seedScoreById,
           followingSet: new Set(),
+          excludedTweetIds: new Set(),
           networkLimit: 0,
           topLimit: 3,
           statusMessage: "Exploring conversation…",
+          exploreMode,
+          onExploreModeChange: (nextMode) => {
+            const savedMode = writeExploreMode(nextMode);
+            renderConversationPanel({
+              nodes: seedNodes,
+              scoreById: seedScoreById,
+              followingSet: new Set(),
+              excludedTweetIds: new Set(),
+              networkLimit: 0,
+              topLimit: 3,
+              statusMessage: `Mode set to ${savedMode === "deep" ? "Deep" : "Fast"}. Click ◇ Explore again to refresh.`,
+              exploreMode: savedMode,
+              onExploreModeChange: null,
+              root: globalScope.document
+            });
+          },
           root: globalScope.document
         });
       }
 
       let runtimeConfig = readXApiRuntimeConfig();
+      const exploreMode = readExploreMode();
       if (!runtimeConfig.bearerToken) {
         runtimeConfig = await hydrateRuntimeConfigFromGeneratedConfig(runtimeConfig);
       }
@@ -308,9 +351,11 @@
             nodes: [],
             scoreById: new Map(),
             followingSet: runtimeConfig.followingSet,
+            excludedTweetIds: new Set(),
             networkLimit: 5,
             topLimit: 10,
             statusMessage: "Missing X API token. Configure token to fetch conversation data.",
+            exploreMode,
             root: globalScope.document
           });
         }
@@ -326,6 +371,9 @@
           rootHintTweetId: rootTweetData.id || null,
           bearerToken: runtimeConfig.bearerToken,
           apiBaseUrl: runtimeConfig.apiBaseUrl || undefined,
+          includeQuoteTweets: exploreMode === "deep",
+          includeQuoteReplies: exploreMode === "deep",
+          includeRetweets: false,
           rankOptions: {
             followingSet: runtimeConfig.followingSet
           },
@@ -341,13 +389,18 @@
               const tweets = Array.isArray(progress?.dataset?.tweets) ? progress.dataset.tweets : [];
               const limitedTweets = tweets.slice(0, 25);
               const provisionalScores = new Map(limitedTweets.map((tweet, index) => [tweet.id, limitedTweets.length - index]));
+              const excludedTweetIds = new Set([
+                progress?.dataset?.canonicalRootId
+              ].filter(Boolean));
               renderConversationPanel({
                 nodes: limitedTweets,
                 scoreById: provisionalScores,
                 followingSet: runtimeConfig.followingSet,
+                excludedTweetIds,
                 networkLimit: 5,
                 topLimit: 10,
                 statusMessage: `Fetched ${tweets.length} tweets. Running ThinkerRank…`,
+                exploreMode,
                 root: globalScope.document
               });
             }
@@ -360,29 +413,56 @@
         const scoreById = snapshot?.rankingMeta?.scoreById || new Map();
 
         const panelSections = renderConversationPanel
-          ? renderConversationPanel({
-            nodes: snapshot.nodes || [],
-            scoreById,
-            followingSet: runtimeConfig.followingSet,
-            networkLimit: 5,
-            topLimit: 10,
-            statusMessage: `Done. Ranked ${Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0} nodes.`,
-            root: globalScope.document
-          })
+          ? (() => {
+            const excludedTweetIds = new Set([
+              snapshot?.canonicalRootId
+            ].filter(Boolean));
+            return renderConversationPanel({
+              nodes: snapshot.nodes || [],
+              scoreById,
+              followingSet: runtimeConfig.followingSet,
+              excludedTweetIds,
+              networkLimit: 5,
+              topLimit: 10,
+              statusMessage: `Done. Ranked ${Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0} nodes.`,
+              exploreMode,
+              onExploreModeChange: (nextMode) => {
+                const savedMode = writeExploreMode(nextMode);
+                renderConversationPanel({
+                  nodes: snapshot.nodes || [],
+                  scoreById,
+                  followingSet: runtimeConfig.followingSet,
+                  excludedTweetIds,
+                  networkLimit: 5,
+                  topLimit: 10,
+                  statusMessage: `Mode set to ${savedMode === "deep" ? "Deep" : "Fast"}. Click ◇ Explore again to refresh.`,
+                  exploreMode: savedMode,
+                  onExploreModeChange: null,
+                  root: globalScope.document
+                });
+              },
+              root: globalScope.document
+            });
+          })()
           : renderTopThreads((ranking.scores || []).slice(0, 5), globalScope.document);
 
-        console.log({
-          rootTweet: snapshot.root || rootTweetData,
-          graph: {
-            rootId: snapshot.rootId,
-            nodes: snapshot.nodes || [],
-            edges: snapshot.edges || []
-          },
-          ranking,
-          panelSections,
-          canonicalRootId: snapshot.canonicalRootId,
-          warnings: snapshot.warnings || []
-        });
+        const debugEnabled = typeof globalScope.window !== "undefined"
+          && Boolean(globalScope.window.AriadexDebug);
+        const isTestRuntime = typeof module !== "undefined" && module.exports;
+        if (debugEnabled || isTestRuntime) {
+          console.log({
+            rootTweet: snapshot.root || rootTweetData,
+            graph: {
+              rootId: snapshot.rootId,
+              nodes: snapshot.nodes || [],
+              edges: snapshot.edges || []
+            },
+            ranking,
+            panelSections,
+            canonicalRootId: snapshot.canonicalRootId,
+            warnings: snapshot.warnings || []
+          });
+        }
       } catch (error) {
         console.error("[Ariadex] Failed to build conversation via layered engine", error);
         if (renderConversationPanel) {
@@ -390,9 +470,11 @@
             nodes: [],
             scoreById: new Map(),
             followingSet: runtimeConfig.followingSet,
+            excludedTweetIds: new Set(),
             networkLimit: 5,
             topLimit: 10,
             statusMessage: "Request failed or rate-limited. Showing no data.",
+            exploreMode,
             root: globalScope.document
           });
         }

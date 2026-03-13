@@ -80,6 +80,24 @@ test("followed authors get boosted base score", () => {
   assert.ok(getScore(ranking, "B") > getScore(ranking, "A"));
 });
 
+test("followed authors can be matched by handle in followingSet", () => {
+  const g = graph(
+    [
+      { id: "A", author_id: "u1", author: "@alice" },
+      { id: "B", author_id: "u2", author: "@bob" },
+      { id: "C", author_id: "u3", author: "@carol" }
+    ],
+    []
+  );
+
+  const ranking = ranker.rankConversationGraph(g, {
+    followingSet: new Set(["@bob"])
+  });
+
+  assert.equal(ranking.topTweetIds[0], "B");
+  assert.ok(getScore(ranking, "B") > getScore(ranking, "A"));
+});
+
 test("ranking is deterministic when scores tie", () => {
   const nodes = [{ id: "A" }, { id: "B" }, { id: "C" }, { id: "D" }];
   const g = graph(nodes, []);
