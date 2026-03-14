@@ -76,3 +76,25 @@ test("collectFollowedAuthorHints extracts followed author handles from visible t
   assert.equal(hints.has("ylecun"), true);
   assert.equal(hints.has("@someone_else"), false);
 });
+
+test("collectViewerHandleHints extracts logged-in handle from header account switcher", () => {
+  const dom = new JSDOM("<main id='scope'></main>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  const scope = document.getElementById("scope");
+  scope.innerHTML = `
+    <header>
+      <div>
+        <button>
+          <div><div><div><span>@pauloabelha</span></div></div></div>
+        </button>
+      </div>
+    </header>
+  `;
+
+  const hints = domCollector.collectViewerHandleHints(scope);
+  assert.equal(hints.has("@pauloabelha"), true);
+  assert.equal(hints.has("pauloabelha"), true);
+});

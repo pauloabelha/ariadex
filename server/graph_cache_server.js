@@ -561,7 +561,7 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
 
   const inflightByKey = new Map();
 
-  async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, incremental = true, followingIds = [], requestId = null, onProgress = null } = {}) {
+  async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, incremental = true, followingIds = [], viewerHandles = [], requestId = null, onProgress = null } = {}) {
     const startedAtMs = nowMs();
     const normalizedMode = normalizeMode(mode);
     const followingSet = normalizeFollowingSet(followingIds);
@@ -584,7 +584,8 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       rootHintTweetId: rootHintTweetId || null,
       mode: normalizedMode,
       force: Boolean(force),
-      followingCount: followingSet.size
+      followingCount: followingSet.size,
+      viewerHandleCount: Array.isArray(viewerHandles) ? viewerHandles.length : 0
     });
     if (followingSet.size === 0) {
       logger.warn("snapshot_following_set_empty", {
@@ -1098,6 +1099,7 @@ function createServer(service, { logger = createLogger({ level: "silent" }) } = 
             force: Boolean(body.force),
             incremental: body.incremental !== false,
             followingIds: body.followingIds || [],
+            viewerHandles: body.viewerHandles || [],
             requestId
           });
           jsonResponse(res, 200, snapshot);
@@ -1172,6 +1174,7 @@ function createServer(service, { logger = createLogger({ level: "silent" }) } = 
               force: Boolean(body.force),
               incremental: body.incremental !== false,
               followingIds: body.followingIds || [],
+              viewerHandles: body.viewerHandles || [],
               requestId: jobId,
               onProgress: (progress) => {
                 const current = jobs.get(jobId);

@@ -62,6 +62,9 @@
   const collectFollowedAuthorHints = typeof domCollectorApi.collectFollowedAuthorHints === "function"
     ? domCollectorApi.collectFollowedAuthorHints
     : () => new Set();
+  const collectViewerHandleHints = typeof domCollectorApi.collectViewerHandleHints === "function"
+    ? domCollectorApi.collectViewerHandleHints
+    : () => new Set();
 
   const resolveConversationRoot = typeof rootResolutionApi.resolveConversationRoot === "function"
     ? rootResolutionApi.resolveConversationRoot
@@ -487,7 +490,8 @@
       mode: options.mode || "fast",
       force: Boolean(options.forceRefresh),
       incremental: options.incremental !== false,
-      followingIds
+      followingIds,
+      viewerHandles: Array.isArray(options.viewerHandles) ? options.viewerHandles : []
     };
     const payloadBody = JSON.stringify(requestPayload);
     const snapshotUrl = `${baseUrl}/v1/conversation-snapshot`;
@@ -764,6 +768,7 @@
 
       let runtimeConfig = readXApiRuntimeConfig();
       const domFollowingHints = collectFollowedAuthorHints(globalScope.document);
+      const viewerHandleHints = collectViewerHandleHints(globalScope.document);
       runtimeConfig = {
         ...runtimeConfig,
         followingSet: mergeFollowingSets(runtimeConfig.followingSet, domFollowingHints)
@@ -812,6 +817,7 @@
           includeQuoteTweets: exploreMode === "deep",
           includeQuoteReplies: exploreMode === "deep",
           includeRetweets: false,
+          viewerHandles: [...viewerHandleHints],
           rankOptions: {
             followingSet: runtimeConfig.followingSet
           },
@@ -983,7 +989,9 @@
             ranking,
             panelSections,
             canonicalRootId: snapshot.canonicalRootId,
-            warnings: snapshot.warnings || []
+            warnings: snapshot.warnings || [],
+            viewerHandleHints: [...viewerHandleHints],
+            followingCount: runtimeConfig.followingSet.size
           });
         }
       } catch (error) {

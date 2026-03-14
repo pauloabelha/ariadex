@@ -38,6 +38,10 @@
   ];
   const ACTION_HINTS = ["reply", "repost", "retweet", "like", "bookmark", "share", "view"];
   const FOLLOWING_TEXT_PATTERN = /\bfollowing\b/i;
+  const VIEWER_HANDLE_PATTERNS = [
+    /^@?[a-zA-Z0-9_]{1,15}$/,
+    /^@?[a-zA-Z0-9_]{1,15}\s*·/
+  ];
 
   function isElement(node) {
     return typeof Element !== "undefined" && node instanceof Element;
@@ -412,6 +416,54 @@
     return followed;
   }
 
+  function parseHandleToken(rawText) {
+    const text = safeText(rawText || "");
+    if (!text) {
+      return null;
+    }
+
+    const direct = text.split(/\s+/)[0];
+    if (VIEWER_HANDLE_PATTERNS.some((pattern) => pattern.test(direct))) {
+      const normalized = direct.startsWith("@") ? direct : `@${direct}`;
+      return normalized.toLowerCase();
+    }
+
+    const inlineMatch = text.match(/@([a-zA-Z0-9_]{1,15})\b/);
+    if (inlineMatch && inlineMatch[1]) {
+      return `@${inlineMatch[1].toLowerCase()}`;
+    }
+
+    return null;
+  }
+
+  function collectViewerHandleHints(root = globalScope.document) {
+    const hints = new Set();
+    if (!root || typeof root.querySelectorAll !== "function") {
+      return hints;
+    }
+
+    const selectors = [
+      // Account switcher / profile button in X header.
+      "header button span",
+      "[data-testid='SideNav_AccountSwitcher_Button'] span",
+      "a[href^='/'][role='link'] span"
+    ];
+
+    for (const selector of selectors) {
+      const nodes = root.querySelectorAll(selector);
+      for (const node of nodes) {
+        const handle = parseHandleToken(node.textContent || "");
+        if (!handle) {
+          continue;
+        }
+        hints.add(handle);
+        hints.add(handle.slice(1));
+      }
+    }
+
+    return hints;
+  }
+
   function toUnifiedTweetSchema(tweet) {
     if (!tweet || !tweet.id) {
       return null;
@@ -622,6 +674,7 @@
     locateActionBar,
     findClosestTweetContainer,
     collectFollowedAuthorHints,
+    collectViewerHandleHints,
     resolveDomConversationRoot,
     buildInferenceMetadataFromElements,
     parseTweetIdFromUrl,
