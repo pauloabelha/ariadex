@@ -15,6 +15,7 @@ Both modules normalize output so `core/` receives a consistent tweet schema.
   id,
   author_id,
   author,
+  author_profile,
   text,
   referenced_tweets,
   metrics,
@@ -27,6 +28,12 @@ Both modules normalize output so `core/` receives a consistent tweet schema.
   quote_count
 }
 ```
+
+`author_profile` includes API user metadata used by ranking/UI:
+- `username`, `name`, `description`
+- `verified`, `verified_type`
+- `public_metrics` (including `followers_count`)
+- `profile_image_url` (used for panel avatars)
 
 ## Canonical Root Resolution
 Canonicalization happens before graph retrieval:

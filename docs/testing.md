@@ -28,12 +28,15 @@ These tests run pure engine/data logic:
 - `tests/conversation_collection_test.js`
 - `tests/data_dom_collector_test.js`
 - `tests/tweet_extraction_test.js`
+- `tests/openai_contribution_filter_test.js`
+- `tests/graph_cache_server_test.js`
 
 ## UI / Extension DOM
 - `tests/ui_panel_render_test.js`
 - `tests/ui_panel_renderer_layer_test.js`
 - `tests/dom_injection_test.js`
 - `tests/selector_test.js`
+- `tests/content_graph_api_bridge_test.js`
 
 ## Required Scenario Coverage
 - graph construction correctness: `conversation_graph_test.js`, `typed_conversation_graph_test.js`
@@ -54,3 +57,12 @@ These tests run pure engine/data logic:
 3. Open `https://x.com`
 4. Click `◇ Explore` on a tweet
 5. Verify panel renders and clicking cards scrolls/highlights tweets
+
+## Observability Smoke Test
+1. Run `ARIADEX_LOG_COLOR=true ARIADEX_LOG_LEVEL=debug npm run dev:cache`
+2. Trigger `◇ Explore`
+3. Confirm logs include:
+- `x_api_request_started` / `x_api_request_completed`
+- `snapshot_phase`
+- `snapshot_contribution_filter_applied` (when OpenAI enabled)
+- `snapshot_completed` with ranking diagnostics

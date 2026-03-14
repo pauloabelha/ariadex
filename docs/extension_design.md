@@ -10,9 +10,12 @@
 1. inject `◇ Explore` into tweet action bars
 2. detect clicked tweet + DOM root hint
 3. read runtime API config/token/following set
-4. call data layer (`buildConversationDataset`)
-5. call core engine (`runConversationEngine`)
+4. request conversation snapshot from Graph API via extension background bridge
+5. hydrate ranking scores from JSON-safe metadata (`scoreByIdObject` fallback)
 6. call UI renderer (`renderConversationPanel`)
+
+Current mode policy:
+- exploration mode is fixed to `deep` (no Fast/Deep toggle in panel UI)
 
 ## Dependency Flow
 

@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const xApiClient = require("../data/x_api_client.js");
 const conversationEngine = require("../core/conversation_engine.js");
+const { createOpenAiContributionClassifier } = require("./openai_contribution_filter.js");
 
 const PIPELINE_VERSION = process.env.ARIADEX_PIPELINE_VERSION || "v1";
 const LOG_LEVELS = {
@@ -31,9 +32,29 @@ function normalizeLogLevel(level) {
     : "info";
 }
 
+const ANSI_RESET = "\u001b[0m";
+const ANSI_BY_LEVEL = {
+  debug: "\u001b[90m",
+  info: "\u001b[36m",
+  warn: "\u001b[33m",
+  error: "\u001b[31m"
+};
+
+function shouldColorizeLogs() {
+  const explicit = String(process.env.ARIADEX_LOG_COLOR || "").trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(explicit)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(explicit)) {
+    return false;
+  }
+  return Boolean(process.stdout && process.stdout.isTTY);
+}
+
 function createLogger({ level = "info", sink = null } = {}) {
   const minLevelName = normalizeLogLevel(level);
   const minLevel = LOG_LEVELS[minLevelName];
+  const colorize = shouldColorizeLogs();
 
   function emit(levelName, event, meta = {}) {
     const resolvedLevelName = normalizeLogLevel(levelName);
@@ -55,12 +76,14 @@ function createLogger({ level = "info", sink = null } = {}) {
     }
 
     const serialized = JSON.stringify(record);
+    const colorPrefix = colorize ? (ANSI_BY_LEVEL[resolvedLevelName] || "") : "";
+    const outputLine = colorPrefix ? `${colorPrefix}${serialized}${ANSI_RESET}` : serialized;
     if (resolvedLevelName === "error") {
-      console.error(serialized);
+      console.error(outputLine);
     } else if (resolvedLevelName === "warn") {
-      console.warn(serialized);
+      console.warn(outputLine);
     } else {
-      console.log(serialized);
+      console.log(outputLine);
     }
   }
 
@@ -86,6 +109,89 @@ function createRequestId() {
     return crypto.randomUUID();
   }
   return crypto.randomBytes(16).toString("hex");
+}
+
+function summarizeWarnings(warnings, limit = 5) {
+  if (!Array.isArray(warnings) || warnings.length === 0) {
+    return [];
+  }
+  const out = [];
+  for (let i = 0; i < warnings.length && out.length < limit; i += 1) {
+    const value = warnings[i];
+    if (value == null) {
+      continue;
+    }
+    const text = String(value).trim();
+    if (text) {
+      out.push(text.slice(0, 600));
+    }
+  }
+  return out;
+}
+
+function summarizeRanking(ranking) {
+  const scores = Array.isArray(ranking) ? ranking : [];
+  const finiteScores = scores.filter((entry) => Number.isFinite(Number(entry?.score)));
+  const nonZeroCount = finiteScores.filter((entry) => Math.abs(Number(entry.score)) > 0).length;
+  const top = finiteScores.slice(0, 5).map((entry) => ({
+    id: entry.id || null,
+    score: Number(entry.score)
+  }));
+  return {
+    rankingCount: scores.length,
+    finiteScoreCount: finiteScores.length,
+    nonZeroScoreCount: nonZeroCount,
+    top
+  };
+}
+
+function createObservedFetch({ requestId, logger, fetchImpl }) {
+  const baseFetch = typeof fetchImpl === "function"
+    ? fetchImpl
+    : (typeof fetch === "function" ? fetch.bind(globalThis) : null);
+  if (!baseFetch) {
+    throw new Error("No fetch implementation available for graph cache service");
+  }
+
+  return async (url, options = {}) => {
+    const startedAtMs = nowMs();
+    const method = String(options?.method || "GET").toUpperCase();
+    const rawUrl = String(url || "");
+    let endpoint = rawUrl;
+    try {
+      endpoint = new URL(rawUrl).pathname;
+    } catch {}
+
+    logger.info("x_api_request_started", {
+      requestId,
+      method,
+      endpoint
+    });
+
+    try {
+      const response = await baseFetch(url, options);
+      logger.info("x_api_request_completed", {
+        requestId,
+        method,
+        endpoint,
+        statusCode: Number(response?.status || 0),
+        rateLimitRemaining: response?.headers?.get?.("x-rate-limit-remaining") || null,
+        rateLimitReset: response?.headers?.get?.("x-rate-limit-reset") || null,
+        retryAfter: response?.headers?.get?.("retry-after") || null,
+        durationMs: nowMs() - startedAtMs
+      });
+      return response;
+    } catch (error) {
+      logger.error("x_api_request_failed", {
+        requestId,
+        method,
+        endpoint,
+        errorMessage: error?.message || "unknown_error",
+        durationMs: nowMs() - startedAtMs
+      });
+      throw error;
+    }
+  };
 }
 
 function normalizeMode(mode) {
@@ -319,12 +425,18 @@ async function resolveCanonicalRoot({ client, clickedTweetId, rootHintTweetId })
   });
 }
 
-async function collectDatasetForCanonicalRoot({ canonicalRootId, client }) {
+async function collectDatasetForCanonicalRoot({ canonicalRootId, client, onWarning, onProgress }) {
   const warnings = [];
   const collected = await xApiClient.collectConnectedApiTweets({
     rootTweetId: canonicalRootId,
     client,
-    onWarning: (message) => warnings.push(message)
+    onWarning: (message) => {
+      warnings.push(message);
+      if (typeof onWarning === "function") {
+        onWarning(message);
+      }
+    },
+    onProgress
   });
 
   const rootTweet = collected.tweets.find((tweet) => tweet.id === canonicalRootId) || null;
@@ -338,14 +450,34 @@ async function collectDatasetForCanonicalRoot({ canonicalRootId, client }) {
 }
 
 function buildSnapshotFromDataset(dataset, followingSet) {
+  const contributionById = dataset?.contributionById && typeof dataset.contributionById === "object"
+    ? dataset.contributionById
+    : null;
+  const canonicalRootId = dataset?.canonicalRootId || null;
+  const filteredTweets = Array.isArray(dataset?.tweets)
+    ? dataset.tweets.filter((tweet) => {
+      if (!tweet || !tweet.id) {
+        return false;
+      }
+      const id = String(tweet.id);
+      if (canonicalRootId && id === canonicalRootId) {
+        return true;
+      }
+      if (!contributionById) {
+        return true;
+      }
+      return contributionById[id] !== false;
+    })
+    : [];
+
   const engineResult = conversationEngine.runConversationEngine({
-    tweets: dataset.tweets || [],
+    tweets: filteredTweets,
     rankOptions: {
       followingSet
     }
   });
 
-  return {
+  const snapshot = {
     canonicalRootId: dataset.canonicalRootId,
     rootId: engineResult.rootId,
     root: engineResult.root || dataset.rootTweet || null,
@@ -355,16 +487,38 @@ function buildSnapshotFromDataset(dataset, followingSet) {
     rankingMeta: engineResult.rankingMeta || { scoreById: new Map() },
     warnings: Array.isArray(dataset.warnings) ? dataset.warnings : []
   };
+
+  const rankingSummary = summarizeRanking(snapshot.ranking);
+  const warningList = Array.isArray(snapshot.warnings) ? snapshot.warnings : [];
+  const emptyReason = rankingSummary.rankingCount > 0
+    ? null
+    : (snapshot.nodes.length === 0
+      ? "no_nodes"
+      : (warningList.length > 0 ? "warnings_present" : "engine_returned_empty_ranking"));
+
+  snapshot.diagnostics = {
+    filter: {
+      inputTweetCount: Array.isArray(dataset?.tweets) ? dataset.tweets.length : 0,
+      filteredTweetCount: filteredTweets.length,
+      removedTweetCount: Math.max(0, (Array.isArray(dataset?.tweets) ? dataset.tweets.length : 0) - filteredTweets.length),
+      contributionFilterEnabled: Boolean(contributionById)
+    },
+    ranking: rankingSummary,
+    warningsPreview: summarizeWarnings(warningList, 5),
+    emptyRankingReason: emptyReason
+  };
+
+  return snapshot;
 }
 
-function createGraphCacheService({ bearerToken, fetchImpl, cacheStore = new MemoryCacheStore(), pipelineVersion = PIPELINE_VERSION, logger = createLogger({ level: "silent" }) } = {}) {
+function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifier = null, cacheStore = new MemoryCacheStore(), pipelineVersion = PIPELINE_VERSION, logger = createLogger({ level: "silent" }) } = {}) {
   if (!bearerToken || typeof bearerToken !== "string") {
     throw new Error("Missing X bearer token for graph cache service");
   }
 
   const inflightByKey = new Map();
 
-  async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, followingIds = [] } = {}) {
+  async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, followingIds = [], requestId = null } = {}) {
     const startedAtMs = nowMs();
     const normalizedMode = normalizeMode(mode);
     const followingSet = normalizeFollowingSet(followingIds);
@@ -376,9 +530,14 @@ function createGraphCacheService({ bearerToken, fetchImpl, cacheStore = new Memo
       followingCount: followingSet.size
     });
 
+    const observedFetch = createObservedFetch({
+      requestId: requestId || "snapshot",
+      logger,
+      fetchImpl
+    });
     const client = await xApiClient.createClient({
       bearerToken,
-      fetchImpl,
+      fetchImpl: observedFetch,
       options: modeOptions(normalizedMode)
     });
 
@@ -427,6 +586,10 @@ function createGraphCacheService({ bearerToken, fetchImpl, cacheStore = new Memo
         cacheKey,
         mode: normalizedMode,
         ttlMsRemaining: Math.max(0, Number(cached.expiresAtMs || 0) - nowMs()),
+        rankingCount: Number(snapshot?.diagnostics?.ranking?.rankingCount || 0),
+        nonZeroScoreCount: Number(snapshot?.diagnostics?.ranking?.nonZeroScoreCount || 0),
+        topRankingPreview: snapshot?.diagnostics?.ranking?.top || [],
+        emptyRankingReason: snapshot?.diagnostics?.emptyRankingReason || null,
         durationMs: nowMs() - startedAtMs
       });
       return {
@@ -455,6 +618,10 @@ function createGraphCacheService({ bearerToken, fetchImpl, cacheStore = new Memo
           cacheKey,
           mode: normalizedMode,
           ttlMsRemaining: Math.max(0, Number(afterInflight.expiresAtMs || 0) - nowMs()),
+          rankingCount: Number(snapshot?.diagnostics?.ranking?.rankingCount || 0),
+          nonZeroScoreCount: Number(snapshot?.diagnostics?.ranking?.nonZeroScoreCount || 0),
+          topRankingPreview: snapshot?.diagnostics?.ranking?.top || [],
+          emptyRankingReason: snapshot?.diagnostics?.emptyRankingReason || null,
           durationMs: nowMs() - startedAtMs
         });
         return {
@@ -472,8 +639,57 @@ function createGraphCacheService({ bearerToken, fetchImpl, cacheStore = new Memo
     const buildPromise = (async () => {
       const dataset = await collectDatasetForCanonicalRoot({
         canonicalRootId,
-        client
+        client,
+        onProgress: (progress) => {
+          logger.info("snapshot_phase", {
+            requestId,
+            canonicalRootId,
+            mode: normalizedMode,
+            phase: progress?.phase || null,
+            rootId: progress?.rootId || null,
+            processedRoots: Number(progress?.processedRoots || 0),
+            queuedRoots: Number(progress?.queuedRoots || 0),
+            tweetCount: Number(progress?.tweetCount || 0),
+            replies: Number(progress?.replies || 0),
+            quotes: Number(progress?.quotes || 0),
+            retweeters: Number(progress?.retweeters || 0),
+            references: Number(progress?.references || 0),
+            authors: Number(progress?.authors || 0)
+          });
+        },
+        onWarning: (warningMessage) => {
+          logger.warn("snapshot_warning", {
+            requestId,
+            canonicalRootId,
+            mode: normalizedMode,
+            warning: String(warningMessage || "").slice(0, 1000)
+          });
+        }
       });
+
+      if (contributionClassifier && contributionClassifier.enabled && typeof contributionClassifier.classifyTweets === "function") {
+        const contribution = await contributionClassifier.classifyTweets(dataset.tweets, {
+          requestId,
+          canonicalRootId,
+          alwaysIncludeIds: new Set([canonicalRootId])
+        });
+        dataset.contributionById = contribution.byTweetId || {};
+        logger.info("snapshot_contribution_filter_applied", {
+          requestId,
+          canonicalRootId,
+          model: contribution.model || null,
+          candidateCount: Number(contribution.candidateCount || 0),
+          classifiedCount: Number(contribution.classifiedCount || 0),
+          contributingCount: Number(contribution.contributingCount || 0),
+          nonContributingCount: Number(contribution.nonContributingCount || 0)
+        });
+      } else {
+        logger.info("snapshot_contribution_filter_skipped", {
+          requestId,
+          canonicalRootId,
+          reason: "classifier_disabled_or_missing"
+        });
+      }
 
       cacheStore.set(cacheKey, {
         dataset
@@ -512,6 +728,10 @@ function createGraphCacheService({ bearerToken, fetchImpl, cacheStore = new Memo
       nodes: Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0,
       edges: Array.isArray(snapshot.edges) ? snapshot.edges.length : 0,
       warningsCount: Array.isArray(snapshot.warnings) ? snapshot.warnings.length : 0,
+      rankingCount: Number(snapshot?.diagnostics?.ranking?.rankingCount || 0),
+      nonZeroScoreCount: Number(snapshot?.diagnostics?.ranking?.nonZeroScoreCount || 0),
+      topRankingPreview: snapshot?.diagnostics?.ranking?.top || [],
+      emptyRankingReason: snapshot?.diagnostics?.emptyRankingReason || null,
       durationMs: nowMs() - startedAtMs
     });
     return {
@@ -537,7 +757,8 @@ function jsonResponse(res, statusCode, body) {
     "cache-control": "no-store",
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "POST, GET, OPTIONS",
-    "access-control-allow-headers": "content-type"
+    "access-control-allow-headers": "content-type",
+    "access-control-allow-private-network": "true"
   });
   res.end(payload);
 }
@@ -560,7 +781,8 @@ function createServer(service, { logger = createLogger({ level: "silent" }) } = 
       res.writeHead(204, {
         "access-control-allow-origin": "*",
         "access-control-allow-methods": "POST, GET, OPTIONS",
-        "access-control-allow-headers": "content-type"
+        "access-control-allow-headers": "content-type",
+        "access-control-allow-private-network": "true"
       });
       res.end();
       logger.debug("http_request_completed", {
@@ -616,7 +838,8 @@ function createServer(service, { logger = createLogger({ level: "silent" }) } = 
             rootHintTweetId: body.rootHintTweetId || null,
             mode: body.mode || "fast",
             force: Boolean(body.force),
-            followingIds: body.followingIds || []
+            followingIds: body.followingIds || [],
+            requestId
           });
           jsonResponse(res, 200, snapshot);
           logger.info("http_request_completed", {
@@ -630,7 +853,10 @@ function createServer(service, { logger = createLogger({ level: "silent" }) } = 
             canonicalRootId: snapshot?.canonicalRootId || null,
             nodes: Array.isArray(snapshot?.nodes) ? snapshot.nodes.length : 0,
             edges: Array.isArray(snapshot?.edges) ? snapshot.edges.length : 0,
-            warningsCount: Array.isArray(snapshot?.warnings) ? snapshot.warnings.length : 0
+            warningsCount: Array.isArray(snapshot?.warnings) ? snapshot.warnings.length : 0,
+            rankingCount: Number(snapshot?.diagnostics?.ranking?.rankingCount || 0),
+            nonZeroScoreCount: Number(snapshot?.diagnostics?.ranking?.nonZeroScoreCount || 0),
+            emptyRankingReason: snapshot?.diagnostics?.emptyRankingReason || null
           });
         } catch (error) {
           jsonResponse(res, 500, {
@@ -685,6 +911,7 @@ async function main() {
   const service = createGraphCacheService({
     bearerToken,
     cacheStore,
+    contributionClassifier: createOpenAiContributionClassifier({ logger }),
     logger
   });
 
@@ -708,7 +935,9 @@ async function main() {
     port,
     cachePath,
     cacheMaxEntries,
-    logLevel: logger.level
+    logLevel: logger.level,
+    openAiEnabled: Boolean((process.env.OPENAI_API_KEY || "").trim()),
+    pipelineVersion: PIPELINE_VERSION
   });
 }
 

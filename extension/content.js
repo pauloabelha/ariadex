@@ -37,7 +37,7 @@
   const BUTTON_CLASS = "ariadex-explore-button";
   const BUTTON_ATTR = "data-ariadex-explore-button";
   const INJECTED_ATTR = "data-ariadex-injected";
-  const EXPLORE_MODE_STORAGE_KEY = "ariadex.explore_mode";
+  const EXPLORE_MODE = "deep";
 
   const extractTweetData = typeof domCollectorApi.extractTweetData === "function"
     ? domCollectorApi.extractTweetData
@@ -114,26 +114,15 @@
   }
 
   function normalizeExploreMode(value) {
-    return String(value || "").toLowerCase() === "deep" ? "deep" : "fast";
+    return EXPLORE_MODE;
   }
 
   function readExploreMode() {
-    const fromSettings = typeof globalScope.window !== "undefined"
-      ? globalScope.window.AriadexExploreMode
-      : null;
-    const fromStorage = readLocalStorageValue(EXPLORE_MODE_STORAGE_KEY);
-    return normalizeExploreMode(fromSettings || fromStorage || "fast");
+    return EXPLORE_MODE;
   }
 
   function writeExploreMode(mode) {
-    const normalized = normalizeExploreMode(mode);
-    if (typeof globalScope.window !== "undefined") {
-      globalScope.window.AriadexExploreMode = normalized;
-      try {
-        globalScope.window.localStorage.setItem(EXPLORE_MODE_STORAGE_KEY, normalized);
-      } catch {}
-    }
-    return normalized;
+    return EXPLORE_MODE;
   }
 
   function parseFollowingSet(rawValue) {
@@ -411,13 +400,71 @@
     return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
   }
 
+  function resolveScoreByIdFromSnapshot(snapshot) {
+    const meta = snapshot?.rankingMeta && typeof snapshot.rankingMeta === "object"
+      ? snapshot.rankingMeta
+      : {};
+
+    if (meta.scoreById instanceof Map) {
+      return meta.scoreById;
+    }
+
+    if (meta.scoreById && typeof meta.scoreById === "object") {
+      return meta.scoreById;
+    }
+
+    if (meta.scoreByIdObject && typeof meta.scoreByIdObject === "object") {
+      return meta.scoreByIdObject;
+    }
+
+    const fromRanking = {};
+    const ranking = Array.isArray(snapshot?.ranking) ? snapshot.ranking : [];
+    for (const entry of ranking) {
+      const id = entry?.id;
+      const score = Number(entry?.score);
+      if (!id || !Number.isFinite(score)) {
+        continue;
+      }
+      fromRanking[id] = score;
+    }
+
+    return fromRanking;
+  }
+
+  function canUseExtensionMessageBridge() {
+    return Boolean(
+      typeof chrome !== "undefined"
+      && chrome.runtime
+      && chrome.runtime.id
+      && chrome.runtime.id !== "invalid"
+      && typeof chrome.runtime.sendMessage === "function"
+    );
+  }
+
+  function sendGraphApiRequestViaExtension(request) {
+    if (!canUseExtensionMessageBridge()) {
+      return Promise.resolve(null);
+    }
+
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage(request, (response) => {
+          const runtimeError = chrome.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "extension_message_failed"));
+            return;
+          }
+          resolve(response || null);
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
   async function fetchSnapshotFromGraphApi(options = {}) {
     const baseUrl = normalizeApiBaseUrl(options.graphApiUrl);
     if (!baseUrl) {
-      return null;
-    }
-
-    if (typeof globalScope.window === "undefined" || typeof globalScope.window.fetch !== "function") {
       return null;
     }
 
@@ -426,25 +473,51 @@
       : new Set();
     const followingIds = [...followingSet];
 
-    const response = await globalScope.window.fetch(`${baseUrl}/v1/conversation-snapshot`, {
+    const payloadBody = JSON.stringify({
+      clickedTweetId: options.clickedTweetId,
+      rootHintTweetId: options.rootHintTweetId || null,
+      mode: options.mode || "fast",
+      force: Boolean(options.forceRefresh),
+      followingIds
+    });
+    const snapshotUrl = `${baseUrl}/v1/conversation-snapshot`;
+
+    let payload = null;
+    const bridgeResponse = await sendGraphApiRequestViaExtension({
+      type: "ariadex_graph_api_request",
+      url: snapshotUrl,
       method: "POST",
       headers: {
         "content-type": "application/json"
       },
-      body: JSON.stringify({
-        clickedTweetId: options.clickedTweetId,
-        rootHintTweetId: options.rootHintTweetId || null,
-        mode: options.mode || "fast",
-        force: Boolean(options.forceRefresh),
-        followingIds
-      })
+      body: payloadBody
     });
 
-    if (!response.ok) {
-      throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
+    if (bridgeResponse) {
+      if (!bridgeResponse.ok) {
+        const reason = bridgeResponse.error
+          ? String(bridgeResponse.error)
+          : `${bridgeResponse.status || 500} ${bridgeResponse.statusText || "Graph API request failed"}`;
+        throw new Error(`Graph API request failed (${reason})`);
+      }
+      payload = bridgeResponse.body;
+    } else {
+      if (typeof globalScope.window === "undefined" || typeof globalScope.window.fetch !== "function") {
+        return null;
+      }
+      const response = await globalScope.window.fetch(snapshotUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: payloadBody
+      });
+      if (!response.ok) {
+        throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
+      }
+      payload = await response.json();
     }
 
-    const payload = await response.json();
     if (!payload || typeof payload !== "object") {
       throw new Error("Graph API returned invalid payload");
     }
@@ -571,23 +644,6 @@
           topLimit: 3,
           statusMessage: "Exploring conversation…",
           exploreMode,
-          onExploreModeChange: (nextMode) => {
-            const savedMode = writeExploreMode(nextMode);
-            renderConversationPanel({
-              nodes: seedNodes,
-              scoreById: seedScoreById,
-              relationshipById: new Map(),
-              followingSet: new Set(),
-              excludedTweetIds: initialExcludedIds,
-              humanOnly: true,
-              networkLimit: 0,
-              topLimit: 3,
-              statusMessage: `Mode set to ${savedMode === "deep" ? "Deep" : "Fast"}. Click ◇ Explore again to refresh.`,
-              exploreMode: savedMode,
-              onExploreModeChange: null,
-              root: globalScope.document
-            });
-          },
           root: globalScope.document
         });
       }
@@ -732,7 +788,7 @@
         const ranking = {
           scores: Array.isArray(snapshot.ranking) ? snapshot.ranking : []
         };
-        const scoreById = snapshot?.rankingMeta?.scoreById || new Map();
+        const scoreById = resolveScoreByIdFromSnapshot(snapshot);
         const relationshipById = buildRelationshipByIdFromGraph({
           nodes: snapshot.nodes || [],
           edges: snapshot.edges || [],
@@ -762,23 +818,6 @@
               topLimit: 10,
               statusMessage: `Done. Ranked ${Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0} nodes.`,
               exploreMode,
-              onExploreModeChange: (nextMode) => {
-                const savedMode = writeExploreMode(nextMode);
-                renderConversationPanel({
-                  nodes: snapshot.nodes || [],
-                  scoreById,
-                  relationshipById,
-                  followingSet: runtimeConfig.followingSet,
-                  excludedTweetIds,
-                  humanOnly: true,
-                  networkLimit: 5,
-                  topLimit: 10,
-                  statusMessage: `Mode set to ${savedMode === "deep" ? "Deep" : "Fast"}. Click ◇ Explore again to refresh.`,
-                  exploreMode: savedMode,
-                  onExploreModeChange: null,
-                  root: globalScope.document
-                });
-              },
               root: globalScope.document
             });
           })()

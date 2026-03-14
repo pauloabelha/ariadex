@@ -77,7 +77,8 @@ test("createServer logs request lifecycle and sets request id header", async () 
   });
 
   const service = {
-    async getSnapshot() {
+    async getSnapshot(params) {
+      assert.ok(params.requestId);
       return {
         canonicalRootId: "1",
         rootId: "1",
@@ -87,6 +88,13 @@ test("createServer logs request lifecycle and sets request id header", async () 
         ranking: [],
         rankingMeta: { scoreById: {} },
         warnings: [],
+        diagnostics: {
+          ranking: {
+            rankingCount: 0,
+            nonZeroScoreCount: 0
+          },
+          emptyRankingReason: "no_nodes"
+        },
         cache: { hit: true, mode: "fast" }
       };
     }
@@ -107,6 +115,7 @@ test("createServer logs request lifecycle and sets request id header", async () 
   const requestId = response.headers["x-ariadex-request-id"];
   assert.ok(requestId);
   assert.ok(String(requestId).length >= 16);
+  assert.equal(response.headers["access-control-allow-private-network"], "true");
 
   const started = records.find((record) => record.event === "http_request_started");
   const completed = records.find((record) => record.event === "http_request_completed");
@@ -114,6 +123,9 @@ test("createServer logs request lifecycle and sets request id header", async () 
   assert.ok(completed);
   assert.equal(started.method, "POST");
   assert.equal(completed.statusCode, 200);
+  assert.equal(completed.rankingCount, 0);
+  assert.equal(completed.nonZeroScoreCount, 0);
+  assert.equal(completed.emptyRankingReason, "no_nodes");
 });
 
 test("createServer returns 400 for invalid json with structured warning log", async () => {
@@ -137,6 +149,7 @@ test("createServer returns 400 for invalid json with structured warning log", as
   });
 
   assert.equal(response.statusCode, 400);
+  assert.equal(response.headers["access-control-allow-private-network"], "true");
   const invalid = records.find((record) => record.event === "http_request_invalid_json");
   assert.ok(invalid);
   assert.equal(invalid.statusCode, 400);

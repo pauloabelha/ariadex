@@ -17,6 +17,8 @@ function withDefaults(env) {
   merged.ARIADEX_GRAPH_API_URL_DEV = merged.ARIADEX_GRAPH_API_URL_DEV || merged.ARIADEX_GRAPH_API_URL;
   merged.ARIADEX_GRAPH_CACHE_FILE = merged.ARIADEX_GRAPH_CACHE_FILE
     || path.join(ROOT_DIR, ".cache", "graph_cache_store.json");
+  merged.ARIADEX_ENABLE_OPENAI_CONTRIBUTION_FILTER = merged.ARIADEX_ENABLE_OPENAI_CONTRIBUTION_FILTER || "true";
+  merged.ARIADEX_OPENAI_MODEL = merged.ARIADEX_OPENAI_MODEL || "gpt-4o-mini";
   return merged;
 }
 

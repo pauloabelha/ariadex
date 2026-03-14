@@ -21,9 +21,6 @@
   const THREAD_CLASS = "ariadex-thread";
   const EMPTY_CLASS = "ariadex-empty";
   const STATUS_CLASS = "ariadex-status";
-  const MODE_TOGGLE_CLASS = "ariadex-mode-toggle";
-  const MODE_BUTTON_CLASS = "ariadex-mode-button";
-  const MODE_BUTTON_ACTIVE_CLASS = "is-active";
 
   function applyFloatingPanelStyles(panel) {
     panel.style.position = "fixed";
@@ -75,47 +72,6 @@
       root.body.appendChild(panel);
     }
     return panel;
-  }
-
-  function normalizeExploreMode(mode) {
-    return String(mode || "").toLowerCase() === "deep" ? "deep" : "fast";
-  }
-
-  function ensureModeToggle(panel, root, { exploreMode = "fast", onExploreModeChange } = {}) {
-    if (!panel || !root) {
-      return;
-    }
-
-    const mode = normalizeExploreMode(exploreMode);
-    let toggle = panel.querySelector(`.${MODE_TOGGLE_CLASS}`);
-    if (!toggle) {
-      toggle = root.createElement("div");
-      toggle.className = MODE_TOGGLE_CLASS;
-      panel.insertBefore(toggle, panel.querySelector(`.${PANEL_BODY_CLASS}`));
-    }
-
-    const entries = [
-      { mode: "fast", label: "Fast" },
-      { mode: "deep", label: "Deep" }
-    ];
-
-    toggle.innerHTML = "";
-    for (const entry of entries) {
-      const button = root.createElement("button");
-      button.type = "button";
-      button.className = `${MODE_BUTTON_CLASS}${entry.mode === mode ? ` ${MODE_BUTTON_ACTIVE_CLASS}` : ""}`;
-      button.textContent = entry.label;
-      button.setAttribute("aria-pressed", entry.mode === mode ? "true" : "false");
-      button.addEventListener("click", () => {
-        if (entry.mode === mode) {
-          return;
-        }
-        if (typeof onExploreModeChange === "function") {
-          onExploreModeChange(entry.mode);
-        }
-      });
-      toggle.appendChild(button);
-    }
   }
 
   function truncateText(text, maxLen = 160) {
@@ -471,6 +427,10 @@
         item.setAttribute("data-tweet-id", targetTweetId || "");
 
         const author = tweet.author || "@unknown";
+        const profile = extractAuthorProfile(tweet);
+        const profileImageUrl = typeof profile?.profile_image_url === "string"
+          ? profile.profile_image_url.trim()
+          : "";
         const text = truncateText(
           isAuthorThread
             ? (tweet.text || firstAuthorTweet?.text || "")
@@ -479,6 +439,24 @@
         const score = Number.isFinite(entry.score) ? entry.score : 0;
 
         const titleNode = root.createElement("div");
+        titleNode.style.display = "flex";
+        titleNode.style.alignItems = "center";
+        titleNode.style.gap = "8px";
+
+        if (profileImageUrl) {
+          const avatar = root.createElement("img");
+          avatar.src = profileImageUrl;
+          avatar.alt = `${author} profile image`;
+          avatar.loading = "lazy";
+          avatar.width = 24;
+          avatar.height = 24;
+          avatar.style.width = "24px";
+          avatar.style.height = "24px";
+          avatar.style.borderRadius = "999px";
+          avatar.style.objectFit = "cover";
+          titleNode.appendChild(avatar);
+        }
+
         const strong = root.createElement("strong");
         strong.textContent = `${i + 1}. ${author}`;
         titleNode.appendChild(strong);
@@ -514,9 +492,8 @@
     return section;
   }
 
-  function renderConversationPanel({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false, statusMessage = "", exploreMode = "fast", onExploreModeChange = null, root = globalScope.document } = {}) {
+  function renderConversationPanel({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false, statusMessage = "", root = globalScope.document } = {}) {
     const panel = ensurePanelExists(root);
-    ensureModeToggle(panel, root, { exploreMode, onExploreModeChange });
     const body = panel.querySelector(`.${PANEL_BODY_CLASS}`);
     if (!body) {
       return {

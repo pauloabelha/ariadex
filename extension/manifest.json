@@ -4,6 +4,9 @@
   "version": "0.1",
   "description": "Injects an Explore button into X tweets to bootstrap conversation exploration.",
   "permissions": ["activeTab", "scripting"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "host_permissions": [
     "https://api.x.com/*",
     "http://127.0.0.1/*",

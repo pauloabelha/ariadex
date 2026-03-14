@@ -25,6 +25,21 @@ The project is now layered:
 - `ui/`: panel + tweet highlight
 - `extension/`: thin integration glue
 
+Extension networking note:
+- `content.js` asks `background.js` to call the Graph API.
+- This avoids x.com CSP/private-network blocks for localhost dev servers.
+
+Server filtering note:
+- graph-cache server can run an OpenAI cheap model pass (`gpt-4o-mini`) to mark tweets as contributing/non-contributing
+- non-contributing tweets are filtered before ThinkerRank
+
+UI note:
+- ranking cards show author avatars when `author_profile.profile_image_url` is available
+- Fast/Deep toggle was removed; exploration is deep-only
+
+Ops note:
+- server logs support ANSI color (`ARIADEX_LOG_COLOR=true`) and detailed debug traces (`ARIADEX_LOG_LEVEL=debug`)
+
 The same core logic can run in:
 - Chrome extension
 - Node tests

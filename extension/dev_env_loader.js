@@ -43,6 +43,18 @@
     }
   }
 
+  function isGeneratedConfigUrlSafe(url) {
+    if (!url || typeof url !== "string") {
+      return false;
+    }
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === "chrome-extension:" && parsed.hostname && parsed.hostname !== "invalid";
+    } catch {
+      return false;
+    }
+  }
+
   function parseFollowingIds(raw) {
     if (!Array.isArray(raw)) {
       return [];
@@ -132,7 +144,7 @@
     }
 
     const url = getGeneratedConfigUrl();
-    if (!url) {
+    if (!url || !isGeneratedConfigUrlSafe(url)) {
       return;
     }
 
@@ -141,8 +153,7 @@
       return;
     }
 
-    const expectedPrefix = `chrome-extension://${chrome.runtime.id}/`;
-    if (!url.startsWith(expectedPrefix)) {
+    if (!isGeneratedConfigUrlSafe(url)) {
       return;
     }
 

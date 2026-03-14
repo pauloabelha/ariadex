@@ -49,6 +49,38 @@ test("panel renderer renders into document body", () => {
   assert.match(panel.textContent, /From Your Network/);
   assert.match(panel.textContent, /Top Thinkers/);
   assert.match(panel.textContent, /Quote/);
+  assert.equal(panel.querySelector(".ariadex-mode-toggle"), null);
+});
+
+test("panel renderer shows profile image when available", () => {
+  const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  panelRenderer.renderConversationPanel({
+    nodes: [{
+      id: "A",
+      author_id: "u1",
+      author: "@u1",
+      text: "hello",
+      quote_of: "R",
+      author_profile: {
+        username: "u1",
+        name: "U1",
+        description: "",
+        profile_image_url: "https://pbs.twimg.com/profile_images/test_normal.jpg"
+      }
+    }],
+    scoreById: new Map([["A", 1]]),
+    relationshipById: new Map([["A", "quote"]]),
+    followingSet: new Set(["u1"]),
+    root: dom.window.document
+  });
+
+  const avatar = dom.window.document.querySelector(".ariadex-thread img");
+  assert.ok(avatar);
+  assert.match(avatar.src, /profile_images\/test_normal\.jpg/);
 });
 
 test("panel renderer excludes canonical root and clicked tweet ids when requested", () => {

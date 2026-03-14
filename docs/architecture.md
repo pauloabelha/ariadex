@@ -104,7 +104,7 @@ No graph or ranking algorithms are implemented in UI.
 Responsibilities:
 - inject `◇ Explore`
 - collect runtime config (token/following)
-- call data layer
+- call Graph API via extension background bridge
 - call core engine
 - call UI renderer
 
@@ -151,12 +151,17 @@ Complexity:
 
 ```text
 Click tweet
--> DOM root hint
--> canonical root via X API
--> retrieve connected tweets (replies, quotes, repost users)
--> run core conversation engine
--> render network/global panel sections
+-> content.js builds snapshot request
+-> background.js fetches graph API (localhost/prod endpoint)
+-> graph API resolves root + retrieves connected tweets
+-> optional OpenAI contribution classifier filters low-value tweets
+-> core engine ranks remaining graph
+-> content.js renders network/global panel sections
 ```
+
+Why this bridge exists:
+- page-context fetch from `https://x.com` to `http://127.0.0.1:*` is blocked by CSP/Private Network Access
+- extension service worker fetch is not subject to page CSP, so dev localhost and prod API both work
 
 ### Standalone/Server Flow
 
@@ -167,6 +172,11 @@ Receive normalized tweets
 ```
 
 No DOM is required for the standalone/server flow.
+
+Graph cache server observability:
+- emits structured JSON logs for each HTTP request, X API request, pipeline phase, warning, and completion summary
+- includes ranking diagnostics (`rankingCount`, `nonZeroScoreCount`, `emptyRankingReason`, top score preview) to debug empty panel outputs quickly
+- supports ANSI-colored terminal output via `ARIADEX_LOG_COLOR=true`
 
 ## Integration Contracts
 
@@ -195,6 +205,8 @@ UI expects:
   followingSet
 }
 ```
+
+`nodes[*].author_profile.profile_image_url` is consumed by panel cards when available.
 
 ## Determinism Guarantees
 - ranking sorts with deterministic tie-breakers

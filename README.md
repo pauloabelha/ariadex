@@ -56,6 +56,24 @@ Security default:
 - `allowClientDirectApi=false` (default)
 - extension uses `graphApiUrl` only
 - X/OpenAI keys stay server-side
+- Graph API calls are proxied by `extension/background.js` (service worker), not page JS fetch
+
+## OpenAI contribution filter (server-side)
+Ariadex now supports an OpenAI-based classifier to remove low-value tweets (shitpost/vaguepost/comedy-only/unrelated) before ranking.
+
+Behavior:
+- runs on graph-cache server only (never in content script)
+- classifies tweet contribution in batches
+- keeps canonical root tweet even if classifier is uncertain
+- stores classification inside cached dataset to avoid repeat cost on cache hits
+
+Environment flags:
+- `OPENAI_API_KEY` (required to enable)
+- `ARIADEX_ENABLE_OPENAI_CONTRIBUTION_FILTER=true|false` (default `true`)
+- `ARIADEX_OPENAI_MODEL` (default `gpt-4o-mini`)
+- `ARIADEX_OPENAI_MAX_TWEETS_PER_SNAPSHOT` (default `120`)
+- `ARIADEX_OPENAI_BATCH_SIZE` (default `30`)
+- `ARIADEX_OPENAI_TIMEOUT_MS` (default `20000`)
 
 ## Run extension
 1. Open `chrome://extensions`
@@ -148,20 +166,41 @@ Expected:
 "http://127.0.0.1:8787"
 ```
 
+Important:
+- Direct `fetch("http://127.0.0.1:8787/...")` from the x.com page console may fail due CSP/PNA.
+- Ariadex uses extension background fetch (`chrome.runtime.sendMessage` -> `background.js`) for `/v1/conversation-snapshot`, which is the supported path.
+
 ### Server logging
 Cache server logs are structured JSON lines with request IDs and durations.
 
 Typical events:
 - `server_started`
 - `http_request_started`
+- `x_api_request_started` / `x_api_request_completed` / `x_api_request_failed`
+- `snapshot_phase` (collection/rate-limit/root expansion phases)
+- `snapshot_warning` (API/rate-limit/data warnings)
 - `snapshot_cache_hit` / `snapshot_cache_populated`
 - `http_request_completed`
 - `http_request_failed`
+
+Ranking diagnostics are logged on snapshot completion:
+- `rankingCount`
+- `nonZeroScoreCount`
+- `topRankingPreview`
+- `emptyRankingReason`
+
+OpenAI status is logged at startup (`openAiEnabled`), and filter activity is logged per snapshot (`snapshot_contribution_filter_applied`).
 
 For verbose diagnostics:
 
 ```bash
 ARIADEX_LOG_LEVEL=debug npm run dev:cache
+```
+
+For ANSI-colored log lines in terminal:
+
+```bash
+ARIADEX_LOG_COLOR=true ARIADEX_LOG_LEVEL=debug npm run dev:cache
 ```
 
 ## Use core engine standalone (Node/server)

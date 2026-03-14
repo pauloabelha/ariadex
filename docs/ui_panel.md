@@ -19,6 +19,10 @@ Implementation:
 }
 ```
 
+`scoreById` supports both:
+- `Map` (in-memory engine output)
+- plain object (`scoreByIdObject`) for JSON-serialized server responses
+
 ## Two-Tier Ranking Logic
 `buildPanelSections(...)` uses:
 1. one deterministic sort by ThinkerRank (`O(N log N)`)
@@ -44,6 +48,7 @@ This prevents unstable card ordering between renders.
 - clears/rebuilds panel body per render
 - renders empty-state rows when sections are empty
 - binds click handlers for scroll/highlight
+- renders author avatar when available (`author_profile.profile_image_url`)
 
 ## Interaction
 On card click:
