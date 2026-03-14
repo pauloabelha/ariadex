@@ -46,6 +46,7 @@ These tests run pure engine/data logic:
 - quote edge detection: `typed_conversation_graph_test.js`, `core_conversation_engine_test.js`
 - ThinkerRank stability/determinism: `conversation_rank_test.js`, `core_conversation_engine_test.js`
 - panel duplicate removal: `ui_panel_render_test.js`, `ui_panel_renderer_layer_test.js`
+- Dex tabs + evidence canonicalization: `ui_panel_renderer_layer_test.js`
 - empty following set: `ui_panel_render_test.js`
 - large graphs (1000+): `conversation_adjacency_test.js`, `core_conversation_engine_test.js`, `ui_panel_render_test.js`
 - missing parents: `conversation_graph_test.js`

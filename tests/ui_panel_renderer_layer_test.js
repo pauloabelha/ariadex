@@ -217,3 +217,76 @@ test("panel renderer includes only replies/quotes in ranked output", () => {
 
   assert.deepEqual(sections.topThinkers.map((entry) => entry.id), ["quote-1", "reply-1"]);
 });
+
+test("panel renderer canonicalizes and deduplicates evidence URLs in dex view model", () => {
+  const nodes = [
+    {
+      id: "t1",
+      author_id: "u1",
+      author: "@alice",
+      text: "paper https://example.com/a?utm_source=x and dup https://example.com/a#section",
+      quote_of: "root",
+      author_profile: { username: "alice", name: "Alice", description: "human" }
+    },
+    {
+      id: "t2",
+      author_id: "u2",
+      author: "@bob",
+      text: "same link https://example.com/a?s=20",
+      reply_to: "root",
+      author_profile: { username: "bob", name: "Bob", description: "human" }
+    }
+  ];
+
+  const scoreById = new Map([
+    ["t1", 0.9],
+    ["t2", 0.8]
+  ]);
+
+  const viewModel = panelRenderer.buildDexViewModel({
+    nodes,
+    scoreById,
+    followingSet: new Set(),
+    networkLimit: 5,
+    topLimit: 10
+  });
+
+  assert.equal(Array.isArray(viewModel.evidence), true);
+  assert.equal(viewModel.evidence.length, 1);
+  assert.equal(viewModel.evidence[0].canonicalUrl, "https://example.com/a");
+  assert.deepEqual(viewModel.evidence[0].citedByTweetIds, ["t1", "t2"]);
+});
+
+test("panel renderer renders tabs and allows evidence tab switch", () => {
+  const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  panelRenderer.renderConversationPanel({
+    nodes: [
+      {
+        id: "A",
+        author_id: "u1",
+        author: "@u1",
+        text: "look https://example.com/doc",
+        quote_of: "R",
+        author_profile: { username: "u1", name: "U1", description: "" }
+      }
+    ],
+    scoreById: new Map([["A", 1]]),
+    relationshipById: new Map([["A", "quote"]]),
+    followingSet: new Set(["u1"]),
+    root: dom.window.document
+  });
+
+  const tabs = dom.window.document.querySelectorAll(".ariadex-tab-button");
+  assert.equal(tabs.length, 4);
+  assert.match(dom.window.document.body.textContent, /From Your Network/);
+
+  const evidenceTab = [...tabs].find((tab) => tab.textContent === "Evidence");
+  assert.ok(evidenceTab);
+  evidenceTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+
+  assert.match(dom.window.document.body.textContent, /example\.com\/doc/);
+});

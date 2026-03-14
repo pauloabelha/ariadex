@@ -11,6 +11,11 @@ When you click `◇ Explore` on X:
 3. It builds a typed graph.
 4. It runs ThinkerRank.
 5. It renders two ranked panel sections.
+6. It renders Ariadex Dex tabs:
+   - Thinkers
+   - Evidence
+   - People
+   - Context
 
 ThinkerRank is now explicitly:
 - recursive (PageRank-style over reply/quote edges)

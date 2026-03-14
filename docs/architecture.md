@@ -161,7 +161,7 @@ Click tweet
 -> optional OpenAI contribution classifier filters low-value tweets
 -> cache hit path can run incremental diff refresh (new replies/quotes) before final rank
 -> core engine ranks remaining graph
--> content.js renders network/global panel sections
+-> content.js renders Dex tabs (Thinkers/Evidence/People/Context)
 ```
 
 Why this bridge exists:

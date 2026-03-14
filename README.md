@@ -12,8 +12,10 @@ Ariadex explores conversations on X by turning connected tweets into a typed gra
 - builds a conversation graph
 - runs ThinkerRank
 - renders a two-tier panel:
-  - `⭐ From Your Network`
-  - `🔥 Top Thinkers`
+  - `Thinkers` (`⭐ From Your Network`, `🔥 Top Thinkers`)
+  - `Evidence`
+  - `People`
+  - `Context`
 
 ## Architecture
 Ariadex is split into explicit layers:
@@ -41,6 +43,7 @@ ariadex/
 ```
 
 See `docs/architecture.md` for full contracts and flows.
+Panel details: `docs/panel_dex.md`.
 
 ## X API credentials (`.env`)
 Ariadex reads your keys from `~/ariadex/.env` through the sync script.

@@ -19,6 +19,13 @@ Implementation:
 }
 ```
 
+## Dex View Model
+`buildDexViewModel(...)` derives tab data from the same ranked graph:
+- `sections` (legacy thinkers sections)
+- `evidence` (canonicalized URL entities with weighted citation score)
+- `people` (followed/other author aggregates)
+- `context` (graph/ranking summary counters)
+
 `scoreById` supports both:
 - `Map` (in-memory engine output)
 - plain object (`scoreByIdObject`) for JSON-serialized server responses
@@ -46,9 +53,19 @@ This prevents unstable card ordering between renders.
 `renderConversationPanel(...)`:
 - ensures a single panel attached to `document.body`
 - clears/rebuilds panel body per render
-- renders empty-state rows when sections are empty
+- renders tabbed UI:
+  - `Thinkers`
+  - `Evidence`
+  - `People`
+  - `Context`
+- keeps `Thinkers` as default tab for backward compatibility
 - binds click handlers for scroll/highlight
 - renders author avatar when available (`author_profile.profile_image_url`)
+
+Evidence canonicalization:
+- strips common trackers/fragments (`utm_*`, `fbclid`, `gclid`, `ref`, `s`)
+- normalizes host/path
+- deduplicates into one evidence card with multiple citing tweets
 
 ## Interaction
 On card click:

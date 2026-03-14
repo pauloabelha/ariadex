@@ -21,6 +21,14 @@
   const THREAD_CLASS = "ariadex-thread";
   const EMPTY_CLASS = "ariadex-empty";
   const STATUS_CLASS = "ariadex-status";
+  const TAB_BAR_CLASS = "ariadex-tab-bar";
+  const TAB_BUTTON_CLASS = "ariadex-tab-button";
+  const TAB_BUTTON_ACTIVE_CLASS = "ariadex-tab-button-active";
+  const PANEL_TAB_CONTENT_CLASS = "ariadex-tab-content";
+  const EVIDENCE_CARD_CLASS = "ariadex-evidence-card";
+  const PEOPLE_CARD_CLASS = "ariadex-people-card";
+  const CONTEXT_CARD_CLASS = "ariadex-context-card";
+  const DEFAULT_TAB = "thinkers";
 
   function applyFloatingPanelStyles(panel) {
     panel.style.position = "fixed";
@@ -72,6 +80,19 @@
       root.body.appendChild(panel);
     }
     return panel;
+  }
+
+  function ensurePanelState(panel) {
+    if (!panel) {
+      return { activeTab: DEFAULT_TAB };
+    }
+
+    if (!panel.__ariadexState || typeof panel.__ariadexState !== "object") {
+      panel.__ariadexState = {
+        activeTab: DEFAULT_TAB
+      };
+    }
+    return panel.__ariadexState;
   }
 
   function truncateText(text, maxLen = 160) {
@@ -338,6 +359,253 @@
     return "Cousin";
   }
 
+  function canonicalizeUrl(rawUrl) {
+    const raw = String(rawUrl || "").trim();
+    if (!raw) {
+      return null;
+    }
+
+    let parsed = null;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      return null;
+    }
+
+    parsed.hash = "";
+    const blockedParams = [
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "utm_term",
+      "utm_content",
+      "fbclid",
+      "gclid",
+      "ref",
+      "ref_src",
+      "s"
+    ];
+    for (const param of blockedParams) {
+      parsed.searchParams.delete(param);
+    }
+
+    const host = parsed.hostname.toLowerCase();
+    if (host === "x.com" || host === "twitter.com") {
+      const statusMatch = parsed.pathname.match(/^\/([^/]+)\/status\/(\d+)/);
+      if (statusMatch) {
+        return `https://x.com/${statusMatch[1]}/status/${statusMatch[2]}`;
+      }
+    }
+
+    const normalizedSearch = parsed.searchParams.toString();
+    return `${parsed.protocol}//${host}${parsed.pathname}${normalizedSearch ? `?${normalizedSearch}` : ""}`;
+  }
+
+  function extractUrlsFromText(text) {
+    const content = String(text || "");
+    if (!content) {
+      return [];
+    }
+    const matches = content.match(/https?:\/\/[^\s]+/g) || [];
+    return matches.map((value) => value.trim()).filter(Boolean);
+  }
+
+  function buildEvidenceEntries({ nodes, scoreById, rankedEntries } = {}) {
+    const safeNodes = Array.isArray(nodes) ? nodes : [];
+    const ranked = Array.isArray(rankedEntries) ? rankedEntries : [];
+    const rankByTweetId = new Map();
+    for (let i = 0; i < ranked.length; i += 1) {
+      rankByTweetId.set(String(ranked[i].id), i);
+    }
+
+    const byCanonicalUrl = new Map();
+    for (let i = 0; i < safeNodes.length; i += 1) {
+      const tweet = safeNodes[i];
+      const tweetId = String(tweet?.id || "");
+      if (!tweetId) {
+        continue;
+      }
+      const urls = extractUrlsFromText(tweet?.text || "");
+      if (urls.length === 0) {
+        continue;
+      }
+      const tweetScore = readScore(scoreById, tweetId);
+      for (let j = 0; j < urls.length; j += 1) {
+        const canonicalUrl = canonicalizeUrl(urls[j]);
+        if (!canonicalUrl) {
+          continue;
+        }
+        let entry = byCanonicalUrl.get(canonicalUrl);
+        if (!entry) {
+          let domain = "";
+          try {
+            domain = new URL(canonicalUrl).hostname.toLowerCase();
+          } catch {}
+          entry = {
+            id: canonicalUrl,
+            canonicalUrl,
+            displayUrl: canonicalUrl,
+            domain,
+            citationCount: 0,
+            weightedCitationScore: 0,
+            citedByTweetIds: [],
+            topCitingTweetIds: []
+          };
+          byCanonicalUrl.set(canonicalUrl, entry);
+        }
+
+        entry.citationCount += 1;
+        entry.weightedCitationScore += tweetScore;
+        entry.citedByTweetIds.push(tweetId);
+      }
+    }
+
+    const entries = [...byCanonicalUrl.values()];
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      const deduped = [...new Set(entry.citedByTweetIds)];
+      deduped.sort((a, b) => {
+        const ai = rankByTweetId.has(String(a)) ? rankByTweetId.get(String(a)) : Number.MAX_SAFE_INTEGER;
+        const bi = rankByTweetId.has(String(b)) ? rankByTweetId.get(String(b)) : Number.MAX_SAFE_INTEGER;
+        if (ai !== bi) {
+          return ai - bi;
+        }
+        return String(a).localeCompare(String(b));
+      });
+      entry.citedByTweetIds = deduped;
+      entry.topCitingTweetIds = deduped.slice(0, 3);
+    }
+
+    entries.sort((a, b) => {
+      const scoreDiff = b.weightedCitationScore - a.weightedCitationScore;
+      if (Math.abs(scoreDiff) > 1e-12) {
+        return scoreDiff;
+      }
+      const citeDiff = b.citationCount - a.citationCount;
+      if (citeDiff !== 0) {
+        return citeDiff;
+      }
+      return String(a.id).localeCompare(String(b.id));
+    });
+    return entries;
+  }
+
+  function buildPeopleEntries({ rankedEntries, followingSet } = {}) {
+    const followed = normalizeFollowingSet(followingSet);
+    const ranked = Array.isArray(rankedEntries) ? rankedEntries : [];
+    const byAuthorId = new Map();
+
+    for (let i = 0; i < ranked.length; i += 1) {
+      const entry = ranked[i];
+      const tweet = entry?.tweet || {};
+      const authorId = String(tweet?.author_id || "").trim();
+      const author = String(tweet?.author || "@unknown").trim() || "@unknown";
+      const key = authorId || author.toLowerCase();
+      if (!key) {
+        continue;
+      }
+      let person = byAuthorId.get(key);
+      if (!person) {
+        person = {
+          id: key,
+          author_id: authorId || null,
+          author,
+          tweetsCount: 0,
+          aggregateScore: 0,
+          bestTweetId: entry.id,
+          bestScore: Number(entry.score) || 0,
+          isFollowed: isAuthorFollowed(tweet, followed)
+        };
+        byAuthorId.set(key, person);
+      }
+      const entryScore = Number(entry.score) || 0;
+      person.tweetsCount += 1;
+      person.aggregateScore += entryScore;
+      if (entryScore > person.bestScore) {
+        person.bestTweetId = entry.id;
+        person.bestScore = entryScore;
+      }
+      person.isFollowed = person.isFollowed || isAuthorFollowed(tweet, followed);
+    }
+
+    const people = [...byAuthorId.values()];
+    people.sort((a, b) => {
+      const diff = b.aggregateScore - a.aggregateScore;
+      if (Math.abs(diff) > 1e-12) {
+        return diff;
+      }
+      const countDiff = b.tweetsCount - a.tweetsCount;
+      if (countDiff !== 0) {
+        return countDiff;
+      }
+      return String(a.id).localeCompare(String(b.id));
+    });
+    return {
+      followed: people.filter((p) => p.isFollowed),
+      others: people.filter((p) => !p.isFollowed)
+    };
+  }
+
+  function buildContextSummary({ nodes, rankedEntries } = {}) {
+    const safeNodes = Array.isArray(nodes) ? nodes : [];
+    const ranked = Array.isArray(rankedEntries) ? rankedEntries : [];
+    let replies = 0;
+    let quotes = 0;
+    let cousins = 0;
+
+    for (let i = 0; i < ranked.length; i += 1) {
+      const label = String(ranked[i]?.relationshipLabel || "").toLowerCase();
+      if (label === "reply") {
+        replies += 1;
+      } else if (label === "quote") {
+        quotes += 1;
+      } else {
+        cousins += 1;
+      }
+    }
+
+    return {
+      nodeCount: safeNodes.length,
+      rankedCount: ranked.length,
+      replies,
+      quotes,
+      cousins
+    };
+  }
+
+  function buildDexViewModel({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit, topLimit, humanOnly } = {}) {
+    const sections = buildPanelSections({
+      nodes,
+      scoreById,
+      relationshipById,
+      followingSet,
+      excludedTweetIds,
+      networkLimit,
+      topLimit,
+      humanOnly
+    });
+    const evidence = buildEvidenceEntries({
+      nodes,
+      scoreById,
+      rankedEntries: sections.rankedEntries
+    });
+    const people = buildPeopleEntries({
+      rankedEntries: sections.rankedEntries,
+      followingSet
+    });
+    const context = buildContextSummary({
+      nodes,
+      rankedEntries: sections.rankedEntries
+    });
+
+    return {
+      sections,
+      evidence,
+      people,
+      context
+    };
+  }
+
   function buildPanelSections({ nodes, scoreById, relationshipById, followingSet, normalizedFollowingSet = null, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false } = {}) {
     const safeNodes = Array.isArray(nodes) ? nodes : [];
     const followedLookup = normalizedFollowingSet instanceof Set
@@ -407,7 +675,7 @@
     };
   }
 
-  function createSection(root, title, entries, emptyText) {
+  function createSection(root, title, entries, emptyText, evidenceByTweetId = null) {
     const section = root.createElement("section");
     section.className = SECTION_CLASS;
 
@@ -493,6 +761,18 @@
         item.appendChild(snippet);
         item.appendChild(scoreLine);
 
+        const tweetId = String(targetTweetId || "");
+        const evidenceRefs = evidenceByTweetId instanceof Map
+          ? (evidenceByTweetId.get(tweetId) || [])
+          : [];
+        if (evidenceRefs.length > 0) {
+          const evidenceLine = root.createElement("div");
+          evidenceLine.className = "ariadex-evidence-line";
+          const topRefs = evidenceRefs.slice(0, 2);
+          evidenceLine.textContent = `Evidence: ${topRefs.join(" · ")}`;
+          item.appendChild(evidenceLine);
+        }
+
         item.addEventListener("click", () => {
           const scrolled = targetTweetId
             ? scrollToTweet(targetTweetId, { root })
@@ -522,17 +802,29 @@
     }
 
     const normalizedFollowingSet = normalizeFollowingSet(followingSet);
-    const sections = buildPanelSections({
+    const viewModel = buildDexViewModel({
       nodes,
       scoreById,
       relationshipById,
       followingSet,
-      normalizedFollowingSet,
       excludedTweetIds,
       humanOnly,
       networkLimit,
       topLimit
     });
+    const sections = viewModel.sections;
+    const evidenceByTweetId = new Map();
+    for (let i = 0; i < viewModel.evidence.length; i += 1) {
+      const ev = viewModel.evidence[i];
+      const domainOrUrl = ev.domain || ev.displayUrl;
+      for (let j = 0; j < ev.topCitingTweetIds.length; j += 1) {
+        const tweetId = String(ev.topCitingTweetIds[j]);
+        if (!evidenceByTweetId.has(tweetId)) {
+          evidenceByTweetId.set(tweetId, []);
+        }
+        evidenceByTweetId.get(tweetId).push(domainOrUrl);
+      }
+    }
 
     body.innerHTML = "";
     const fragment = root.createDocumentFragment();
@@ -543,19 +835,144 @@
       fragment.appendChild(statusNode);
     }
     if (!loadingOnly) {
-      const networkEmptyText = normalizedFollowingSet.size === 0
-        ? "Following set is empty. Configure following IDs/handles to populate this section."
-        : "No ranked tweets from followed accounts.";
-      fragment.appendChild(
-        createSection(root, "⭐ From Your Network", sections.fromNetwork, networkEmptyText)
-      );
-      fragment.appendChild(
-        createSection(root, "🔥 Top Thinkers", sections.topThinkers, "No ranked tweets available.")
-      );
+      const state = ensurePanelState(panel);
+      const tabBar = root.createElement("div");
+      tabBar.className = TAB_BAR_CLASS;
+      tabBar.style.display = "flex";
+      tabBar.style.gap = "6px";
+      tabBar.style.margin = "8px 0 10px";
+
+      const tabContent = root.createElement("div");
+      tabContent.className = PANEL_TAB_CONTENT_CLASS;
+
+      const tabs = [
+        { id: "thinkers", label: "Thinkers" },
+        { id: "evidence", label: "Evidence" },
+        { id: "people", label: "People" },
+        { id: "context", label: "Context" }
+      ];
+
+      function renderTabContent(tabId) {
+        tabContent.innerHTML = "";
+        if (tabId === "evidence") {
+          if (!Array.isArray(viewModel.evidence) || viewModel.evidence.length === 0) {
+            const empty = root.createElement("div");
+            empty.className = `${EVIDENCE_CARD_CLASS} ${EMPTY_CLASS}`;
+            empty.textContent = "No referenced documents found.";
+            tabContent.appendChild(empty);
+            return;
+          }
+          for (let i = 0; i < viewModel.evidence.length; i += 1) {
+            const ev = viewModel.evidence[i];
+            const card = root.createElement("div");
+            card.className = EVIDENCE_CARD_CLASS;
+            card.style.padding = "8px";
+            card.style.border = "1px solid #333";
+            card.style.borderRadius = "8px";
+            card.style.marginBottom = "8px";
+            card.textContent = `${i + 1}. ${ev.displayUrl} (${ev.domain || "unknown"}) · cites:${ev.citationCount} · score:${ev.weightedCitationScore.toFixed(4)}`;
+            card.addEventListener("click", () => {
+              navigateToTweet(root, ev.canonicalUrl, false);
+            });
+            tabContent.appendChild(card);
+          }
+          return;
+        }
+
+        if (tabId === "people") {
+          const followed = viewModel.people?.followed || [];
+          const others = viewModel.people?.others || [];
+          const renderPeopleGroup = (title, entries) => {
+            const h = root.createElement("h3");
+            h.className = SECTION_TITLE_CLASS;
+            h.textContent = title;
+            tabContent.appendChild(h);
+            if (!entries.length) {
+              const empty = root.createElement("div");
+              empty.className = `${PEOPLE_CARD_CLASS} ${EMPTY_CLASS}`;
+              empty.textContent = "No entries.";
+              tabContent.appendChild(empty);
+              return;
+            }
+            for (let i = 0; i < entries.length && i < 10; i += 1) {
+              const person = entries[i];
+              const card = root.createElement("div");
+              card.className = PEOPLE_CARD_CLASS;
+              card.style.padding = "8px";
+              card.style.border = "1px solid #333";
+              card.style.borderRadius = "8px";
+              card.style.marginBottom = "8px";
+              card.textContent = `${i + 1}. ${person.author} · tweets:${person.tweetsCount} · agg:${person.aggregateScore.toFixed(4)}`;
+              tabContent.appendChild(card);
+            }
+          };
+          renderPeopleGroup("⭐ Followed", followed);
+          renderPeopleGroup("👥 Others", others);
+          return;
+        }
+
+        if (tabId === "context") {
+          const context = viewModel.context || {};
+          const card = root.createElement("div");
+          card.className = CONTEXT_CARD_CLASS;
+          card.style.padding = "8px";
+          card.style.border = "1px solid #333";
+          card.style.borderRadius = "8px";
+          card.textContent = `Nodes:${context.nodeCount || 0} · Ranked:${context.rankedCount || 0} · Replies:${context.replies || 0} · Quotes:${context.quotes || 0} · Cousins:${context.cousins || 0}`;
+          tabContent.appendChild(card);
+          return;
+        }
+
+        const networkEmptyText = normalizedFollowingSet.size === 0
+          ? "Following set is empty. Configure following IDs/handles to populate this section."
+          : "No ranked tweets from followed accounts.";
+        tabContent.appendChild(
+          createSection(root, "⭐ From Your Network", sections.fromNetwork, networkEmptyText, evidenceByTweetId)
+        );
+        tabContent.appendChild(
+          createSection(root, "🔥 Top Thinkers", sections.topThinkers, "No ranked tweets available.", evidenceByTweetId)
+        );
+      }
+
+      for (let i = 0; i < tabs.length; i += 1) {
+        const tab = tabs[i];
+        const btn = root.createElement("button");
+        btn.type = "button";
+        btn.className = TAB_BUTTON_CLASS;
+        btn.textContent = tab.label;
+        btn.style.border = "1px solid #2f4f66";
+        btn.style.borderRadius = "999px";
+        btn.style.padding = "4px 8px";
+        btn.style.background = "transparent";
+        btn.style.color = "#9ed8ff";
+        if (state.activeTab === tab.id) {
+          btn.classList.add(TAB_BUTTON_ACTIVE_CLASS);
+          btn.style.background = "#12334a";
+        }
+        btn.addEventListener("click", () => {
+          state.activeTab = tab.id;
+          const buttons = tabBar.querySelectorAll(`.${TAB_BUTTON_CLASS}`);
+          for (const b of buttons) {
+            b.style.background = "transparent";
+            b.classList.remove(TAB_BUTTON_ACTIVE_CLASS);
+          }
+          btn.style.background = "#12334a";
+          btn.classList.add(TAB_BUTTON_ACTIVE_CLASS);
+          renderTabContent(tab.id);
+        });
+        tabBar.appendChild(btn);
+      }
+
+      fragment.appendChild(tabBar);
+      fragment.appendChild(tabContent);
+      renderTabContent(state.activeTab || DEFAULT_TAB);
     }
 
     body.appendChild(fragment);
-    return sections;
+    return {
+      ...sections,
+      viewModel
+    };
   }
 
   function renderTopThreads(rankedTweets, root = globalScope.document) {
@@ -590,6 +1007,9 @@
     createPanelContainer,
     ensurePanelExists,
     buildPanelSections,
+    buildDexViewModel,
+    canonicalizeUrl,
+    extractUrlsFromText,
     navigateToTweet,
     renderConversationPanel,
     renderTopThreads
