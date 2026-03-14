@@ -622,7 +622,10 @@
       edges: Array.isArray(payload.edges) ? payload.edges : [],
       ranking: Array.isArray(payload.ranking) ? payload.ranking : [],
       rankingMeta: payload.rankingMeta || { scoreById: new Map() },
-      warnings: Array.isArray(payload.warnings) ? payload.warnings : []
+      warnings: Array.isArray(payload.warnings) ? payload.warnings : [],
+      diagnostics: payload.diagnostics && typeof payload.diagnostics === "object"
+        ? payload.diagnostics
+        : null
     };
   }
 
@@ -689,7 +692,12 @@
       edges: engineResult.edges || [],
       ranking: engineResult.ranking || [],
       rankingMeta: engineResult.rankingMeta || { scoreById: new Map() },
-      warnings: Array.isArray(dataset.warnings) ? dataset.warnings : []
+      warnings: Array.isArray(dataset.warnings) ? dataset.warnings : [],
+      diagnostics: {
+        filter: {
+          inputTweetCount: Array.isArray(dataset.tweets) ? dataset.tweets.length : 0
+        }
+      }
     };
   }
 
@@ -828,6 +836,7 @@
               replies_fetched: `Fetched replies${Number.isFinite(progress?.replies) ? ` (${progress.replies})` : ""}.`,
               quotes_fetched: `Fetched quote tweets${Number.isFinite(progress?.quotes) ? ` (${progress.quotes})` : ""}.`,
               quote_reply_expanded: "Expanding replies to quote tweets…",
+              network_discovery_batch: "Discovering followed-account posts in this topicsphere…",
               retweets_fetched: `Fetched repost users${Number.isFinite(progress?.retweeters) ? ` (${progress.retweeters})` : ""}.`,
               references_hydrated: "Hydrating referenced tweets…",
               authors_hydrated: "Hydrating missing author profiles…",
@@ -946,7 +955,14 @@
               humanOnly: true,
               networkLimit: 5,
               topLimit: 10,
-              statusMessage: `Done. Ranked ${Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0} nodes.`,
+              statusMessage: (() => {
+                const traversedCount = Number(snapshot?.diagnostics?.filter?.inputTweetCount);
+                const safeTraversed = Number.isFinite(traversedCount)
+                  ? traversedCount
+                  : (Array.isArray(snapshot.ranking) ? snapshot.ranking.length : 0);
+                const rankedCount = Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0;
+                return `Done. Traversed ${safeTraversed} tweets. Ranked ${rankedCount} nodes.`;
+              })(),
               exploreMode,
               root: globalScope.document
             });

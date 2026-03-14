@@ -159,6 +159,19 @@
   }
 
   function normalizeFollowingSet(input) {
+    const addNormalizedValue = (target, value) => {
+      const normalizedValue = String(value).trim();
+      if (!normalizedValue) {
+        return;
+      }
+      target.add(normalizedValue);
+      const lowered = normalizedValue.toLowerCase();
+      target.add(lowered);
+      if (lowered.startsWith("@")) {
+        target.add(lowered.slice(1));
+      }
+    };
+
     if (!input) {
       return new Set();
     }
@@ -169,10 +182,7 @@
         if (value == null) {
           continue;
         }
-        const normalizedValue = String(value).trim();
-        if (normalizedValue) {
-          normalized.add(normalizedValue);
-        }
+        addNormalizedValue(normalized, value);
       }
       return normalized;
     }
@@ -183,10 +193,7 @@
         if (value == null) {
           continue;
         }
-        const normalizedValue = String(value).trim();
-        if (normalizedValue) {
-          normalized.add(normalizedValue);
-        }
+        addNormalizedValue(normalized, value);
       }
       return normalized;
     }

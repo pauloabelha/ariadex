@@ -5,7 +5,9 @@ Ariadex explores conversations on X by turning connected tweets into a typed gra
 ## What Ariadex does
 - injects `◇ Explore` into X tweet action bars
 - resolves canonical root tweets
-- retrieves replies/quotes/reposts via official X API
+- retrieves conversation data via official X API in two passes:
+  - core topicsphere (replies/quotes/quote-replies)
+  - bounded followed-author discovery
 - builds a conversation graph
 - runs ThinkerRank
 - renders a two-tier panel:
@@ -51,6 +53,10 @@ node scripts/sync_env_to_generated_config.js
 ```
 
 This writes `extension/dev_env.generated.json` (git-ignored). `extension/dev_env_loader.js` loads endpoint/environment settings into runtime/localStorage.
+
+Note:
+- `From Your Network` relies on `followingSet` (`X_FOLLOWING_IDS` or runtime hints).
+- App-only bearer-token mode cannot pull your full following graph directly from X API.
 
 Security default:
 - `allowClientDirectApi=false` (default)

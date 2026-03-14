@@ -154,7 +154,9 @@ Click tweet
 -> content.js builds snapshot request
 -> background.js fetches graph API (localhost/prod endpoint)
 -> graph API job endpoint streams progress events
--> graph API resolves root + retrieves connected tweets
+-> graph API resolves root + retrieves connected tweets in two passes:
+   pass A: core topicsphere (replies, quotes, quote-reply expansion)
+   pass B: bounded followed-author discovery (`from:<handle>` queries with strict request caps)
 -> optional OpenAI contribution classifier filters low-value tweets
 -> cache hit path can run incremental diff refresh (new replies/quotes) before final rank
 -> core engine ranks remaining graph
@@ -183,6 +185,11 @@ Graph cache server observability:
 Graph cache update modes:
 - full build: cache miss / force refresh
 - incremental merge: cache hit + `incremental=true` fetches newest replies/quotes and merges diffs into cached dataset
+- cache key includes canonical root + mode + pipeline/classifier signatures + following signature (followed-author discovery is viewer-dependent)
+
+Following set note:
+- followed-account ranking/discovery depends on `followingSet` provided by extension config/runtime hints.
+- with app-only X bearer token mode, Ariadex cannot fetch the viewer's full following graph directly from X API.
 
 ## Integration Contracts
 

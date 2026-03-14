@@ -5,7 +5,7 @@
 
   const adjacencyApi = typeof module !== "undefined" && module.exports
     ? require("./conversation_adjacency.js")
-    : (globalScope.AriadexConversationAdjacency || {});
+    : (globalScope.AriadexCoreConversationAdjacency || {});
 
   const createConversationAdjacency = typeof adjacencyApi.createConversationAdjacency === "function"
     ? adjacencyApi.createConversationAdjacency
@@ -159,6 +159,19 @@
   }
 
   function normalizeFollowingSet(input) {
+    const addNormalizedValue = (target, value) => {
+      const normalizedValue = String(value).trim();
+      if (!normalizedValue) {
+        return;
+      }
+      target.add(normalizedValue);
+      const lowered = normalizedValue.toLowerCase();
+      target.add(lowered);
+      if (lowered.startsWith("@")) {
+        target.add(lowered.slice(1));
+      }
+    };
+
     if (!input) {
       return new Set();
     }
@@ -169,10 +182,7 @@
         if (value == null) {
           continue;
         }
-        const normalizedValue = String(value).trim();
-        if (normalizedValue) {
-          normalized.add(normalizedValue);
-        }
+        addNormalizedValue(normalized, value);
       }
       return normalized;
     }
@@ -183,10 +193,7 @@
         if (value == null) {
           continue;
         }
-        const normalizedValue = String(value).trim();
-        if (normalizedValue) {
-          normalized.add(normalizedValue);
-        }
+        addNormalizedValue(normalized, value);
       }
       return normalized;
     }
@@ -423,6 +430,6 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {
-    globalScope.AriadexConversationRank = api;
+    globalScope.AriadexCoreConversationRank = api;
   }
 })();

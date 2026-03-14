@@ -127,6 +127,19 @@
   }
 
   function normalizeFollowingSet(input) {
+    const addNormalized = (target, value) => {
+      const normalized = String(value).trim();
+      if (!normalized) {
+        return;
+      }
+      target.add(normalized);
+      const lowered = normalized.toLowerCase();
+      target.add(lowered);
+      if (lowered.startsWith("@")) {
+        target.add(lowered.slice(1));
+      }
+    };
+
     if (!input) {
       return new Set();
     }
@@ -137,17 +150,20 @@
         if (value == null) {
           continue;
         }
-
-        const normalized = String(value).trim();
-        if (normalized) {
-          next.add(normalized);
-        }
+        addNormalized(next, value);
       }
       return next;
     }
 
     if (Array.isArray(input)) {
-      return new Set(input.map((value) => String(value).trim()).filter(Boolean));
+      const next = new Set();
+      for (const value of input) {
+        if (value == null) {
+          continue;
+        }
+        addNormalized(next, value);
+      }
+      return next;
     }
 
     return new Set();
@@ -523,8 +539,12 @@
       fragment.appendChild(statusNode);
     }
     if (!loadingOnly) {
+      const normalizedFollowingSet = normalizeFollowingSet(followingSet);
+      const networkEmptyText = normalizedFollowingSet.size === 0
+        ? "Following set is empty. Configure following IDs/handles to populate this section."
+        : "No ranked tweets from followed accounts.";
       fragment.appendChild(
-        createSection(root, "⭐ From Your Network", sections.fromNetwork, "No ranked tweets from followed accounts.")
+        createSection(root, "⭐ From Your Network", sections.fromNetwork, networkEmptyText)
       );
       fragment.appendChild(
         createSection(root, "🔥 Top Thinkers", sections.topThinkers, "No ranked tweets available.")

@@ -284,6 +284,24 @@ function hashCacheKey(rawKey) {
   return crypto.createHash("sha256").update(String(rawKey)).digest("hex");
 }
 
+function followingSignature(followingSet) {
+  if (!(followingSet instanceof Set) || followingSet.size === 0) {
+    return "following:none";
+  }
+  const normalized = [...followingSet]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+  if (normalized.length === 0) {
+    return "following:none";
+  }
+  const digest = crypto
+    .createHash("sha256")
+    .update(normalized.join(","))
+    .digest("hex");
+  return `following:${digest}`;
+}
+
 class MemoryCacheStore {
   constructor() {
     this.map = new Map();
@@ -441,11 +459,12 @@ async function resolveCanonicalRoot({ client, clickedTweetId, rootHintTweetId })
   });
 }
 
-async function collectDatasetForCanonicalRoot({ canonicalRootId, client, onWarning, onProgress }) {
+async function collectDatasetForCanonicalRoot({ canonicalRootId, client, followingSet = new Set(), onWarning, onProgress }) {
   const warnings = [];
   const collected = await xApiClient.collectConnectedApiTweets({
     rootTweetId: canonicalRootId,
     client,
+    followingSet,
     onWarning: (message) => {
       warnings.push(message);
       if (typeof onWarning === "function") {
@@ -567,6 +586,12 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       force: Boolean(force),
       followingCount: followingSet.size
     });
+    if (followingSet.size === 0) {
+      logger.warn("snapshot_following_set_empty", {
+        clickedTweetId: clickedTweetId || null,
+        mode: normalizedMode
+      });
+    }
 
     const observedFetch = createObservedFetch({
       requestId: requestId || "snapshot",
@@ -621,7 +646,8 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
     const contributionSignature = contributionClassifier?.signature
       ? String(contributionClassifier.signature)
       : "openai:none";
-    const rawKey = `${canonicalRootId}|${normalizedMode}|${pipelineVersion}|${contributionSignature}`;
+    const followingKeyPart = followingSignature(followingSet);
+    const rawKey = `${canonicalRootId}|${normalizedMode}|${pipelineVersion}|${contributionSignature}|${followingKeyPart}`;
     const cacheKey = hashCacheKey(rawKey);
 
     const cached = !force ? cacheStore.get(cacheKey) : null;
@@ -809,6 +835,7 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       const dataset = await collectDatasetForCanonicalRoot({
         canonicalRootId,
         client,
+        followingSet,
         onProgress: (progress) => {
           const phaseLabels = {
             collection_started: "Collection started.",
@@ -819,7 +846,8 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
             retweets_fetched: `Retweets fetched${Number.isFinite(progress?.retweeters) ? ` (${progress.retweeters})` : ""}.`,
             references_hydrated: "Hydrating referenced tweets.",
             authors_hydrated: "Hydrating author profiles.",
-            collection_complete: `Collection complete${Number.isFinite(progress?.tweetCount) ? ` (${progress.tweetCount} tweets)` : ""}.`
+            collection_complete: `Collection complete${Number.isFinite(progress?.tweetCount) ? ` (${progress.tweetCount} tweets)` : ""}.`,
+            network_discovery_batch: `Discovering followed-author posts${Number.isFinite(progress?.discovered) ? ` (${progress.discovered})` : ""}.`
           };
           pushProgress(progress?.phase || "collecting", phaseLabels[progress?.phase] || "Collecting data…", {
             canonicalRootId,
@@ -837,6 +865,7 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
             replies: Number(progress?.replies || 0),
             quotes: Number(progress?.quotes || 0),
             retweeters: Number(progress?.retweeters || 0),
+            discovered: Number(progress?.discovered || 0),
             references: Number(progress?.references || 0),
             authors: Number(progress?.authors || 0)
           });

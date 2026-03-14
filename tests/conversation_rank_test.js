@@ -98,6 +98,23 @@ test("followed authors can be matched by handle in followingSet", () => {
   assert.ok(getScore(ranking, "B") > getScore(ranking, "A"));
 });
 
+test("followed authors match case-insensitive handles in followingSet", () => {
+  const g = graph(
+    [
+      { id: "A", author_id: "u1", author: "@alice" },
+      { id: "B", author_id: "u2", author: "@bob" }
+    ],
+    []
+  );
+
+  const ranking = ranker.rankConversationGraph(g, {
+    followingSet: new Set(["@BoB"])
+  });
+
+  assert.equal(ranking.topTweetIds[0], "B");
+  assert.ok(getScore(ranking, "B") > getScore(ranking, "A"));
+});
+
 test("ranking is deterministic when scores tie", () => {
   const nodes = [{ id: "A" }, { id: "B" }, { id: "C" }, { id: "D" }];
   const g = graph(nodes, []);

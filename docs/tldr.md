@@ -4,7 +4,9 @@ Ariadex is a conversation analysis engine plus a Chrome extension UI.
 
 When you click `◇ Explore` on X:
 1. Ariadex canonicalizes the root tweet.
-2. It retrieves connected tweets from the official X API.
+2. It retrieves connected tweets from the official X API in two passes:
+   - core topicsphere pass (replies/quotes/quote-replies)
+   - bounded followed-author discovery pass
 3. It builds a typed graph.
 4. It runs ThinkerRank.
 5. It renders two ranked panel sections.
@@ -37,6 +39,8 @@ Server filtering note:
 UI note:
 - ranking cards show author avatars when `author_profile.profile_image_url` is available
 - Fast/Deep toggle was removed; exploration is deep-only
+- if `followingSet` is empty, "From Your Network" will stay empty by design
+- app-only bearer token mode cannot fetch the viewer's full following graph from X API
 
 Ops note:
 - server logs support ANSI color (`ARIADEX_LOG_COLOR=true`) and detailed debug traces (`ARIADEX_LOG_LEVEL=debug`)

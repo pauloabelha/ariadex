@@ -12,6 +12,10 @@
     maxConcurrentRootExpansions: 4,
     maxConcurrentRequests: 6,
     maxConnectedTweets: 1500,
+    maxNetworkDiscoveryAuthors: 40,
+    maxNetworkDiscoveryRoots: 6,
+    maxNetworkDiscoveryQueries: 12,
+    networkDiscoveryBatchSize: 6,
     includeQuoteTweets: false,
     includeRetweets: false,
     includeQuoteReplies: false,
@@ -66,6 +70,10 @@
     merged.maxConcurrentRootExpansions = Math.max(1, Math.min(10, Math.floor(merged.maxConcurrentRootExpansions)));
     merged.maxConcurrentRequests = Math.max(1, Math.min(10, Math.floor(merged.maxConcurrentRequests)));
     merged.maxConnectedTweets = Math.max(10, Math.floor(merged.maxConnectedTweets));
+    merged.maxNetworkDiscoveryAuthors = Math.max(1, Math.min(200, Math.floor(merged.maxNetworkDiscoveryAuthors)));
+    merged.maxNetworkDiscoveryRoots = Math.max(1, Math.min(20, Math.floor(merged.maxNetworkDiscoveryRoots)));
+    merged.maxNetworkDiscoveryQueries = Math.max(1, Math.min(50, Math.floor(merged.maxNetworkDiscoveryQueries)));
+    merged.networkDiscoveryBatchSize = Math.max(1, Math.min(10, Math.floor(merged.networkDiscoveryBatchSize)));
     merged.requestTimeoutMs = Math.max(1000, Math.floor(merged.requestTimeoutMs));
 
     return merged;
@@ -225,6 +233,116 @@
       tweetById.set(tweet.id, tweet);
     }
     return true;
+  }
+
+  function normalizeFollowingSet(input) {
+    if (!input) {
+      return new Set();
+    }
+
+    if (input instanceof Set) {
+      const out = new Set();
+      for (const value of input) {
+        if (value == null) {
+          continue;
+        }
+        const normalized = String(value).trim();
+        if (normalized) {
+          out.add(normalized);
+        }
+      }
+      return out;
+    }
+
+    if (Array.isArray(input)) {
+      return normalizeFollowingSet(new Set(input));
+    }
+
+    if (typeof input === "string") {
+      const trimmed = input.trim();
+      if (!trimmed) {
+        return new Set();
+      }
+      try {
+        return normalizeFollowingSet(JSON.parse(trimmed));
+      } catch {
+        return normalizeFollowingSet(trimmed.split(","));
+      }
+    }
+
+    return new Set();
+  }
+
+  function normalizeFollowingLookup(followingSet, maxAuthors) {
+    const max = Math.max(1, Math.floor(Number(maxAuthors) || 1));
+    const idSet = new Set();
+    const usernameSet = new Set();
+
+    for (const raw of followingSet) {
+      if (idSet.size + usernameSet.size >= max * 3) {
+        break;
+      }
+      const value = String(raw || "").trim();
+      if (!value) {
+        continue;
+      }
+
+      const lowered = value.toLowerCase();
+      if (/^\d+$/.test(value)) {
+        idSet.add(value);
+        continue;
+      }
+
+      const handle = lowered.startsWith("@") ? lowered.slice(1) : lowered;
+      if (/^[a-z0-9_]{1,15}$/.test(handle)) {
+        usernameSet.add(handle);
+      }
+    }
+
+    return {
+      ids: [...idSet].slice(0, max),
+      usernames: [...usernameSet].slice(0, max)
+    };
+  }
+
+  function buildFollowedTopicSearchQuery({ rootId, usernames }) {
+    const normalizedRootId = String(rootId || "").trim();
+    const handles = ensureArray(usernames)
+      .map((username) => String(username || "").trim().toLowerCase())
+      .filter((username) => /^[a-z0-9_]{1,15}$/.test(username));
+    if (!normalizedRootId || handles.length === 0) {
+      return null;
+    }
+
+    const authorClause = handles.map((username) => `from:${username}`).join(" OR ");
+    return `(conversation_id:${normalizedRootId} OR quotes:${normalizedRootId}) (${authorClause})`;
+  }
+
+  function collectQuoteRootsFromMap(tweetById, canonicalRootId, limit) {
+    const out = [];
+    const max = Math.max(1, Math.floor(Number(limit) || 1));
+    const root = canonicalRootId ? String(canonicalRootId) : "";
+    if (!root) {
+      return out;
+    }
+
+    for (const tweet of tweetById.values()) {
+      if (!tweet || !tweet.id) {
+        continue;
+      }
+      if (String(tweet.id) === root) {
+        continue;
+      }
+      const quoted = pickReferencedTweet(tweet, "quoted");
+      if (quoted && String(quoted) === root) {
+        out.push(String(tweet.id));
+      }
+      if (out.length >= max) {
+        break;
+      }
+    }
+
+    return out;
   }
 
   async function createClient({ bearerToken, fetchImpl, options }) {
@@ -554,7 +672,7 @@
     return repostTweets;
   }
 
-  async function collectConnectedApiTweets({ rootTweetId, client, onWarning, onProgress }) {
+  async function collectConnectedApiTweets({ rootTweetId, client, followingSet = new Set(), onWarning, onProgress }) {
     const tweetById = new Map();
     const userById = new Map();
 
@@ -740,6 +858,92 @@
       }
     }
 
+    const normalizedFollowingSet = normalizeFollowingSet(followingSet);
+    if (normalizedFollowingSet.size > 0) {
+      const followedLookup = normalizeFollowingLookup(normalizedFollowingSet, client.options.maxNetworkDiscoveryAuthors);
+      const usernameSet = new Set(followedLookup.usernames);
+
+      if (followedLookup.ids.length > 0) {
+        try {
+          const followedUsers = await fetchUsersByIds(client, followedLookup.ids);
+          for (const user of followedUsers) {
+            if (!user || !user.id) {
+              continue;
+            }
+            addUsersToMap(userById, [user]);
+            const username = String(user.username || "").trim().toLowerCase();
+            if (/^[a-z0-9_]{1,15}$/.test(username)) {
+              usernameSet.add(username);
+            }
+          }
+        } catch (error) {
+          if (typeof onWarning === "function") {
+            onWarning(`followed user lookup failed: ${error.message}`);
+          }
+        }
+      }
+
+      if (usernameSet.size > 0) {
+        const discoveryRoots = [
+          String(rootTweetId),
+          ...collectQuoteRootsFromMap(tweetById, rootTweetId, client.options.maxNetworkDiscoveryRoots)
+        ].slice(0, client.options.maxNetworkDiscoveryRoots);
+        const usernames = [...usernameSet];
+        const batchSize = Math.max(1, Math.min(10, Math.floor(client.options.networkDiscoveryBatchSize || 6)));
+        let queryCount = 0;
+
+        for (const discoveryRootId of discoveryRoots) {
+          if (tweetById.size >= client.options.maxConnectedTweets) {
+            break;
+          }
+          for (let start = 0; start < usernames.length; start += batchSize) {
+            if (queryCount >= client.options.maxNetworkDiscoveryQueries) {
+              break;
+            }
+            const batch = usernames.slice(start, start + batchSize);
+            const query = buildFollowedTopicSearchQuery({
+              rootId: discoveryRootId,
+              usernames: batch
+            });
+            if (!query) {
+              continue;
+            }
+
+            queryCount += 1;
+            try {
+              const response = await fetchPaginated(client, "/tweets/search/recent", {
+                ...baseTweetParams(client.options.maxResultsPerPage),
+                query
+              });
+              addUsersToMap(userById, response.users);
+              addTweetsToMap(tweetById, response.tweets, client.options.maxConnectedTweets);
+
+              if (typeof onProgress === "function") {
+                onProgress({
+                  phase: "network_discovery_batch",
+                  rootId: discoveryRootId,
+                  batchSize: batch.length,
+                  queryCount,
+                  discovered: response.tweets.length,
+                  tweetCount: tweetById.size
+                });
+              }
+            } catch (error) {
+              if (typeof onWarning === "function") {
+                onWarning(`network discovery failed for ${discoveryRootId}: ${error.message}`);
+              }
+              if (error?.status === 429) {
+                break;
+              }
+            }
+          }
+          if (queryCount >= client.options.maxNetworkDiscoveryQueries) {
+            break;
+          }
+        }
+      }
+    }
+
     const normalizedTweets = [...tweetById.values()].map((tweet) => normalizeApiTweet(tweet, userById));
     if (typeof onProgress === "function") {
       onProgress({
@@ -851,7 +1055,7 @@
 
       if (client.options.includeQuoteTweets) {
         try {
-          const quotes = await fetchPaginatedLimited(client, `/tweets/${currentRoot}/quote_tweets`, {
+          const quotes = await fetchPaginatedLimited(`/tweets/${currentRoot}/quote_tweets`, {
             ...baseTweetParams(client.options.maxResultsPerPage)
           });
           addUsersToMap(userById, quotes.users);
@@ -962,6 +1166,7 @@
     const collected = await collectConnectedApiTweets({
       rootTweetId: canonicalRootId,
       client,
+      followingSet: options.followingSet || options.followingIds || [],
       onWarning: (message) => warnings.push(message),
       onProgress: options.onProgress
     });
