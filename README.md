@@ -50,7 +50,12 @@ Ariadex reads your keys from `~/ariadex/.env` through the sync script.
 node scripts/sync_env_to_generated_config.js
 ```
 
-This writes `extension/dev_env.generated.json` (git-ignored). `extension/dev_env_loader.js` loads it into runtime/localStorage for the content script.
+This writes `extension/dev_env.generated.json` (git-ignored). `extension/dev_env_loader.js` loads endpoint/environment settings into runtime/localStorage.
+
+Security default:
+- `allowClientDirectApi=false` (default)
+- extension uses `graphApiUrl` only
+- X/OpenAI keys stay server-side
 
 ## Run extension
 1. Open `chrome://extensions`
@@ -94,6 +99,38 @@ X_BEARER_TOKEN=... npm run start:graph-cache
 4. Set extension runtime config `graphApiUrl` to `http://127.0.0.1:8787` (via `dev_env.generated.json` or localStorage).
 
 With this enabled, snapshots are cached on disk and reused across server restarts.
+
+### Environment-based endpoint config (dev/prod)
+Use environment-aware endpoint mapping so extension always targets a pre-specified server.
+
+Supported `.env` keys:
+- `ARIADEX_ENV=dev|prod`
+- `ARIADEX_GRAPH_API_URL_DEV=http://127.0.0.1:8787`
+- `ARIADEX_GRAPH_API_URL_PROD=https://YOUR_PROD_GRAPH_API_HOST`
+- optional override: `ARIADEX_GRAPH_API_URL=...` (highest priority)
+- optional unsafe override (not recommended): `ARIADEX_ALLOW_CLIENT_DIRECT_API=true`
+
+Generated runtime config now includes:
+- `environment`
+- `graphApiByEnv`
+- `graphApiUrl` (resolved for active environment)
+
+Switch environment and regenerate extension config:
+
+```bash
+npm run env:dev
+npm run env:prod
+```
+
+Or set explicit URLs during switch:
+
+```bash
+node scripts/set_runtime_env.js --env=prod --graphApiUrlProd=https://YOUR_PROD_GRAPH_API_HOST
+```
+
+After changing environment:
+1. Reload extension in `chrome://extensions`
+2. Refresh x.com tab
 
 ### Verify extension is using cache server
 1. Run `npm run dev:cache`.

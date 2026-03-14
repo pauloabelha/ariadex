@@ -324,6 +324,7 @@
   }
 
   function readXApiRuntimeConfig() {
+    const isTestRuntime = typeof module !== "undefined" && module.exports;
     const settings = typeof globalScope.window !== "undefined" && globalScope.window.AriadexXApiSettings && typeof globalScope.window.AriadexXApiSettings === "object"
       ? globalScope.window.AriadexXApiSettings
       : {};
@@ -341,21 +342,48 @@
     const apiBaseUrl = typeof settings.apiBaseUrl === "string" && settings.apiBaseUrl.trim().length > 0
       ? settings.apiBaseUrl.trim()
       : null;
+    const runtimeEnv = typeof settings.environment === "string" && settings.environment.trim().length > 0
+      ? settings.environment.trim().toLowerCase()
+      : (readLocalStorageValue("ariadex.runtime_env") || "").trim().toLowerCase() || "dev";
+    const graphApiByEnv = settings.graphApiByEnv && typeof settings.graphApiByEnv === "object"
+      ? settings.graphApiByEnv
+      : (() => {
+        const raw = readLocalStorageValue("ariadex.graph_api_by_env");
+        if (!raw) {
+          return null;
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          return parsed && typeof parsed === "object" ? parsed : null;
+        } catch {
+          return null;
+        }
+      })();
+    const graphApiFromEnvMap = graphApiByEnv && typeof graphApiByEnv[runtimeEnv] === "string"
+      ? graphApiByEnv[runtimeEnv].trim()
+      : "";
+    const graphApiFromLocalStorage = (readLocalStorageValue("ariadex.graph_api_url") || "").trim();
     const graphApiUrl = typeof settings.graphApiUrl === "string" && settings.graphApiUrl.trim().length > 0
       ? settings.graphApiUrl.trim()
-      : (readLocalStorageValue("ariadex.graph_api_url") || "").trim() || null;
+      : (graphApiFromEnvMap || graphApiFromLocalStorage || null);
 
     const followingSource = settings.followingSet
       || settings.followingIds
       || (typeof globalScope.window !== "undefined" ? globalScope.window.AriadexFollowingSet : null)
       || readLocalStorageValue("ariadex.following_ids")
       || readLocalStorageValue("ariadex.x_api_following_ids");
+    const allowClientDirectApi = typeof settings.allowClientDirectApi === "boolean"
+      ? settings.allowClientDirectApi
+      : ((readLocalStorageValue("ariadex.allow_client_direct_api") || "").trim().toLowerCase() === "true");
 
     return {
       bearerToken: bearerToken ? bearerToken.trim() : null,
       tokenSource,
       apiBaseUrl,
       graphApiUrl,
+      runtimeEnv,
+      graphApiByEnv,
+      allowClientDirectApi: isTestRuntime ? true : allowClientDirectApi,
       followingSet: parseFollowingSet(followingSource),
       tokenDiagnostics: tokenCandidates.map((candidate) => ({
         source: candidate.source,
@@ -441,8 +469,15 @@
           return remoteSnapshot;
         }
       } catch {
-        // Fall through to direct X API collection.
+        if (!options.allowClientDirectApi) {
+          throw new Error("Graph API request failed and direct client API mode is disabled");
+        }
+        // Fall through to direct X API collection only when explicitly enabled.
       }
+    }
+
+    if (!options.allowClientDirectApi) {
+      throw new Error("Graph API is required; direct client API mode is disabled");
     }
 
     if (typeof buildConversationDataset !== "function") {
@@ -564,7 +599,7 @@
         followingSet: mergeFollowingSets(runtimeConfig.followingSet, domFollowingHints)
       };
       const exploreMode = readExploreMode();
-      if (!runtimeConfig.bearerToken) {
+      if (!runtimeConfig.bearerToken && runtimeConfig.allowClientDirectApi) {
         runtimeConfig = await hydrateRuntimeConfigFromGeneratedConfig(runtimeConfig);
         runtimeConfig = {
           ...runtimeConfig,
@@ -572,17 +607,19 @@
         };
       }
 
-      if (!runtimeConfig.bearerToken) {
+      const hasGraphApiUrl = Boolean(runtimeConfig.graphApiUrl);
+      if (!hasGraphApiUrl && !(runtimeConfig.allowClientDirectApi && runtimeConfig.bearerToken)) {
         if (renderConversationPanel) {
           renderConversationPanel({
             nodes: [],
             scoreById: new Map(),
+            relationshipById: new Map(),
             followingSet: runtimeConfig.followingSet,
             excludedTweetIds: new Set(),
             humanOnly: true,
             networkLimit: 5,
             topLimit: 10,
-            statusMessage: "Missing X API token. Configure token to fetch conversation data.",
+            statusMessage: "Graph API endpoint is missing. Configure graphApiUrl to explore conversations.",
             exploreMode,
             root: globalScope.document
           });
@@ -600,6 +637,7 @@
           bearerToken: runtimeConfig.bearerToken,
           apiBaseUrl: runtimeConfig.apiBaseUrl || undefined,
           graphApiUrl: runtimeConfig.graphApiUrl || undefined,
+          allowClientDirectApi: runtimeConfig.allowClientDirectApi,
           mode: exploreMode,
           includeQuoteTweets: exploreMode === "deep",
           includeQuoteReplies: exploreMode === "deep",

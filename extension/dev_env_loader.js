@@ -4,6 +4,9 @@
   const GENERATED_CONFIG_FILE = "dev_env.generated.json";
   const BEARER_STORAGE_KEY = "ariadex.x_api_bearer_token";
   const FOLLOWING_STORAGE_KEY = "ariadex.x_api_following_ids";
+  const GRAPH_API_BY_ENV_STORAGE_KEY = "ariadex.graph_api_by_env";
+  const RUNTIME_ENV_STORAGE_KEY = "ariadex.runtime_env";
+  const ALLOW_CLIENT_DIRECT_API_STORAGE_KEY = "ariadex.allow_client_direct_api";
 
   function isExtensionContextValid() {
     return (
@@ -66,8 +69,15 @@
     const bearerToken = typeof config.bearerToken === "string" ? config.bearerToken.trim() : "";
     const followingIds = parseFollowingIds(config.followingIds);
     const graphApiUrl = typeof config.graphApiUrl === "string" ? config.graphApiUrl.trim() : "";
+    const graphApiByEnv = config.graphApiByEnv && typeof config.graphApiByEnv === "object"
+      ? config.graphApiByEnv
+      : null;
+    const environment = typeof config.environment === "string" ? config.environment.trim().toLowerCase() : "";
+    const allowClientDirectApi = typeof config.allowClientDirectApi === "boolean"
+      ? config.allowClientDirectApi
+      : false;
 
-    if (!bearerToken && followingIds.length === 0 && !graphApiUrl) {
+    if (!bearerToken && followingIds.length === 0 && !graphApiUrl && !graphApiByEnv && !environment && !allowClientDirectApi) {
       return;
     }
 
@@ -75,6 +85,9 @@
       ...(window.AriadexXApiSettings || {}),
       ...(bearerToken ? { bearerToken } : {}),
       ...(followingIds.length > 0 ? { followingIds } : {}),
+      ...(environment ? { environment } : {}),
+      allowClientDirectApi,
+      ...(graphApiByEnv ? { graphApiByEnv } : {}),
       ...(graphApiUrl ? { graphApiUrl } : {})
     };
 
@@ -95,6 +108,22 @@
         window.localStorage.setItem("ariadex.graph_api_url", graphApiUrl);
       } catch {}
     }
+
+    if (graphApiByEnv) {
+      try {
+        window.localStorage.setItem(GRAPH_API_BY_ENV_STORAGE_KEY, JSON.stringify(graphApiByEnv));
+      } catch {}
+    }
+
+    if (environment) {
+      try {
+        window.localStorage.setItem(RUNTIME_ENV_STORAGE_KEY, environment);
+      } catch {}
+    }
+
+    try {
+      window.localStorage.setItem(ALLOW_CLIENT_DIRECT_API_STORAGE_KEY, String(allowClientDirectApi));
+    } catch {}
   }
 
   async function loadGeneratedConfig() {

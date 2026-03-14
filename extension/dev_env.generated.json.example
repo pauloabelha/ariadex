@@ -1,5 +1,10 @@
 {
-  "bearerToken": "YOUR_X_BEARER_TOKEN",
+  "environment": "dev",
+  "allowClientDirectApi": false,
+  "graphApiByEnv": {
+    "dev": "http://127.0.0.1:8787",
+    "prod": "https://YOUR_PROD_GRAPH_API_HOST"
+  },
   "graphApiUrl": "http://127.0.0.1:8787",
   "followingIds": [
     "123456789"

@@ -54,6 +54,46 @@ function parseFollowingIds(rawValue) {
   )];
 }
 
+function normalizeRuntimeEnvironment(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return "dev";
+  }
+  return normalized;
+}
+
+function resolveGraphApiByEnv(env) {
+  const safeEnv = env || {};
+  const byEnv = {};
+
+  const devUrl = String(safeEnv.ARIADEX_GRAPH_API_URL_DEV || "").trim();
+  const prodUrl = String(safeEnv.ARIADEX_GRAPH_API_URL_PROD || "").trim();
+
+  if (devUrl) {
+    byEnv.dev = devUrl;
+  }
+  if (prodUrl) {
+    byEnv.prod = prodUrl;
+  }
+
+  return byEnv;
+}
+
+function resolveGraphApiUrl(env, runtimeEnv, byEnv) {
+  const safeEnv = env || {};
+  const explicit = String(safeEnv.ARIADEX_GRAPH_API_URL || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const fromMap = byEnv?.[runtimeEnv];
+  if (typeof fromMap === "string" && fromMap.trim()) {
+    return fromMap.trim();
+  }
+
+  return "";
+}
+
 function buildEnvObject() {
   const fileEnv = fs.existsSync(ENV_PATH)
     ? parseDotEnv(fs.readFileSync(ENV_PATH, "utf8"))
@@ -68,16 +108,22 @@ function buildEnvObject() {
 function buildGeneratedConfig(env) {
   const safeEnv = env || {};
   const bearerToken = (safeEnv.X_BEARER_TOKEN || safeEnv.X_API_BEARER_TOKEN || "").trim();
-  if (!bearerToken) {
-    throw new Error("Missing X_BEARER_TOKEN (or X_API_BEARER_TOKEN) in .env/process env");
-  }
+  const allowClientDirectApi = String(safeEnv.ARIADEX_ALLOW_CLIENT_DIRECT_API || "").trim().toLowerCase() === "true";
 
   const followingIds = parseFollowingIds(safeEnv.X_FOLLOWING_IDS || "");
-  const graphApiUrl = (safeEnv.ARIADEX_GRAPH_API_URL || "").trim();
+  const environment = normalizeRuntimeEnvironment(safeEnv.ARIADEX_ENV || safeEnv.ARIADEX_RUNTIME_ENV || "dev");
+  const graphApiByEnv = resolveGraphApiByEnv(safeEnv);
+  const graphApiUrl = resolveGraphApiUrl(safeEnv, environment, graphApiByEnv);
+  if (!graphApiUrl && !(allowClientDirectApi && bearerToken)) {
+    throw new Error("Missing graph API URL. Set ARIADEX_GRAPH_API_URL (or ARIADEX_GRAPH_API_URL_DEV/PROD).");
+  }
 
   return {
-    bearerToken,
+    environment,
+    allowClientDirectApi,
+    ...(allowClientDirectApi && bearerToken ? { bearerToken } : {}),
     ...(followingIds.length > 0 ? { followingIds } : {}),
+    ...(Object.keys(graphApiByEnv).length > 0 ? { graphApiByEnv } : {}),
     ...(graphApiUrl ? { graphApiUrl } : {})
   };
 }
@@ -111,6 +157,9 @@ if (require.main === module) {
 module.exports = {
   parseDotEnv,
   parseFollowingIds,
+  normalizeRuntimeEnvironment,
+  resolveGraphApiByEnv,
+  resolveGraphApiUrl,
   buildEnvObject,
   buildGeneratedConfig,
   syncFromEnvironment

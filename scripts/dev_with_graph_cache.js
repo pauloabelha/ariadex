@@ -10,8 +10,11 @@ const SERVER_ENTRY = path.join(ROOT_DIR, "server", "graph_cache_server.js");
 
 function withDefaults(env) {
   const merged = { ...env };
+  merged.ARIADEX_ENV = merged.ARIADEX_ENV || "dev";
+  merged.ARIADEX_ALLOW_CLIENT_DIRECT_API = "false";
   merged.ARIADEX_GRAPH_CACHE_PORT = String(merged.ARIADEX_GRAPH_CACHE_PORT || "8787");
   merged.ARIADEX_GRAPH_API_URL = merged.ARIADEX_GRAPH_API_URL || `http://127.0.0.1:${merged.ARIADEX_GRAPH_CACHE_PORT}`;
+  merged.ARIADEX_GRAPH_API_URL_DEV = merged.ARIADEX_GRAPH_API_URL_DEV || merged.ARIADEX_GRAPH_API_URL;
   merged.ARIADEX_GRAPH_CACHE_FILE = merged.ARIADEX_GRAPH_CACHE_FILE
     || path.join(ROOT_DIR, ".cache", "graph_cache_store.json");
   return merged;
@@ -34,7 +37,10 @@ function run() {
   ensureBearer(env);
 
   // Ensure extension runtime config points to local graph cache service.
+  process.env.ARIADEX_ENV = env.ARIADEX_ENV;
+  process.env.ARIADEX_ALLOW_CLIENT_DIRECT_API = env.ARIADEX_ALLOW_CLIENT_DIRECT_API;
   process.env.ARIADEX_GRAPH_API_URL = env.ARIADEX_GRAPH_API_URL;
+  process.env.ARIADEX_GRAPH_API_URL_DEV = env.ARIADEX_GRAPH_API_URL_DEV;
   process.env.X_BEARER_TOKEN = env.X_BEARER_TOKEN || env.X_API_BEARER_TOKEN;
   process.env.X_API_BEARER_TOKEN = env.X_API_BEARER_TOKEN || env.X_BEARER_TOKEN;
   syncFromEnvironment();
