@@ -71,6 +71,8 @@ Environment flags:
 - `OPENAI_API_KEY` (required to enable)
 - `ARIADEX_ENABLE_OPENAI_CONTRIBUTION_FILTER=true|false` (default `true`)
 - `ARIADEX_OPENAI_MODEL` (default `gpt-4o-mini`)
+- `ARIADEX_CONTRIBUTION_SCORE_THRESHOLD` (default `0.65`)
+- `ARIADEX_ENABLE_HEURISTIC_CONTRIBUTION_FILTER=true|false` (default `true`)
 - `ARIADEX_OPENAI_MAX_TWEETS_PER_SNAPSHOT` (default `120`)
 - `ARIADEX_OPENAI_BATCH_SIZE` (default `30`)
 - `ARIADEX_OPENAI_TIMEOUT_MS` (default `20000`)
@@ -117,6 +119,7 @@ X_BEARER_TOKEN=... npm run start:graph-cache
 4. Set extension runtime config `graphApiUrl` to `http://127.0.0.1:8787` (via `dev_env.generated.json` or localStorage).
 
 With this enabled, snapshots are cached on disk and reused across server restarts.
+Cache keys include contribution-filter settings (model/threshold/heuristics), so stricter filter config automatically rebuilds stale snapshots.
 
 ### Environment-based endpoint config (dev/prod)
 Use environment-aware endpoint mapping so extension always targets a pre-specified server.
@@ -177,6 +180,7 @@ Typical events:
 - `server_started`
 - `http_request_started`
 - `x_api_request_started` / `x_api_request_completed` / `x_api_request_failed`
+- `openai_classification_batch_completed` / `openai_classification_batch_failed`
 - `snapshot_phase` (collection/rate-limit/root expansion phases)
 - `snapshot_warning` (API/rate-limit/data warnings)
 - `snapshot_cache_hit` / `snapshot_cache_populated`
@@ -191,6 +195,11 @@ Ranking diagnostics are logged on snapshot completion:
 
 OpenAI status is logged at startup (`openAiEnabled`), and filter activity is logged per snapshot (`snapshot_contribution_filter_applied`).
 
+Filter diagnostics now include:
+- `threshold`
+- `heuristicRejectedCount`
+- `candidateCount`, `classifiedCount`
+
 For verbose diagnostics:
 
 ```bash
@@ -202,6 +211,17 @@ For ANSI-colored log lines in terminal:
 ```bash
 ARIADEX_LOG_COLOR=true ARIADEX_LOG_LEVEL=debug npm run dev:cache
 ```
+
+Color mapping:
+- `x_api_*` events: blue
+- `openai_*` events: magenta
+- `snapshot_*` events: green
+- `http_request_*` events: cyan
+
+Async progress API (used by extension panel):
+- `POST /v1/conversation-snapshot/jobs` starts a snapshot job
+- `GET /v1/conversation-snapshot/jobs/:jobId` returns running/completed/failed status + progress events
+- panel now shows server-driven progress messages while loading, with sections hidden until final ranked data arrives
 
 ## Use core engine standalone (Node/server)
 

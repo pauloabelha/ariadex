@@ -409,12 +409,18 @@
       return meta.scoreById;
     }
 
-    if (meta.scoreById && typeof meta.scoreById === "object") {
-      return meta.scoreById;
+    if (meta.scoreByIdObject && typeof meta.scoreByIdObject === "object") {
+      const keys = Object.keys(meta.scoreByIdObject);
+      if (keys.length > 0) {
+        return meta.scoreByIdObject;
+      }
     }
 
-    if (meta.scoreByIdObject && typeof meta.scoreByIdObject === "object") {
-      return meta.scoreByIdObject;
+    if (meta.scoreById && typeof meta.scoreById === "object") {
+      const keys = Object.keys(meta.scoreById);
+      if (keys.length > 0) {
+        return meta.scoreById;
+      }
     }
 
     const fromRanking = {};
@@ -473,49 +479,132 @@
       : new Set();
     const followingIds = [...followingSet];
 
-    const payloadBody = JSON.stringify({
+    const requestPayload = {
       clickedTweetId: options.clickedTweetId,
       rootHintTweetId: options.rootHintTweetId || null,
       mode: options.mode || "fast",
       force: Boolean(options.forceRefresh),
       followingIds
-    });
+    };
+    const payloadBody = JSON.stringify(requestPayload);
     const snapshotUrl = `${baseUrl}/v1/conversation-snapshot`;
+    const jobsUrl = `${snapshotUrl}/jobs`;
 
-    let payload = null;
-    const bridgeResponse = await sendGraphApiRequestViaExtension({
-      type: "ariadex_graph_api_request",
-      url: snapshotUrl,
-      method: "POST",
-      headers: {
-        "content-type": "application/json"
-      },
-      body: payloadBody
-    });
+    async function sendRequestViaBridgeOrFetch({ url, method = "GET", body = null }) {
+      const bridgeResponse = await sendGraphApiRequestViaExtension({
+        type: "ariadex_graph_api_request",
+        url,
+        method,
+        headers: {
+          "content-type": "application/json"
+        },
+        body: body == null ? undefined : JSON.stringify(body)
+      });
 
-    if (bridgeResponse) {
-      if (!bridgeResponse.ok) {
-        const reason = bridgeResponse.error
-          ? String(bridgeResponse.error)
-          : `${bridgeResponse.status || 500} ${bridgeResponse.statusText || "Graph API request failed"}`;
-        throw new Error(`Graph API request failed (${reason})`);
+      if (bridgeResponse) {
+        if (!bridgeResponse.ok) {
+          const reason = bridgeResponse.error
+            ? String(bridgeResponse.error)
+            : `${bridgeResponse.status || 500} ${bridgeResponse.statusText || "Graph API request failed"}`;
+          throw new Error(`Graph API request failed (${reason})`);
+        }
+        return bridgeResponse.body;
       }
-      payload = bridgeResponse.body;
-    } else {
+
       if (typeof globalScope.window === "undefined" || typeof globalScope.window.fetch !== "function") {
         return null;
       }
-      const response = await globalScope.window.fetch(snapshotUrl, {
+
+      const response = await globalScope.window.fetch(url, {
+        method,
+        headers: {
+          "content-type": "application/json"
+        },
+        ...(body == null ? {} : { body: JSON.stringify(body) })
+      });
+      if (!response.ok) {
+        throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
+      }
+      return response.json();
+    }
+
+    let payload = null;
+
+    try {
+      const started = await sendRequestViaBridgeOrFetch({
+        url: jobsUrl,
+        method: "POST",
+        body: requestPayload
+      });
+      const jobId = started && started.jobId ? String(started.jobId) : "";
+      if (jobId) {
+        const deadline = Date.now() + 120000;
+        let lastMessage = "";
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          const polled = await sendRequestViaBridgeOrFetch({
+            url: `${jobsUrl}/${jobId}`,
+            method: "GET"
+          });
+          const progress = Array.isArray(polled?.progress) ? polled.progress : [];
+          const lastProgress = progress.length > 0 ? progress[progress.length - 1] : null;
+          const message = lastProgress && typeof lastProgress.message === "string"
+            ? lastProgress.message.trim()
+            : "";
+          if (message && message !== lastMessage && typeof options.onProgress === "function") {
+            lastMessage = message;
+            options.onProgress({
+              phase: "server_progress",
+              statusMessage: message
+            });
+          }
+
+          if (polled?.status === "completed" && polled?.snapshot) {
+            payload = polled.snapshot;
+            break;
+          }
+          if (polled?.status === "failed") {
+            throw new Error(polled?.error?.message || "Graph API async job failed");
+          }
+        }
+      }
+    } catch {}
+
+    if (!payload) {
+      const bridgeResponse = await sendGraphApiRequestViaExtension({
+        type: "ariadex_graph_api_request",
+        url: snapshotUrl,
         method: "POST",
         headers: {
           "content-type": "application/json"
         },
         body: payloadBody
       });
-      if (!response.ok) {
-        throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
+
+      if (bridgeResponse) {
+        if (!bridgeResponse.ok) {
+          const reason = bridgeResponse.error
+            ? String(bridgeResponse.error)
+            : `${bridgeResponse.status || 500} ${bridgeResponse.statusText || "Graph API request failed"}`;
+          throw new Error(`Graph API request failed (${reason})`);
+        }
+        payload = bridgeResponse.body;
+      } else {
+        if (typeof globalScope.window === "undefined" || typeof globalScope.window.fetch !== "function") {
+          return null;
+        }
+        const response = await globalScope.window.fetch(snapshotUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json"
+          },
+          body: payloadBody
+        });
+        if (!response.ok) {
+          throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
+        }
+        payload = await response.json();
       }
-      payload = await response.json();
     }
 
     if (!payload || typeof payload !== "object") {
@@ -641,7 +730,8 @@
           excludedTweetIds: initialExcludedIds,
           humanOnly: true,
           networkLimit: 0,
-          topLimit: 3,
+          topLimit: 0,
+          loadingOnly: true,
           statusMessage: "Exploring conversation…",
           exploreMode,
           root: globalScope.document
@@ -729,6 +819,29 @@
               ranking_complete: "ThinkerRank complete."
             };
 
+            if (phase === "server_progress") {
+              const interimExcludedIds = buildExcludedTweetIds(
+                clickedTweetId,
+                rootTweetData?.id,
+                clickedTweetData?.quote_of
+              );
+              renderConversationPanel({
+                nodes: [],
+                scoreById: new Map(),
+                relationshipById: new Map(),
+                followingSet: runtimeConfig.followingSet,
+                excludedTweetIds: interimExcludedIds,
+              humanOnly: true,
+              networkLimit: 0,
+              topLimit: 0,
+              loadingOnly: true,
+              statusMessage: progress?.statusMessage || "Server is processing…",
+              exploreMode,
+              root: globalScope.document
+            });
+              return;
+            }
+
             if (phase && phase !== "data_retrieved") {
               const interimExcludedIds = buildExcludedTweetIds(
                 clickedTweetId,
@@ -744,7 +857,8 @@
                 excludedTweetIds: interimExcludedIds,
                 humanOnly: true,
                 networkLimit: 0,
-                topLimit: 3,
+                topLimit: 0,
+                loadingOnly: true,
                 statusMessage: statusByPhase[phase] || "Exploring conversation…",
                 exploreMode,
                 root: globalScope.document
@@ -974,6 +1088,7 @@
     collapseAuthorThread,
     rankConversationGraph,
     buildConversationSnapshot,
+    resolveScoreByIdFromSnapshot,
     parseFollowingSet,
     mergeFollowingSets,
     buildExcludedTweetIds,

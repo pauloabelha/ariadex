@@ -39,6 +39,12 @@ const ANSI_BY_LEVEL = {
   warn: "\u001b[33m",
   error: "\u001b[31m"
 };
+const ANSI_BY_EVENT_PREFIX = {
+  x_api_: "\u001b[34m",
+  openai_: "\u001b[35m",
+  snapshot_: "\u001b[32m",
+  http_request_: "\u001b[36m"
+};
 
 function shouldColorizeLogs() {
   const explicit = String(process.env.ARIADEX_LOG_COLOR || "").trim().toLowerCase();
@@ -55,6 +61,16 @@ function createLogger({ level = "info", sink = null } = {}) {
   const minLevelName = normalizeLogLevel(level);
   const minLevel = LOG_LEVELS[minLevelName];
   const colorize = shouldColorizeLogs();
+
+  function resolveEventColor(eventName, levelName) {
+    const normalizedEvent = String(eventName || "");
+    for (const [prefix, color] of Object.entries(ANSI_BY_EVENT_PREFIX)) {
+      if (normalizedEvent.startsWith(prefix)) {
+        return color;
+      }
+    }
+    return ANSI_BY_LEVEL[levelName] || "";
+  }
 
   function emit(levelName, event, meta = {}) {
     const resolvedLevelName = normalizeLogLevel(levelName);
@@ -76,7 +92,7 @@ function createLogger({ level = "info", sink = null } = {}) {
     }
 
     const serialized = JSON.stringify(record);
-    const colorPrefix = colorize ? (ANSI_BY_LEVEL[resolvedLevelName] || "") : "";
+    const colorPrefix = colorize ? resolveEventColor(record.event, resolvedLevelName) : "";
     const outputLine = colorPrefix ? `${colorPrefix}${serialized}${ANSI_RESET}` : serialized;
     if (resolvedLevelName === "error") {
       console.error(outputLine);
@@ -511,6 +527,14 @@ function buildSnapshotFromDataset(dataset, followingSet) {
   return snapshot;
 }
 
+function hasContributionAnnotations(dataset) {
+  if (!dataset || typeof dataset !== "object") {
+    return false;
+  }
+  const map = dataset.contributionById;
+  return Boolean(map && typeof map === "object" && Object.keys(map).length > 0);
+}
+
 function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifier = null, cacheStore = new MemoryCacheStore(), pipelineVersion = PIPELINE_VERSION, logger = createLogger({ level: "silent" }) } = {}) {
   if (!bearerToken || typeof bearerToken !== "string") {
     throw new Error("Missing X bearer token for graph cache service");
@@ -518,10 +542,24 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
 
   const inflightByKey = new Map();
 
-  async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, followingIds = [], requestId = null } = {}) {
+  async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, followingIds = [], requestId = null, onProgress = null } = {}) {
     const startedAtMs = nowMs();
     const normalizedMode = normalizeMode(mode);
     const followingSet = normalizeFollowingSet(followingIds);
+    const pushProgress = (phase, message, extra = {}) => {
+      if (typeof onProgress !== "function") {
+        return;
+      }
+      try {
+        onProgress({
+          phase,
+          message,
+          ...extra
+        });
+      } catch {}
+    };
+
+    pushProgress("request_received", "Request received.");
     logger.info("snapshot_requested", {
       clickedTweetId: clickedTweetId || null,
       rootHintTweetId: rootHintTweetId || null,
@@ -545,6 +583,11 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       client,
       clickedTweetId,
       rootHintTweetId
+    });
+    pushProgress("root_resolved", canonicalRootId
+      ? `Resolved canonical root ${canonicalRootId}.`
+      : "Failed to resolve canonical root.", {
+      canonicalRootId: canonicalRootId || null
     });
     logger.info("snapshot_root_resolved", {
       clickedTweetId: clickedTweetId || null,
@@ -575,12 +618,31 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       };
     }
 
-    const rawKey = `${canonicalRootId}|${normalizedMode}|${pipelineVersion}`;
+    const contributionSignature = contributionClassifier?.signature
+      ? String(contributionClassifier.signature)
+      : "openai:none";
+    const rawKey = `${canonicalRootId}|${normalizedMode}|${pipelineVersion}|${contributionSignature}`;
     const cacheKey = hashCacheKey(rawKey);
 
     const cached = !force ? cacheStore.get(cacheKey) : null;
-    if (cached) {
+    const shouldBypassCachedForMissingContribution = Boolean(
+      cached
+      && contributionClassifier?.enabled
+      && !hasContributionAnnotations(cached?.value?.dataset)
+    );
+    if (shouldBypassCachedForMissingContribution) {
+      logger.warn("snapshot_cache_stale_missing_contribution", {
+        canonicalRootId,
+        cacheKey,
+        mode: normalizedMode
+      });
+    }
+
+    if (cached && !shouldBypassCachedForMissingContribution) {
       const snapshot = buildSnapshotFromDataset(cached.value.dataset, followingSet);
+      pushProgress("cache_hit", "Loaded snapshot from cache.", {
+        canonicalRootId
+      });
       logger.info("snapshot_cache_hit", {
         canonicalRootId,
         cacheKey,
@@ -603,7 +665,10 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       };
     }
 
-    if (!force && inflightByKey.has(cacheKey)) {
+    if (!force && !shouldBypassCachedForMissingContribution && inflightByKey.has(cacheKey)) {
+      pushProgress("waiting_inflight", "Waiting for in-flight snapshot build.", {
+        canonicalRootId
+      });
       logger.info("snapshot_inflight_wait", {
         canonicalRootId,
         cacheKey,
@@ -613,6 +678,9 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       const afterInflight = cacheStore.get(cacheKey);
       if (afterInflight) {
         const snapshot = buildSnapshotFromDataset(afterInflight.value.dataset, followingSet);
+        pushProgress("cache_hit_after_wait", "Loaded snapshot from cache after wait.", {
+          canonicalRootId
+        });
         logger.info("snapshot_cache_hit_after_wait", {
           canonicalRootId,
           cacheKey,
@@ -637,10 +705,28 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
     }
 
     const buildPromise = (async () => {
+      pushProgress("collecting", "Collecting conversation data from X API.", {
+        canonicalRootId
+      });
       const dataset = await collectDatasetForCanonicalRoot({
         canonicalRootId,
         client,
         onProgress: (progress) => {
+          const phaseLabels = {
+            collection_started: "Collection started.",
+            collecting_root: progress?.rootId ? `Collecting root ${progress.rootId}.` : "Collecting root.",
+            replies_fetched: `Replies fetched${Number.isFinite(progress?.replies) ? ` (${progress.replies})` : ""}.`,
+            quotes_fetched: `Quotes fetched${Number.isFinite(progress?.quotes) ? ` (${progress.quotes})` : ""}.`,
+            quote_reply_expanded: "Expanding quote replies.",
+            retweets_fetched: `Retweets fetched${Number.isFinite(progress?.retweeters) ? ` (${progress.retweeters})` : ""}.`,
+            references_hydrated: "Hydrating referenced tweets.",
+            authors_hydrated: "Hydrating author profiles.",
+            collection_complete: `Collection complete${Number.isFinite(progress?.tweetCount) ? ` (${progress.tweetCount} tweets)` : ""}.`
+          };
+          pushProgress(progress?.phase || "collecting", phaseLabels[progress?.phase] || "Collecting data…", {
+            canonicalRootId,
+            ...progress
+          });
           logger.info("snapshot_phase", {
             requestId,
             canonicalRootId,
@@ -668,6 +754,9 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       });
 
       if (contributionClassifier && contributionClassifier.enabled && typeof contributionClassifier.classifyTweets === "function") {
+        pushProgress("classifying", "Classifying contributions with OpenAI.", {
+          canonicalRootId
+        });
         const contribution = await contributionClassifier.classifyTweets(dataset.tweets, {
           requestId,
           canonicalRootId,
@@ -678,9 +767,16 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
           requestId,
           canonicalRootId,
           model: contribution.model || null,
+          threshold: Number(contribution.threshold || 0),
           candidateCount: Number(contribution.candidateCount || 0),
           classifiedCount: Number(contribution.classifiedCount || 0),
           contributingCount: Number(contribution.contributingCount || 0),
+          nonContributingCount: Number(contribution.nonContributingCount || 0),
+          heuristicRejectedCount: Number(contribution.heuristicRejectedCount || 0)
+        });
+        pushProgress("classifying_complete", "Contribution classification complete.", {
+          canonicalRootId,
+          classifiedCount: Number(contribution.classifiedCount || 0),
           nonContributingCount: Number(contribution.nonContributingCount || 0)
         });
       } else {
@@ -694,6 +790,9 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       cacheStore.set(cacheKey, {
         dataset
       }, cacheTtlMsForMode(normalizedMode));
+      pushProgress("cache_populated", "Snapshot cached.", {
+        canonicalRootId
+      });
       logger.info("snapshot_cache_populated", {
         canonicalRootId,
         cacheKey,
@@ -720,6 +819,9 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
     };
 
     const snapshot = buildSnapshotFromDataset(dataset, followingSet);
+    pushProgress("completed", "Snapshot complete.", {
+      canonicalRootId
+    });
     logger.info("snapshot_completed", {
       canonicalRootId,
       cacheKey,
@@ -764,6 +866,30 @@ function jsonResponse(res, statusCode, body) {
 }
 
 function createServer(service, { logger = createLogger({ level: "silent" }) } = {}) {
+  const jobs = new Map();
+  const JOB_TTL_MS = 10 * 60 * 1000;
+
+  function cleanupJobs() {
+    const cutoff = nowMs() - JOB_TTL_MS;
+    for (const [jobId, job] of jobs.entries()) {
+      if (Number(job?.updatedAtMs || 0) < cutoff) {
+        jobs.delete(jobId);
+      }
+    }
+  }
+
+  function sanitizeJob(job) {
+    return {
+      jobId: job.jobId,
+      status: job.status,
+      createdAtMs: job.createdAtMs,
+      updatedAtMs: job.updatedAtMs,
+      progress: Array.isArray(job.progress) ? job.progress.slice(-50) : [],
+      snapshot: job.status === "completed" ? (job.snapshot || null) : null,
+      error: job.status === "failed" ? (job.error || null) : null
+    };
+  }
+
   return http.createServer(async (req, res) => {
     const requestId = createRequestId();
     const startedAtMs = nowMs();
@@ -873,6 +999,112 @@ function createServer(service, { logger = createLogger({ level: "silent" }) } = 
           });
         }
       });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/v1/conversation-snapshot/jobs") {
+      let rawBody = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        rawBody += chunk;
+      });
+      req.on("end", async () => {
+        let body = {};
+        try {
+          body = rawBody ? JSON.parse(rawBody) : {};
+        } catch {
+          jsonResponse(res, 400, { error: "invalid_json" });
+          return;
+        }
+
+        cleanupJobs();
+        const jobId = createRequestId();
+        const job = {
+          jobId,
+          status: "running",
+          createdAtMs: nowMs(),
+          updatedAtMs: nowMs(),
+          progress: [{ ts: new Date().toISOString(), phase: "queued", message: "Job queued." }],
+          snapshot: null,
+          error: null
+        };
+        jobs.set(jobId, job);
+
+        (async () => {
+          try {
+            const snapshot = await service.getSnapshot({
+              clickedTweetId: body.clickedTweetId,
+              rootHintTweetId: body.rootHintTweetId || null,
+              mode: body.mode || "fast",
+              force: Boolean(body.force),
+              followingIds: body.followingIds || [],
+              requestId: jobId,
+              onProgress: (progress) => {
+                const current = jobs.get(jobId);
+                if (!current) {
+                  return;
+                }
+                current.updatedAtMs = nowMs();
+                current.progress.push({
+                  ts: new Date().toISOString(),
+                  phase: progress?.phase || "progress",
+                  message: String(progress?.message || "Working…"),
+                  canonicalRootId: progress?.canonicalRootId || null,
+                  counts: {
+                    tweets: Number(progress?.tweetCount || 0),
+                    processedRoots: Number(progress?.processedRoots || 0),
+                    queuedRoots: Number(progress?.queuedRoots || 0)
+                  }
+                });
+              }
+            });
+            const current = jobs.get(jobId);
+            if (!current) {
+              return;
+            }
+            current.status = "completed";
+            current.updatedAtMs = nowMs();
+            current.snapshot = snapshot;
+            current.progress.push({
+              ts: new Date().toISOString(),
+              phase: "completed",
+              message: "Snapshot completed."
+            });
+          } catch (error) {
+            const current = jobs.get(jobId);
+            if (!current) {
+              return;
+            }
+            current.status = "failed";
+            current.updatedAtMs = nowMs();
+            current.error = {
+              message: error?.message || "snapshot_job_failed"
+            };
+            current.progress.push({
+              ts: new Date().toISOString(),
+              phase: "failed",
+              message: current.error.message
+            });
+          }
+        })();
+
+        jsonResponse(res, 202, {
+          jobId,
+          status: "running"
+        });
+      });
+      return;
+    }
+
+    if (req.method === "GET" && req.url && req.url.startsWith("/v1/conversation-snapshot/jobs/")) {
+      cleanupJobs();
+      const jobId = req.url.split("/").pop();
+      const job = jobId ? jobs.get(jobId) : null;
+      if (!job) {
+        jsonResponse(res, 404, { error: "job_not_found" });
+        return;
+      }
+      jsonResponse(res, 200, sanitizeJob(job));
       return;
     }
 

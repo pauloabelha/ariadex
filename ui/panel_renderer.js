@@ -492,7 +492,7 @@
     return section;
   }
 
-  function renderConversationPanel({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false, statusMessage = "", root = globalScope.document } = {}) {
+  function renderConversationPanel({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false, statusMessage = "", loadingOnly = false, root = globalScope.document } = {}) {
     const panel = ensurePanelExists(root);
     const body = panel.querySelector(`.${PANEL_BODY_CLASS}`);
     if (!body) {
@@ -522,12 +522,14 @@
       statusNode.textContent = statusMessage;
       fragment.appendChild(statusNode);
     }
-    fragment.appendChild(
-      createSection(root, "⭐ From Your Network", sections.fromNetwork, "No ranked tweets from followed accounts.")
-    );
-    fragment.appendChild(
-      createSection(root, "🔥 Top Thinkers", sections.topThinkers, "No ranked tweets available.")
-    );
+    if (!loadingOnly) {
+      fragment.appendChild(
+        createSection(root, "⭐ From Your Network", sections.fromNetwork, "No ranked tweets from followed accounts.")
+      );
+      fragment.appendChild(
+        createSection(root, "🔥 Top Thinkers", sections.topThinkers, "No ranked tweets available.")
+      );
+    }
 
     body.appendChild(fragment);
     return sections;

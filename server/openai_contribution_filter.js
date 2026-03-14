@@ -25,12 +25,28 @@ function clipText(text, maxLength = 280) {
   return `${value.slice(0, maxLength - 1)}…`;
 }
 
-function normalizeResponseObject(raw) {
+function clamp01(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return null;
+  }
+  if (n <= 0) {
+    return 0;
+  }
+  if (n >= 1) {
+    return 1;
+  }
+  return n;
+}
+
+function normalizeResponseObject(raw, { threshold = 0.65 } = {}) {
   if (!raw || typeof raw !== "object") {
     return null;
   }
   const labels = Array.isArray(raw.labels) ? raw.labels : [];
   const byTweetId = {};
+  const scoreByTweetId = {};
+  const reasonByTweetId = {};
   let contributingCount = 0;
   let nonContributingCount = 0;
 
@@ -39,8 +55,14 @@ function normalizeResponseObject(raw) {
     if (!id) {
       continue;
     }
-    const contributing = Boolean(label.contributing);
+    const scoreFromField = clamp01(label?.contribution_score);
+    const score = scoreFromField != null
+      ? scoreFromField
+      : (Boolean(label?.contributing) ? 1 : 0);
+    const contributing = score >= threshold;
     byTweetId[id] = contributing;
+    scoreByTweetId[id] = score;
+    reasonByTweetId[id] = String(label?.reason || "").slice(0, 160);
     if (contributing) {
       contributingCount += 1;
     } else {
@@ -50,13 +72,15 @@ function normalizeResponseObject(raw) {
 
   return {
     byTweetId,
+    scoreByTweetId,
+    reasonByTweetId,
     contributingCount,
     nonContributingCount,
     labeledCount: contributingCount + nonContributingCount
   };
 }
 
-function parseOpenAiContent(rawContent) {
+function parseOpenAiContent(rawContent, options = {}) {
   if (!rawContent || typeof rawContent !== "string") {
     return null;
   }
@@ -65,7 +89,7 @@ function parseOpenAiContent(rawContent) {
     return null;
   }
   try {
-    return normalizeResponseObject(JSON.parse(trimmed));
+    return normalizeResponseObject(JSON.parse(trimmed), options);
   } catch {
     return null;
   }
@@ -86,9 +110,12 @@ function buildMessages(batch) {
       role: "system",
       content: [
         "You classify if tweets contribute to the discussion.",
-        "Contributing=true only when tweet adds argument, evidence, clarification, critique, question, or relevant context.",
-        "Contributing=false for shitpost, vaguepost, low-effort reaction, meme-only/comedy-only, spam, or unrelated content.",
-        "Return strict JSON only: {\"labels\":[{\"id\":\"<tweet_id>\",\"contributing\":true|false}]}",
+        "Contributing means adding concrete value: argument, evidence, clarification, pointed critique, or specific question tied to the thread.",
+        "Non-contributing includes: vague slogan/aphorism, low-effort reaction, joke-only, meme-only, generic cheer/boo, spam, or unrelated text.",
+        "Bare assertion without support should score low.",
+        "Return strict JSON only:",
+        "{\"labels\":[{\"id\":\"<tweet_id>\",\"contribution_score\":0.0-1.0,\"contributing\":true|false,\"reason\":\"short reason\"}]}",
+        "Set contributing=true only when contribution_score >= 0.65.",
         "Do not include extra keys or text."
       ].join(" ")
     },
@@ -99,6 +126,43 @@ function buildMessages(batch) {
       })
     }
   ];
+}
+
+function tokenize(text) {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function heuristicNonContributionReason(tweet) {
+  const text = String(tweet?.text || "").trim();
+  if (!text) {
+    return "empty_text";
+  }
+
+  const normalized = text.toLowerCase().replace(/\s+/g, " ").trim();
+  const tokens = tokenize(normalized);
+  const alphaOnlyLength = normalized.replace(/[^a-z]/g, "").length;
+
+  if (alphaOnlyLength > 0 && alphaOnlyLength < 18) {
+    return "too_short";
+  }
+
+  if (tokens.length <= 3) {
+    return "too_short";
+  }
+
+  if (/^(lol|lmao|rofl|haha+|same|based|facts|true|agreed|exactly|yup|yep|nice|cool|wow|this)[.!?]*$/.test(normalized)) {
+    return "low_effort_reaction";
+  }
+
+  if (/(😂|🤣|😆|😹){2,}/.test(normalized)) {
+    return "emoji_only_reaction";
+  }
+
+  return null;
 }
 
 function splitIntoBatches(items, batchSize) {
@@ -116,6 +180,8 @@ function createOpenAiContributionClassifier({
   fetchImpl = (typeof fetch === "function" ? fetch.bind(globalThis) : null),
   logger = null,
   enabled = toBoolean(process.env.ARIADEX_ENABLE_OPENAI_CONTRIBUTION_FILTER, true),
+  scoreThreshold = Number(process.env.ARIADEX_CONTRIBUTION_SCORE_THRESHOLD || 0.65),
+  enableHeuristics = toBoolean(process.env.ARIADEX_ENABLE_HEURISTIC_CONTRIBUTION_FILTER, true),
   maxTweetsPerSnapshot = Number(process.env.ARIADEX_OPENAI_MAX_TWEETS_PER_SNAPSHOT || 120),
   batchSize = Number(process.env.ARIADEX_OPENAI_BATCH_SIZE || 30),
   requestTimeoutMs = Number(process.env.ARIADEX_OPENAI_TIMEOUT_MS || 20000)
@@ -125,6 +191,9 @@ function createOpenAiContributionClassifier({
   const normalizedBatchSize = Math.max(5, Math.min(50, Math.floor(batchSize || 30)));
   const normalizedMaxTweets = Math.max(10, Math.floor(maxTweetsPerSnapshot || 120));
   const normalizedTimeoutMs = Math.max(2000, Math.floor(requestTimeoutMs || 20000));
+  const normalizedScoreThreshold = Number.isFinite(scoreThreshold)
+    ? Math.max(0.2, Math.min(0.95, scoreThreshold))
+    : 0.65;
   const endpoint = `${String(endpointBase || DEFAULT_ENDPOINT).replace(/\/$/, "")}/chat/completions`;
 
   async function classifyBatch(batch, meta = {}) {
@@ -157,7 +226,7 @@ function createOpenAiContributionClassifier({
 
       const payload = JSON.parse(raw);
       const content = payload?.choices?.[0]?.message?.content || "";
-      const parsed = parseOpenAiContent(content);
+      const parsed = parseOpenAiContent(content, { threshold: normalizedScoreThreshold });
       if (!parsed) {
         throw new Error("OpenAI classify returned invalid JSON payload");
       }
@@ -191,6 +260,10 @@ function createOpenAiContributionClassifier({
         enabled: false,
         model,
         byTweetId: {},
+        scoreByTweetId: {},
+        reasonByTweetId: {},
+        threshold: normalizedScoreThreshold,
+        heuristicRejectedCount: 0,
         candidateCount: 0,
         classifiedCount: 0,
         contributingCount: 0,
@@ -200,6 +273,11 @@ function createOpenAiContributionClassifier({
 
     const safeAlwaysInclude = alwaysIncludeIds instanceof Set ? alwaysIncludeIds : new Set();
     const candidates = [];
+    const byTweetId = {};
+    const scoreByTweetId = {};
+    const reasonByTweetId = {};
+    let heuristicRejectedCount = 0;
+
     for (const tweet of Array.isArray(tweets) ? tweets : []) {
       const id = tweet && tweet.id != null ? String(tweet.id).trim() : "";
       if (!id || safeAlwaysInclude.has(id)) {
@@ -208,6 +286,16 @@ function createOpenAiContributionClassifier({
       if (!String(tweet.text || "").trim()) {
         continue;
       }
+      if (enableHeuristics) {
+        const heuristicReason = heuristicNonContributionReason(tweet);
+        if (heuristicReason) {
+          byTweetId[id] = false;
+          scoreByTweetId[id] = 0;
+          reasonByTweetId[id] = `heuristic:${heuristicReason}`;
+          heuristicRejectedCount += 1;
+          continue;
+        }
+      }
       candidates.push(tweet);
       if (candidates.length >= normalizedMaxTweets) {
         break;
@@ -215,10 +303,9 @@ function createOpenAiContributionClassifier({
     }
 
     const batches = splitIntoBatches(candidates, normalizedBatchSize);
-    const byTweetId = {};
     let classifiedCount = 0;
-    let contributingCount = 0;
-    let nonContributingCount = 0;
+    let contributingCount = 0; // includes heuristic + model results
+    let nonContributingCount = heuristicRejectedCount;
 
     for (const batch of batches) {
       try {
@@ -227,6 +314,8 @@ function createOpenAiContributionClassifier({
           canonicalRootId
         });
         Object.assign(byTweetId, result.byTweetId);
+        Object.assign(scoreByTweetId, result.scoreByTweetId || {});
+        Object.assign(reasonByTweetId, result.reasonByTweetId || {});
         classifiedCount += result.labeledCount;
         contributingCount += result.contributingCount;
         nonContributingCount += result.nonContributingCount;
@@ -245,7 +334,11 @@ function createOpenAiContributionClassifier({
     return {
       enabled: true,
       model,
+      threshold: normalizedScoreThreshold,
       byTweetId,
+      scoreByTweetId,
+      reasonByTweetId,
+      heuristicRejectedCount,
       candidateCount: candidates.length,
       classifiedCount,
       contributingCount,
@@ -256,6 +349,9 @@ function createOpenAiContributionClassifier({
   return {
     enabled: classifierEnabled,
     model,
+    signature: classifierEnabled
+      ? `openai:${model}:th=${normalizedScoreThreshold}:heur=${enableHeuristics ? 1 : 0}`
+      : "openai:disabled",
     classifyTweets
   };
 }
