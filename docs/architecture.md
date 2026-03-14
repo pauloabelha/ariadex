@@ -153,8 +153,10 @@ Complexity:
 Click tweet
 -> content.js builds snapshot request
 -> background.js fetches graph API (localhost/prod endpoint)
+-> graph API job endpoint streams progress events
 -> graph API resolves root + retrieves connected tweets
 -> optional OpenAI contribution classifier filters low-value tweets
+-> cache hit path can run incremental diff refresh (new replies/quotes) before final rank
 -> core engine ranks remaining graph
 -> content.js renders network/global panel sections
 ```
@@ -177,6 +179,10 @@ Graph cache server observability:
 - emits structured JSON logs for each HTTP request, X API request, pipeline phase, warning, and completion summary
 - includes ranking diagnostics (`rankingCount`, `nonZeroScoreCount`, `emptyRankingReason`, top score preview) to debug empty panel outputs quickly
 - supports ANSI-colored terminal output via `ARIADEX_LOG_COLOR=true`
+
+Graph cache update modes:
+- full build: cache miss / force refresh
+- incremental merge: cache hit + `incremental=true` fetches newest replies/quotes and merges diffs into cached dataset
 
 ## Integration Contracts
 

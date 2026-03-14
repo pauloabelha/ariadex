@@ -28,6 +28,7 @@ The project is now layered:
 Extension networking note:
 - `content.js` asks `background.js` to call the Graph API.
 - This avoids x.com CSP/private-network blocks for localhost dev servers.
+- extension now uses async snapshot jobs and shows server progress messages while loading.
 
 Server filtering note:
 - graph-cache server can run an OpenAI cheap model pass (`gpt-4o-mini`) to mark tweets as contributing/non-contributing
@@ -39,6 +40,7 @@ UI note:
 
 Ops note:
 - server logs support ANSI color (`ARIADEX_LOG_COLOR=true`) and detailed debug traces (`ARIADEX_LOG_LEVEL=debug`)
+- cache hit requests can run incremental diff refresh (`incremental=true`) to catch new replies/quotes without full rebuild
 
 The same core logic can run in:
 - Chrome extension

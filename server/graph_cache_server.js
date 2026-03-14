@@ -542,7 +542,7 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
 
   const inflightByKey = new Map();
 
-  async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, followingIds = [], requestId = null, onProgress = null } = {}) {
+  async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, incremental = true, followingIds = [], requestId = null, onProgress = null } = {}) {
     const startedAtMs = nowMs();
     const normalizedMode = normalizeMode(mode);
     const followingSet = normalizeFollowingSet(followingIds);
@@ -639,7 +639,105 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
     }
 
     if (cached && !shouldBypassCachedForMissingContribution) {
-      const snapshot = buildSnapshotFromDataset(cached.value.dataset, followingSet);
+      let datasetForSnapshot = cached.value.dataset;
+
+      if (incremental) {
+        try {
+          pushProgress("incremental_refresh", "Checking for new replies/quotes since cached snapshot.", {
+            canonicalRootId
+          });
+          const incrementalWarnings = [];
+          const incrementalResult = await xApiClient.collectConnectedApiTweetsIncremental({
+            rootTweetId: canonicalRootId,
+            existingTweets: Array.isArray(datasetForSnapshot?.tweets) ? datasetForSnapshot.tweets : [],
+            client,
+            onWarning: (message) => incrementalWarnings.push(message),
+            onProgress: (progress) => {
+              pushProgress(
+                progress?.phase || "incremental_refresh",
+                progress?.phase === "incremental_complete"
+                  ? `Incremental refresh complete (${Number(progress?.newTweetCount || 0)} new tweets).`
+                  : "Refreshing recent conversation activity…",
+                {
+                  canonicalRootId,
+                  ...progress
+                }
+              );
+            }
+          });
+
+          const newTweets = Array.isArray(incrementalResult?.tweets) ? incrementalResult.tweets : [];
+          if (newTweets.length > 0) {
+            const mergedById = new Map();
+            for (const tweet of Array.isArray(datasetForSnapshot?.tweets) ? datasetForSnapshot.tweets : []) {
+              if (tweet?.id) {
+                mergedById.set(String(tweet.id), tweet);
+              }
+            }
+            for (const tweet of newTweets) {
+              if (tweet?.id) {
+                mergedById.set(String(tweet.id), tweet);
+              }
+            }
+
+            const mergedUsersById = new Map();
+            for (const user of Array.isArray(datasetForSnapshot?.users) ? datasetForSnapshot.users : []) {
+              if (user?.id) {
+                mergedUsersById.set(String(user.id), user);
+              }
+            }
+            for (const user of Array.isArray(incrementalResult?.users) ? incrementalResult.users : []) {
+              if (user?.id) {
+                mergedUsersById.set(String(user.id), user);
+              }
+            }
+
+            const mergedContributionById = datasetForSnapshot?.contributionById && typeof datasetForSnapshot.contributionById === "object"
+              ? { ...datasetForSnapshot.contributionById }
+              : {};
+            if (contributionClassifier && contributionClassifier.enabled && typeof contributionClassifier.classifyTweets === "function") {
+              const contribution = await contributionClassifier.classifyTweets(newTweets, {
+                requestId,
+                canonicalRootId,
+                alwaysIncludeIds: new Set([canonicalRootId])
+              });
+              Object.assign(mergedContributionById, contribution.byTweetId || {});
+            }
+
+            datasetForSnapshot = {
+              ...datasetForSnapshot,
+              tweets: [...mergedById.values()],
+              users: [...mergedUsersById.values()],
+              warnings: [
+                ...(Array.isArray(datasetForSnapshot?.warnings) ? datasetForSnapshot.warnings : []),
+                ...incrementalWarnings
+              ],
+              contributionById: mergedContributionById
+            };
+
+            cacheStore.set(cacheKey, {
+              dataset: datasetForSnapshot
+            }, cacheTtlMsForMode(normalizedMode));
+
+            logger.info("snapshot_incremental_merged", {
+              canonicalRootId,
+              cacheKey,
+              mode: normalizedMode,
+              newTweetCount: newTweets.length,
+              mergedTweetCount: datasetForSnapshot.tweets.length
+            });
+          }
+        } catch (error) {
+          logger.warn("snapshot_incremental_failed", {
+            canonicalRootId,
+            cacheKey,
+            mode: normalizedMode,
+            errorMessage: error?.message || "unknown_error"
+          });
+        }
+      }
+
+      const snapshot = buildSnapshotFromDataset(datasetForSnapshot, followingSet);
       pushProgress("cache_hit", "Loaded snapshot from cache.", {
         canonicalRootId
       });
@@ -772,7 +870,12 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
           classifiedCount: Number(contribution.classifiedCount || 0),
           contributingCount: Number(contribution.contributingCount || 0),
           nonContributingCount: Number(contribution.nonContributingCount || 0),
-          heuristicRejectedCount: Number(contribution.heuristicRejectedCount || 0)
+          heuristicRejectedCount: Number(contribution.heuristicRejectedCount || 0),
+          dedupedCount: Number(contribution.dedupedCount || 0),
+          maxConcurrentBatches: Number(contribution.maxConcurrentBatches || 0),
+          totalPromptTokens: Number(contribution?.usage?.promptTokens || 0),
+          totalCompletionTokens: Number(contribution?.usage?.completionTokens || 0),
+          totalTokens: Number(contribution?.usage?.totalTokens || 0)
         });
         pushProgress("classifying_complete", "Contribution classification complete.", {
           canonicalRootId,
@@ -964,6 +1067,7 @@ function createServer(service, { logger = createLogger({ level: "silent" }) } = 
             rootHintTweetId: body.rootHintTweetId || null,
             mode: body.mode || "fast",
             force: Boolean(body.force),
+            incremental: body.incremental !== false,
             followingIds: body.followingIds || [],
             requestId
           });
@@ -1037,6 +1141,7 @@ function createServer(service, { logger = createLogger({ level: "silent" }) } = 
               rootHintTweetId: body.rootHintTweetId || null,
               mode: body.mode || "fast",
               force: Boolean(body.force),
+              incremental: body.incremental !== false,
               followingIds: body.followingIds || [],
               requestId: jobId,
               onProgress: (progress) => {

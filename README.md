@@ -73,6 +73,9 @@ Environment flags:
 - `ARIADEX_OPENAI_MODEL` (default `gpt-4o-mini`)
 - `ARIADEX_CONTRIBUTION_SCORE_THRESHOLD` (default `0.65`)
 - `ARIADEX_ENABLE_HEURISTIC_CONTRIBUTION_FILTER=true|false` (default `true`)
+- `ARIADEX_OPENAI_DEDUPE_BY_TEXT=true|false` (default `true`)
+- `ARIADEX_OPENAI_MAX_CONCURRENT_BATCHES` (default `2`)
+- `ARIADEX_OPENAI_INCLUDE_REASON=true|false` (default `false`; lower cost when false)
 - `ARIADEX_OPENAI_MAX_TWEETS_PER_SNAPSHOT` (default `120`)
 - `ARIADEX_OPENAI_BATCH_SIZE` (default `30`)
 - `ARIADEX_OPENAI_TIMEOUT_MS` (default `20000`)
@@ -198,7 +201,10 @@ OpenAI status is logged at startup (`openAiEnabled`), and filter activity is log
 Filter diagnostics now include:
 - `threshold`
 - `heuristicRejectedCount`
+- `dedupedCount`
+- `maxConcurrentBatches`
 - `candidateCount`, `classifiedCount`
+- `totalPromptTokens`, `totalCompletionTokens`, `totalTokens`
 
 For verbose diagnostics:
 
@@ -222,6 +228,12 @@ Async progress API (used by extension panel):
 - `POST /v1/conversation-snapshot/jobs` starts a snapshot job
 - `GET /v1/conversation-snapshot/jobs/:jobId` returns running/completed/failed status + progress events
 - panel now shows server-driven progress messages while loading, with sections hidden until final ranked data arrives
+
+Incremental update mode:
+- requests include `incremental=true` by default
+- on cache hit, server fetches recent replies/quotes roots, computes diff (`newTweetCount`), merges new tweets into cached dataset, and re-ranks
+- if no diff is found, cached snapshot is returned directly
+- set `incremental=false` in API payload to skip diff refresh
 
 ## Use core engine standalone (Node/server)
 

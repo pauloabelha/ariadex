@@ -77,3 +77,44 @@ test("createOpenAiContributionClassifier classifies tweets in batches", async ()
   assert.equal(result.byTweetId.t2, false);
   assert.equal(result.scoreByTweetId.t2, 0);
 });
+
+test("createOpenAiContributionClassifier dedupes identical text before OpenAI", async () => {
+  let calls = 0;
+  const classifier = createOpenAiContributionClassifier({
+    apiKey: "test-key",
+    model: "gpt-4o-mini",
+    batchSize: 10,
+    maxTweetsPerSnapshot: 10,
+    fetchImpl: async (_url, options) => {
+      calls += 1;
+      const payload = JSON.parse(String(options.body));
+      const batch = JSON.parse(payload.messages[1].content).tweets;
+      const labels = batch.map((tweet) => ({
+        id: tweet.id,
+        contribution_score: 0.8,
+        contributing: true
+      }));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        async text() {
+          return JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ labels }) } }],
+            usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 }
+          });
+        }
+      };
+    }
+  });
+
+  const result = await classifier.classifyTweets([
+    { id: "a", text: "Detailed critique with evidence and specifics." },
+    { id: "b", text: "Detailed critique with evidence and specifics." }
+  ]);
+
+  assert.equal(calls, 1);
+  assert.equal(result.dedupedCount, 1);
+  assert.equal(result.byTweetId.a, true);
+  assert.equal(result.byTweetId.b, true);
+});

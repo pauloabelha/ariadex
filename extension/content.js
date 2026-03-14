@@ -36,8 +36,10 @@
   const EXTENSION_ROOT_ATTR = "data-ariadex-initialized";
   const BUTTON_CLASS = "ariadex-explore-button";
   const BUTTON_ATTR = "data-ariadex-explore-button";
+  const BUTTON_TWEET_ID_ATTR = "data-ariadex-tweet-id";
   const INJECTED_ATTR = "data-ariadex-injected";
   const EXPLORE_MODE = "deep";
+  const buttonTweetElementByButton = new WeakMap();
 
   const extractTweetData = typeof domCollectorApi.extractTweetData === "function"
     ? domCollectorApi.extractTweetData
@@ -484,6 +486,7 @@
       rootHintTweetId: options.rootHintTweetId || null,
       mode: options.mode || "fast",
       force: Boolean(options.forceRefresh),
+      incremental: options.incremental !== false,
       followingIds
     };
     const payloadBody = JSON.stringify(requestPayload);
@@ -690,7 +693,7 @@
     };
   }
 
-  function createExploreButton() {
+  function createExploreButton(tweetElement = null) {
     const button = globalScope.document.createElement("button");
     button.type = "button";
     button.className = BUTTON_CLASS;
@@ -702,15 +705,28 @@
       event.preventDefault();
       event.stopPropagation();
 
-      const clickedTweet = findClosestTweetContainer(event.currentTarget);
+      const mappedTweet = buttonTweetElementByButton.get(event.currentTarget) || null;
+      const clickedTweet = mappedTweet || findClosestTweetContainer(event.currentTarget);
       const clickedTweetData = extractTweetData(clickedTweet);
       const rootTweetElement = resolveConversationRoot(clickedTweet) || clickedTweet;
       const rootTweetData = extractTweetData(rootTweetElement);
+      const buttonTweetId = String(event.currentTarget?.getAttribute?.(BUTTON_TWEET_ID_ATTR) || "").trim();
 
-      const clickedTweetId = clickedTweetData.id || rootTweetData.id;
+      const clickedTweetId = buttonTweetId || clickedTweetData.id || rootTweetData.id;
       if (!clickedTweetId) {
         console.error("[Ariadex] Unable to resolve clicked tweet id");
         return;
+      }
+
+      const debugEnabled = typeof globalScope.window !== "undefined"
+        && Boolean(globalScope.window.AriadexDebug);
+      if (debugEnabled) {
+        console.debug("[Ariadex] Explore click ids", {
+          buttonTweetId,
+          clickedTweetId,
+          clickedTweetDataId: clickedTweetData.id || null,
+          rootHintTweetId: rootTweetData.id || null
+        });
       }
 
       if (renderConversationPanel) {
@@ -994,7 +1010,12 @@
       return false;
     }
 
-    const button = createExploreButton();
+    const button = createExploreButton(tweet);
+    const tweetData = extractTweetData(tweet);
+    if (tweetData?.id) {
+      button.setAttribute(BUTTON_TWEET_ID_ATTR, String(tweetData.id));
+    }
+    buttonTweetElementByButton.set(button, tweet);
     actionBar.appendChild(button);
     actionBar.setAttribute(INJECTED_ATTR, "true");
     return true;

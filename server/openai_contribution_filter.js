@@ -173,6 +173,30 @@ function splitIntoBatches(items, batchSize) {
   return out;
 }
 
+async function mapWithConcurrency(items, concurrency, worker) {
+  const safeConcurrency = Math.max(1, Math.floor(Number(concurrency) || 1));
+  const output = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runOne() {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) {
+        return;
+      }
+      output[currentIndex] = await worker(items[currentIndex], currentIndex);
+    }
+  }
+
+  const workers = [];
+  for (let i = 0; i < Math.min(safeConcurrency, items.length); i += 1) {
+    workers.push(runOne());
+  }
+  await Promise.all(workers);
+  return output;
+}
+
 function createOpenAiContributionClassifier({
   apiKey = process.env.OPENAI_API_KEY,
   model = DEFAULT_MODEL,
@@ -182,6 +206,9 @@ function createOpenAiContributionClassifier({
   enabled = toBoolean(process.env.ARIADEX_ENABLE_OPENAI_CONTRIBUTION_FILTER, true),
   scoreThreshold = Number(process.env.ARIADEX_CONTRIBUTION_SCORE_THRESHOLD || 0.65),
   enableHeuristics = toBoolean(process.env.ARIADEX_ENABLE_HEURISTIC_CONTRIBUTION_FILTER, true),
+  dedupeByText = toBoolean(process.env.ARIADEX_OPENAI_DEDUPE_BY_TEXT, true),
+  includeReason = toBoolean(process.env.ARIADEX_OPENAI_INCLUDE_REASON, false),
+  maxConcurrentBatches = Number(process.env.ARIADEX_OPENAI_MAX_CONCURRENT_BATCHES || 2),
   maxTweetsPerSnapshot = Number(process.env.ARIADEX_OPENAI_MAX_TWEETS_PER_SNAPSHOT || 120),
   batchSize = Number(process.env.ARIADEX_OPENAI_BATCH_SIZE || 30),
   requestTimeoutMs = Number(process.env.ARIADEX_OPENAI_TIMEOUT_MS || 20000)
@@ -191,6 +218,7 @@ function createOpenAiContributionClassifier({
   const normalizedBatchSize = Math.max(5, Math.min(50, Math.floor(batchSize || 30)));
   const normalizedMaxTweets = Math.max(10, Math.floor(maxTweetsPerSnapshot || 120));
   const normalizedTimeoutMs = Math.max(2000, Math.floor(requestTimeoutMs || 20000));
+  const normalizedMaxConcurrentBatches = Math.max(1, Math.min(6, Math.floor(maxConcurrentBatches || 2)));
   const normalizedScoreThreshold = Number.isFinite(scoreThreshold)
     ? Math.max(0.2, Math.min(0.95, scoreThreshold))
     : 0.65;
@@ -204,6 +232,16 @@ function createOpenAiContributionClassifier({
 
     const startedAtMs = Date.now();
     try {
+      const responseSchema = includeReason
+        ? "{\"labels\":[{\"id\":\"<tweet_id>\",\"contribution_score\":0.0-1.0,\"contributing\":true|false,\"reason\":\"short reason\"}]}"
+        : "{\"labels\":[{\"id\":\"<tweet_id>\",\"contribution_score\":0.0-1.0,\"contributing\":true|false}]}";
+
+      const compactBatch = batch.map((tweet) => ({
+        id: String(tweet.id || ""),
+        text: clipText(tweet.text, 300),
+        rel: tweet.reply_to ? "reply" : (tweet.quote_of ? "quote" : "other")
+      }));
+
       const response = await fetchImpl(endpoint, {
         method: "POST",
         headers: {
@@ -214,7 +252,24 @@ function createOpenAiContributionClassifier({
           model,
           temperature: 0,
           response_format: { type: "json_object" },
-          messages: buildMessages(batch)
+          messages: [
+            {
+              role: "system",
+              content: [
+                "You classify if tweets contribute to the discussion.",
+                "Contributing means adding concrete value: argument, evidence, clarification, critique, or specific question tied to thread context.",
+                "Non-contributing includes vague slogan, low-effort reaction, joke-only/comedy-only, spam, or unrelated text.",
+                "Bare assertions without support should score low.",
+                `Return strict JSON only: ${responseSchema}`,
+                `Set contributing=true only when contribution_score >= ${normalizedScoreThreshold.toFixed(2)}.`,
+                "No extra keys, no markdown."
+              ].join(" ")
+            },
+            {
+              role: "user",
+              content: JSON.stringify({ tweets: compactBatch })
+            }
+          ]
         }),
         ...(controller ? { signal: controller.signal } : {})
       });
@@ -246,7 +301,14 @@ function createOpenAiContributionClassifier({
         });
       }
 
-      return parsed;
+      return {
+        ...parsed,
+        usage: {
+          promptTokens: Number(payload?.usage?.prompt_tokens || 0),
+          completionTokens: Number(payload?.usage?.completion_tokens || 0),
+          totalTokens: Number(payload?.usage?.total_tokens || 0)
+        }
+      };
     } finally {
       if (timeout) {
         clearTimeout(timeout);
@@ -273,6 +335,8 @@ function createOpenAiContributionClassifier({
 
     const safeAlwaysInclude = alwaysIncludeIds instanceof Set ? alwaysIncludeIds : new Set();
     const candidates = [];
+    const duplicateOfById = {};
+    const canonicalIdByTextKey = new Map();
     const byTweetId = {};
     const scoreByTweetId = {};
     const reasonByTweetId = {};
@@ -285,6 +349,17 @@ function createOpenAiContributionClassifier({
       }
       if (!String(tweet.text || "").trim()) {
         continue;
+      }
+      if (dedupeByText) {
+        const textKey = String(tweet.text || "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 300);
+        if (textKey) {
+          const existingCanonicalId = canonicalIdByTextKey.get(textKey);
+          if (existingCanonicalId) {
+            duplicateOfById[id] = existingCanonicalId;
+            continue;
+          }
+          canonicalIdByTextKey.set(textKey, id);
+        }
       }
       if (enableHeuristics) {
         const heuristicReason = heuristicNonContributionReason(tweet);
@@ -306,28 +381,56 @@ function createOpenAiContributionClassifier({
     let classifiedCount = 0;
     let contributingCount = 0; // includes heuristic + model results
     let nonContributingCount = heuristicRejectedCount;
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+    let totalTokens = 0;
 
-    for (const batch of batches) {
-      try {
-        const result = await classifyBatch(batch, {
-          requestId,
-          canonicalRootId
-        });
-        Object.assign(byTweetId, result.byTweetId);
-        Object.assign(scoreByTweetId, result.scoreByTweetId || {});
-        Object.assign(reasonByTweetId, result.reasonByTweetId || {});
-        classifiedCount += result.labeledCount;
-        contributingCount += result.contributingCount;
-        nonContributingCount += result.nonContributingCount;
-      } catch (error) {
-        if (logger && typeof logger.warn === "function") {
-          logger.warn("openai_classification_batch_failed", {
+    const batchResults = await mapWithConcurrency(
+      batches,
+      normalizedMaxConcurrentBatches,
+      async (batch) => {
+        try {
+          return await classifyBatch(batch, {
             requestId,
-            canonicalRootId,
-            batchSize: batch.length,
-            errorMessage: error?.message || "unknown_error"
+            canonicalRootId
           });
+        } catch (error) {
+          if (logger && typeof logger.warn === "function") {
+            logger.warn("openai_classification_batch_failed", {
+              requestId,
+              canonicalRootId,
+              batchSize: batch.length,
+              errorMessage: error?.message || "unknown_error"
+            });
+          }
+          return null;
         }
+      }
+    );
+
+    for (const result of batchResults) {
+      if (!result) {
+        continue;
+      }
+      Object.assign(byTweetId, result.byTweetId);
+      Object.assign(scoreByTweetId, result.scoreByTweetId || {});
+      Object.assign(reasonByTweetId, result.reasonByTweetId || {});
+      classifiedCount += result.labeledCount;
+      contributingCount += result.contributingCount;
+      nonContributingCount += result.nonContributingCount;
+      totalPromptTokens += Number(result?.usage?.promptTokens || 0);
+      totalCompletionTokens += Number(result?.usage?.completionTokens || 0);
+      totalTokens += Number(result?.usage?.totalTokens || 0);
+    }
+
+    for (const [id, canonicalId] of Object.entries(duplicateOfById)) {
+      if (!canonicalId) {
+        continue;
+      }
+      if (Object.prototype.hasOwnProperty.call(byTweetId, canonicalId)) {
+        byTweetId[id] = byTweetId[canonicalId];
+        scoreByTweetId[id] = Number.isFinite(scoreByTweetId[canonicalId]) ? scoreByTweetId[canonicalId] : 0;
+        reasonByTweetId[id] = reasonByTweetId[canonicalId] || "deduped_from_identical_text";
       }
     }
 
@@ -339,10 +442,17 @@ function createOpenAiContributionClassifier({
       scoreByTweetId,
       reasonByTweetId,
       heuristicRejectedCount,
+      dedupedCount: Object.keys(duplicateOfById).length,
+      maxConcurrentBatches: normalizedMaxConcurrentBatches,
       candidateCount: candidates.length,
       classifiedCount,
       contributingCount,
-      nonContributingCount
+      nonContributingCount,
+      usage: {
+        promptTokens: totalPromptTokens,
+        completionTokens: totalCompletionTokens,
+        totalTokens
+      }
     };
   }
 

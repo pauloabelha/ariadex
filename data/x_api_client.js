@@ -756,6 +756,171 @@
     };
   }
 
+  async function collectConnectedApiTweetsIncremental({ rootTweetId, existingTweets = [], client, onWarning, onProgress }) {
+    const existingById = new Map();
+    for (const tweet of ensureArray(existingTweets)) {
+      if (!tweet || !tweet.id) {
+        continue;
+      }
+      existingById.set(String(tweet.id), tweet);
+    }
+
+    const userById = new Map();
+    const newTweetById = new Map();
+    const queue = [];
+    const seenRoots = new Set();
+
+    if (rootTweetId) {
+      queue.push(String(rootTweetId));
+    }
+    for (const tweet of existingById.values()) {
+      if (!tweet || !tweet.id) {
+        continue;
+      }
+      if (tweet.quote_of && String(tweet.quote_of) === String(rootTweetId)) {
+        queue.push(String(tweet.id));
+      }
+    }
+
+    const maxIncrementalRoots = Math.max(1, Math.min(50, Math.floor(client.options.maxConversationRoots || 8)));
+    const incrementalPages = Math.max(1, Math.min(2, Math.floor(client.options.maxPagesPerCollection || 1)));
+
+    async function fetchPaginatedLimited(path, params = {}) {
+      const allData = [];
+      const allUsers = [];
+      let nextToken = null;
+
+      for (let page = 0; page < incrementalPages; page += 1) {
+        const response = await client.request(path, {
+          ...params,
+          ...(nextToken ? { pagination_token: nextToken } : {})
+        });
+        allData.push(...ensureArray(response?.data));
+        allUsers.push(...ensureArray(response?.includes?.users));
+        nextToken = response?.meta?.next_token || null;
+        if (!nextToken) {
+          break;
+        }
+      }
+
+      return {
+        tweets: allData,
+        users: allUsers
+      };
+    }
+
+    if (typeof onProgress === "function") {
+      onProgress({
+        phase: "incremental_started",
+        rootTweetId
+      });
+    }
+
+    while (queue.length > 0 && seenRoots.size < maxIncrementalRoots) {
+      const currentRoot = queue.shift();
+      if (!currentRoot || seenRoots.has(currentRoot)) {
+        continue;
+      }
+      seenRoots.add(currentRoot);
+
+      if (typeof onProgress === "function") {
+        onProgress({
+          phase: "incremental_collecting_root",
+          rootId: currentRoot,
+          processedRoots: seenRoots.size
+        });
+      }
+
+      try {
+        const replies = await fetchPaginatedLimited("/tweets/search/recent", {
+          ...baseTweetParams(client.options.maxResultsPerPage),
+          query: `conversation_id:${currentRoot}`
+        });
+        addUsersToMap(userById, replies.users);
+        for (const tweet of replies.tweets) {
+          if (!tweet?.id || existingById.has(tweet.id) || newTweetById.has(tweet.id)) {
+            continue;
+          }
+          newTweetById.set(tweet.id, tweet);
+        }
+      } catch (error) {
+        if (typeof onWarning === "function") {
+          onWarning(`incremental replies failed for ${currentRoot}: ${error.message}`);
+        }
+      }
+
+      if (client.options.includeQuoteTweets) {
+        try {
+          const quotes = await fetchPaginatedLimited(client, `/tweets/${currentRoot}/quote_tweets`, {
+            ...baseTweetParams(client.options.maxResultsPerPage)
+          });
+          addUsersToMap(userById, quotes.users);
+          for (const tweet of quotes.tweets) {
+            if (!tweet?.id || existingById.has(tweet.id) || newTweetById.has(tweet.id)) {
+              continue;
+            }
+            newTweetById.set(tweet.id, tweet);
+            if (client.options.includeQuoteReplies) {
+              queue.push(String(tweet.id));
+            }
+          }
+        } catch (error) {
+          if (typeof onWarning === "function") {
+            onWarning(`incremental quote_tweets failed for ${currentRoot}: ${error.message}`);
+          }
+        }
+      }
+    }
+
+    const missingReferencedTweetIds = collectMissingReferencedTweetIds(newTweetById)
+      .filter((id) => !existingById.has(id));
+    if (missingReferencedTweetIds.length > 0) {
+      try {
+        const referencedLookup = await fetchTweetsByIds(client, missingReferencedTweetIds);
+        addUsersToMap(userById, referencedLookup.users);
+        for (const tweet of referencedLookup.tweets) {
+          if (!tweet?.id || existingById.has(tweet.id) || newTweetById.has(tweet.id)) {
+            continue;
+          }
+          newTweetById.set(tweet.id, tweet);
+        }
+      } catch (error) {
+        if (typeof onWarning === "function") {
+          onWarning(`incremental referenced lookup failed: ${error.message}`);
+        }
+      }
+    }
+
+    const missingAuthorIds = [...new Set(
+      [...newTweetById.values()]
+        .map((tweet) => tweet?.author_id)
+        .filter((authorId) => authorId && !userById.has(authorId))
+    )];
+    if (missingAuthorIds.length > 0) {
+      try {
+        const users = await fetchUsersByIds(client, missingAuthorIds);
+        addUsersToMap(userById, users);
+      } catch (error) {
+        if (typeof onWarning === "function") {
+          onWarning(`incremental author lookup failed: ${error.message}`);
+        }
+      }
+    }
+
+    const normalizedTweets = [...newTweetById.values()].map((tweet) => normalizeApiTweet(tweet, userById));
+    if (typeof onProgress === "function") {
+      onProgress({
+        phase: "incremental_complete",
+        newTweetCount: normalizedTweets.length
+      });
+    }
+
+    return {
+      tweets: normalizedTweets,
+      users: [...userById.values()]
+    };
+  }
+
   async function buildConversationDataset(options = {}) {
     const warnings = [];
     const client = await createClient({
@@ -817,6 +982,7 @@
     createClient,
     resolveCanonicalRootTweetId,
     collectConnectedApiTweets,
+    collectConnectedApiTweetsIncremental,
     buildConversationDataset,
     normalizeApiTweet,
     pickReferencedTweet
