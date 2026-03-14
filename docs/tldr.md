@@ -7,6 +7,7 @@ When you click `◇ Explore` on X:
 2. It retrieves connected tweets from the official X API in two passes:
    - core topicsphere pass (replies/quotes/quote-replies)
    - bounded followed-author discovery pass
+   - replies and quotes are fetched concurrently per root to reduce latency
 3. It builds a typed graph.
 4. It runs ThinkerRank.
 5. It renders two ranked panel sections.

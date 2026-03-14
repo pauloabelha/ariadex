@@ -180,3 +180,72 @@ test("buildConversationDataset skips network discovery queries when following se
   assert.deepEqual(calledSearchQueries, ["conversation_id:100"]);
 });
 
+test("buildConversationDataset preserves quote retrieval when replies endpoint fails", async () => {
+  const fetchImpl = async (urlString) => {
+    const url = new URL(urlString);
+    const path = url.pathname;
+    const query = url.searchParams.get("query") || "";
+
+    if (path === "/2/tweets/100") {
+      return jsonResponse({
+        data: {
+          id: "100",
+          author_id: "u_root",
+          text: "root",
+          referenced_tweets: [],
+          public_metrics: {}
+        },
+        includes: {
+          users: [{ id: "u_root", username: "rooter" }]
+        }
+      });
+    }
+
+    if (path === "/2/tweets/search/recent" && query === "conversation_id:100") {
+      return jsonResponse({ title: "rate limited" }, 429, "Too Many Requests");
+    }
+
+    if (path === "/2/tweets/100/quote_tweets") {
+      return jsonResponse({
+        data: [
+          {
+            id: "200",
+            author_id: "u_quote",
+            text: "quote survives reply failure",
+            referenced_tweets: [{ type: "quoted", id: "100" }],
+            public_metrics: {}
+          }
+        ],
+        includes: {
+          users: [{ id: "u_quote", username: "quoteuser" }]
+        },
+        meta: {}
+      });
+    }
+
+    if (path === "/2/tweets") {
+      return jsonResponse({ data: [], includes: { users: [] } });
+    }
+
+    if (path === "/2/users") {
+      return jsonResponse({ data: [] });
+    }
+
+    throw new Error(`Unexpected URL: ${url.toString()}`);
+  };
+
+  const dataset = await xApiClient.buildConversationDataset({
+    clickedTweetId: "100",
+    bearerToken: "test-token",
+    fetchImpl,
+    includeQuoteTweets: true,
+    includeQuoteReplies: false,
+    followingSet: new Set(),
+    maxConversationRoots: 2,
+    maxPagesPerCollection: 1
+  });
+
+  const ids = new Set((dataset.tweets || []).map((tweet) => tweet.id));
+  assert.equal(ids.has("200"), true);
+  assert.equal((dataset.warnings || []).some((warning) => String(warning).includes("conversation replies failed")), true);
+});

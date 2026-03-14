@@ -157,6 +157,7 @@ Click tweet
 -> graph API resolves root + retrieves connected tweets in two passes:
    pass A: core topicsphere (replies, quotes, quote-reply expansion)
    pass B: bounded followed-author discovery (`from:<handle>` queries with strict request caps)
+   note: per-root replies and quote fetches run concurrently, then are merged in deterministic order
 -> optional OpenAI contribution classifier filters low-value tweets
 -> cache hit path can run incremental diff refresh (new replies/quotes) before final rank
 -> core engine ranks remaining graph

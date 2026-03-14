@@ -338,9 +338,11 @@
     return "Cousin";
   }
 
-  function buildPanelSections({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false } = {}) {
+  function buildPanelSections({ nodes, scoreById, relationshipById, followingSet, normalizedFollowingSet = null, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false } = {}) {
     const safeNodes = Array.isArray(nodes) ? nodes : [];
-    const normalizedFollowingSet = normalizeFollowingSet(followingSet);
+    const followedLookup = normalizedFollowingSet instanceof Set
+      ? normalizedFollowingSet
+      : normalizeFollowingSet(followingSet);
     const excludedIds = normalizeExcludedTweetIds(excludedTweetIds);
     const rankedEntries = [];
 
@@ -383,7 +385,7 @@
     const usedIds = new Set();
 
     for (const entry of rankedEntries) {
-      const isFollowed = isAuthorFollowed(entry.tweet, normalizedFollowingSet);
+      const isFollowed = isAuthorFollowed(entry.tweet, followedLookup);
 
       if (isFollowed && fromNetwork.length < networkLimit) {
         fromNetwork.push(entry);
@@ -519,11 +521,13 @@
       };
     }
 
+    const normalizedFollowingSet = normalizeFollowingSet(followingSet);
     const sections = buildPanelSections({
       nodes,
       scoreById,
       relationshipById,
       followingSet,
+      normalizedFollowingSet,
       excludedTweetIds,
       humanOnly,
       networkLimit,
@@ -539,7 +543,6 @@
       fragment.appendChild(statusNode);
     }
     if (!loadingOnly) {
-      const normalizedFollowingSet = normalizeFollowingSet(followingSet);
       const networkEmptyText = normalizedFollowingSet.size === 0
         ? "Following set is empty. Configure following IDs/handles to populate this section."
         : "No ranked tweets from followed accounts.";

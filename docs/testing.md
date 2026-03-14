@@ -50,6 +50,7 @@ These tests run pure engine/data logic:
 - missing parents: `conversation_graph_test.js`
 - equal score deterministic ordering: `conversation_rank_test.js`, `ui_panel_render_test.js`
 - followed-account discovery pass: `x_api_client_network_discovery_test.js`
+- concurrent collection resilience (reply failure does not drop quote branch): `x_api_client_network_discovery_test.js`
 - adjacency integrity: `conversation_adjacency_test.js`
 - core layer has no DOM/extension API usage: `core_layer_boundary_test.js`
 

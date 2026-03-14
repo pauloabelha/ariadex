@@ -8,6 +8,7 @@ Ariadex explores conversations on X by turning connected tweets into a typed gra
 - retrieves conversation data via official X API in two passes:
   - core topicsphere (replies/quotes/quote-replies)
   - bounded followed-author discovery
+  - per-root replies/quotes are fetched concurrently, then merged deterministically
 - builds a conversation graph
 - runs ThinkerRank
 - renders a two-tier panel:

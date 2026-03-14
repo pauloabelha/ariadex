@@ -717,11 +717,20 @@
       addUsersToMap(userById, rootLookup.users);
       addTweetsToMap(tweetById, [rootLookup.tweet], client.options.maxConnectedTweets);
 
-      try {
-        const conversationReplies = await fetchPaginated(client, "/tweets/search/recent", {
-          ...baseTweetParams(client.options.maxResultsPerPage),
-          query: `conversation_id:${rootId}`
-        });
+      const repliesPromise = fetchPaginated(client, "/tweets/search/recent", {
+        ...baseTweetParams(client.options.maxResultsPerPage),
+        query: `conversation_id:${rootId}`
+      });
+      const quotesPromise = (client.options.includeQuoteTweets && !quoteRateLimited)
+        ? fetchPaginated(client, `/tweets/${rootId}/quote_tweets`, {
+          ...baseTweetParams(client.options.maxResultsPerPage)
+        })
+        : Promise.resolve({ tweets: [], users: [] });
+
+      const [repliesResult, quotesResult] = await Promise.allSettled([repliesPromise, quotesPromise]);
+
+      if (repliesResult.status === "fulfilled") {
+        const conversationReplies = repliesResult.value || { tweets: [], users: [] };
         addUsersToMap(userById, conversationReplies.users);
         addTweetsToMap(tweetById, conversationReplies.tweets, client.options.maxConnectedTweets);
         if (typeof onProgress === "function") {
@@ -732,29 +741,26 @@
             tweetCount: tweetById.size
           });
         }
-      } catch (error) {
+      } else {
+        const error = repliesResult.reason;
         if (typeof onWarning === "function") {
-          onWarning(`conversation replies failed for ${rootId}: ${error.message}`);
+          onWarning(`conversation replies failed for ${rootId}: ${error?.message || String(error)}`);
         }
         if (error?.status === 429) {
           repliesRateLimited = true;
-          break;
         }
       }
 
       let quoteTweets = { tweets: [], users: [] };
-      if (client.options.includeQuoteTweets && !quoteRateLimited) {
-        try {
-          quoteTweets = await fetchPaginated(client, `/tweets/${rootId}/quote_tweets`, {
-            ...baseTweetParams(client.options.maxResultsPerPage)
-          });
-        } catch (error) {
-          if (typeof onWarning === "function") {
-            onWarning(`quote_tweets failed for ${rootId}: ${error.message}`);
-          }
-          if (error?.status === 429) {
-            quoteRateLimited = true;
-          }
+      if (quotesResult.status === "fulfilled") {
+        quoteTweets = quotesResult.value || quoteTweets;
+      } else {
+        const error = quotesResult.reason;
+        if (typeof onWarning === "function") {
+          onWarning(`quote_tweets failed for ${rootId}: ${error?.message || String(error)}`);
+        }
+        if (error?.status === 429) {
+          quoteRateLimited = true;
         }
       }
 
@@ -784,6 +790,10 @@
             queuedRoots: rootQueue.length
           });
         }
+      }
+
+      if (repliesRateLimited) {
+        break;
       }
 
       if (client.options.includeRetweets && !retweetRateLimited) {
