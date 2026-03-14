@@ -472,6 +472,57 @@
     return collectedUsers;
   }
 
+  async function fetchUserByUsername(client, username) {
+    const normalized = String(username || "").trim().replace(/^@+/, "");
+    if (!normalized) {
+      return null;
+    }
+
+    const response = await client.request(`/users/by/username/${normalized}`, {
+      "user.fields": DEFAULT_USER_FIELDS
+    });
+    return response?.data || null;
+  }
+
+  async function fetchFollowingUserIds(client, userId, options = {}) {
+    const id = String(userId || "").trim();
+    if (!id) {
+      return [];
+    }
+
+    const maxPages = Math.max(1, Math.min(10, Math.floor(Number(options.maxPages) || 1)));
+    const maxResults = Math.max(10, Math.min(1000, Math.floor(Number(options.maxResults) || 200)));
+    const maxIds = Math.max(10, Math.min(5000, Math.floor(Number(options.maxIds) || 1000)));
+
+    const ids = [];
+    let nextToken = null;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const response = await client.request(`/users/${id}/following`, {
+        "user.fields": "id,username",
+        max_results: Math.min(1000, maxResults),
+        ...(nextToken ? { pagination_token: nextToken } : {})
+      });
+
+      for (const user of ensureArray(response?.data)) {
+        if (!user || !user.id) {
+          continue;
+        }
+        ids.push(String(user.id));
+        if (ids.length >= maxIds) {
+          return ids;
+        }
+      }
+
+      nextToken = response?.meta?.next_token || null;
+      if (!nextToken) {
+        break;
+      }
+    }
+
+    return ids;
+  }
+
   async function fetchPaginated(client, path, params = {}) {
     const allData = [];
     const allUsers = [];
@@ -1199,6 +1250,8 @@
     collectConnectedApiTweets,
     collectConnectedApiTweetsIncremental,
     buildConversationDataset,
+    fetchUserByUsername,
+    fetchFollowingUserIds,
     normalizeApiTweet,
     pickReferencedTweet
   };

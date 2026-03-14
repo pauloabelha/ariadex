@@ -57,7 +57,9 @@ This writes `extension/dev_env.generated.json` (git-ignored). `extension/dev_env
 
 Note:
 - `From Your Network` relies on `followingSet` (`X_FOLLOWING_IDS` or runtime hints).
-- App-only bearer-token mode cannot pull your full following graph directly from X API.
+- server now attempts viewer-handle-based following resolution when `followingSet` is empty.
+- if X API credentials do not permit `/users/:id/following`, resolution fails safely and you should provide `X_FOLLOWING_IDS`.
+- optional limits: `ARIADEX_VIEWER_FOLLOWING_MAX_PAGES`, `ARIADEX_VIEWER_FOLLOWING_MAX_IDS`, `ARIADEX_VIEWER_HANDLE_LOOKUP_MAX`.
 
 Security default:
 - `allowClientDirectApi=false` (default)

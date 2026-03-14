@@ -62,6 +62,7 @@ npm run benchmark:snapshot
 
 This benchmark is deterministic (synthetic in-memory X API) and reports cold vs warm latency and per-endpoint request counts.
 - core layer has no DOM/extension API usage: `core_layer_boundary_test.js`
+- viewer-handle normalization and server-side following enrichment fallback: `graph_cache_server_test.js`
 
 ## Manual Extension Smoke Test
 1. Run `node scripts/sync_env_to_generated_config.js`

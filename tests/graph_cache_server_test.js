@@ -4,8 +4,11 @@ const { EventEmitter } = require("node:events");
 
 const {
   createLogger,
-  createServer
+  createServer,
+  normalizeViewerHandles,
+  enrichFollowingSetFromViewerHandles
 } = require("../server/graph_cache_server.js");
+const xApiClient = require("../data/x_api_client.js");
 
 test("createLogger respects log level filtering", () => {
   const records = [];
@@ -153,4 +156,50 @@ test("createServer returns 400 for invalid json with structured warning log", as
   const invalid = records.find((record) => record.event === "http_request_invalid_json");
   assert.ok(invalid);
   assert.equal(invalid.statusCode, 400);
+});
+
+test("normalizeViewerHandles keeps valid unique handles", () => {
+  const handles = normalizeViewerHandles(["@PauloAbelha", "pauloabelha", "bad handle", "@Another_One"]);
+  assert.deepEqual(handles, ["pauloabelha", "another_one"]);
+});
+
+test("enrichFollowingSetFromViewerHandles resolves following ids from first valid viewer handle", async () => {
+  const originalFetchUserByUsername = xApiClient.fetchUserByUsername;
+  const originalFetchFollowingUserIds = xApiClient.fetchFollowingUserIds;
+
+  xApiClient.fetchUserByUsername = async (_client, handle) => {
+    if (handle === "pauloabelha") {
+      return { id: "viewer-1", username: "pauloabelha" };
+    }
+    return null;
+  };
+  xApiClient.fetchFollowingUserIds = async (_client, userId) => {
+    assert.equal(userId, "viewer-1");
+    return ["42", "77"];
+  };
+
+  const records = [];
+  const logger = createLogger({
+    level: "debug",
+    sink: (record) => records.push(record)
+  });
+
+  try {
+    const result = await enrichFollowingSetFromViewerHandles({
+      followingSet: new Set(),
+      viewerHandles: ["@pauloabelha"],
+      client: { request: async () => ({}) },
+      logger,
+      requestId: "req-1"
+    });
+
+    assert.equal(result.resolvedFromViewer, true);
+    assert.equal(result.viewerHandleUsed, "@pauloabelha");
+    assert.equal(result.followingSet.has("42"), true);
+    assert.equal(result.followingSet.has("77"), true);
+    assert.equal(records.some((record) => record.event === "snapshot_following_resolved_from_viewer"), true);
+  } finally {
+    xApiClient.fetchUserByUsername = originalFetchUserByUsername;
+    xApiClient.fetchFollowingUserIds = originalFetchFollowingUserIds;
+  }
 });

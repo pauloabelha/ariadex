@@ -43,6 +43,7 @@ UI note:
 - if `followingSet` is empty, "From Your Network" will stay empty by design
 - app-only bearer token mode cannot fetch the viewer's full following graph from X API
 - extension now extracts viewer handle hints from X header DOM for diagnostics/debugging
+- graph server now tries viewer-handle -> user -> following-id resolution automatically; if scope is denied, fallback is manual `X_FOLLOWING_IDS`
 
 Ops note:
 - server logs support ANSI color (`ARIADEX_LOG_COLOR=true`) and detailed debug traces (`ARIADEX_LOG_LEVEL=debug`)

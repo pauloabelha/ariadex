@@ -253,6 +253,98 @@ function normalizeFollowingSet(input) {
   return new Set();
 }
 
+function normalizeViewerHandles(input) {
+  const handles = new Set();
+  const source = Array.isArray(input) ? input : [];
+  for (const value of source) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) {
+      continue;
+    }
+    const normalized = raw.startsWith("@") ? raw.slice(1) : raw;
+    if (!/^[a-z0-9_]{1,15}$/.test(normalized)) {
+      continue;
+    }
+    handles.add(normalized);
+  }
+  return [...handles];
+}
+
+async function enrichFollowingSetFromViewerHandles({ followingSet, viewerHandles, client, logger, requestId }) {
+  const base = normalizeFollowingSet(followingSet);
+  if (base.size > 0) {
+    return {
+      followingSet: base,
+      resolvedFromViewer: false,
+      viewerHandleUsed: null
+    };
+  }
+
+  const handles = normalizeViewerHandles(viewerHandles);
+  if (handles.length === 0) {
+    return {
+      followingSet: base,
+      resolvedFromViewer: false,
+      viewerHandleUsed: null
+    };
+  }
+
+  const maxHandles = Math.max(1, Math.min(3, Number(process.env.ARIADEX_VIEWER_HANDLE_LOOKUP_MAX || 1)));
+  const followingMaxPages = Math.max(1, Math.min(10, Number(process.env.ARIADEX_VIEWER_FOLLOWING_MAX_PAGES || 1)));
+  const followingMaxIds = Math.max(50, Math.min(5000, Number(process.env.ARIADEX_VIEWER_FOLLOWING_MAX_IDS || 1000)));
+
+  for (let i = 0; i < handles.length && i < maxHandles; i += 1) {
+    const handle = handles[i];
+    try {
+      const viewer = await xApiClient.fetchUserByUsername(client, handle);
+      const viewerId = viewer?.id ? String(viewer.id) : "";
+      if (!viewerId) {
+        continue;
+      }
+
+      const ids = await xApiClient.fetchFollowingUserIds(client, viewerId, {
+        maxPages: followingMaxPages,
+        maxIds: followingMaxIds,
+        maxResults: 200
+      });
+      if (!Array.isArray(ids) || ids.length === 0) {
+        continue;
+      }
+
+      for (const id of ids) {
+        const normalized = String(id || "").trim();
+        if (normalized) {
+          base.add(normalized);
+        }
+      }
+
+      logger.info("snapshot_following_resolved_from_viewer", {
+        requestId,
+        viewerHandle: `@${handle}`,
+        followingCount: base.size
+      });
+
+      return {
+        followingSet: base,
+        resolvedFromViewer: true,
+        viewerHandleUsed: `@${handle}`
+      };
+    } catch (error) {
+      logger.warn("snapshot_viewer_following_resolution_failed", {
+        requestId,
+        viewerHandle: `@${handle}`,
+        errorMessage: error?.message || "unknown_error"
+      });
+    }
+  }
+
+  return {
+    followingSet: base,
+    resolvedFromViewer: false,
+    viewerHandleUsed: null
+  };
+}
+
 function modeOptions(mode) {
   const normalized = normalizeMode(mode);
   if (normalized === "deep") {
@@ -564,7 +656,7 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
   async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, incremental = true, followingIds = [], viewerHandles = [], requestId = null, onProgress = null } = {}) {
     const startedAtMs = nowMs();
     const normalizedMode = normalizeMode(mode);
-    const followingSet = normalizeFollowingSet(followingIds);
+    let followingSet = normalizeFollowingSet(followingIds);
     const pushProgress = (phase, message, extra = {}) => {
       if (typeof onProgress !== "function") {
         return;
@@ -587,12 +679,6 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       followingCount: followingSet.size,
       viewerHandleCount: Array.isArray(viewerHandles) ? viewerHandles.length : 0
     });
-    if (followingSet.size === 0) {
-      logger.warn("snapshot_following_set_empty", {
-        clickedTweetId: clickedTweetId || null,
-        mode: normalizedMode
-      });
-    }
 
     const observedFetch = createObservedFetch({
       requestId: requestId || "snapshot",
@@ -604,6 +690,24 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       fetchImpl: observedFetch,
       options: modeOptions(normalizedMode)
     });
+
+    if (followingSet.size === 0) {
+      const enrichment = await enrichFollowingSetFromViewerHandles({
+        followingSet,
+        viewerHandles,
+        client,
+        logger,
+        requestId
+      });
+      followingSet = enrichment.followingSet;
+
+      if (followingSet.size === 0) {
+        logger.warn("snapshot_following_set_empty", {
+          clickedTweetId: clickedTweetId || null,
+          mode: normalizedMode
+        });
+      }
+    }
 
     const canonicalRootId = await resolveCanonicalRoot({
       client,
@@ -1327,6 +1431,8 @@ module.exports = {
   createServer,
   normalizeMode,
   normalizeFollowingSet,
+  normalizeViewerHandles,
+  enrichFollowingSetFromViewerHandles,
   hashCacheKey,
   modeOptions
 };

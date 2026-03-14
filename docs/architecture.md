@@ -191,7 +191,8 @@ Graph cache update modes:
 
 Following set note:
 - followed-account ranking/discovery depends on `followingSet` provided by extension config/runtime hints.
-- with app-only X bearer token mode, Ariadex cannot fetch the viewer's full following graph directly from X API.
+- server attempts viewer-handle-based following resolution when `followingSet` is empty.
+- if credentials/scopes block `/users/:id/following`, Ariadex keeps running and logs a warning; `X_FOLLOWING_IDS` remains the reliable fallback.
 
 ## Integration Contracts
 
