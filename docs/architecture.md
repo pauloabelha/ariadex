@@ -121,6 +121,12 @@ ThinkerRank propagation uses adjacency lists over weighted edge types:
 - reply weight: `1.0`
 - quote weight: `1.3`
 
+ThinkerRank scoring combines:
+- recursive graph influence (PageRank-style propagation)
+- author prior (`followingSet` boost)
+- reach prior and transfer boost from engagement metrics (`likes`, `reposts`, `replies`, `quotes`)
+- follower-count prior from `author_profile.public_metrics.followers_count`
+
 Adjacency index:
 
 ```js
@@ -195,6 +201,8 @@ UI expects:
 - panel sections are built from one canonical sorted list
 - duplicate tweets are removed across panel sections
 - adjacency index deduplicates duplicate edges by `(source,target,type)`
+
+For algorithm details, see `docs/conversation_rank.md`.
 
 ## Compatibility Notes
 Some `extension/*` modules mirror `core/data/ui` behavior to keep manifest loading and legacy tests stable. New feature work should target `core/`, `data/`, and `ui/` first.

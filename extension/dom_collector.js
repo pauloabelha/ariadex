@@ -37,6 +37,7 @@
     "data-ariadex-repost-of"
   ];
   const ACTION_HINTS = ["reply", "repost", "retweet", "like", "bookmark", "share", "view"];
+  const FOLLOWING_TEXT_PATTERN = /\bfollowing\b/i;
 
   function isElement(node) {
     return typeof Element !== "undefined" && node instanceof Element;
@@ -361,6 +362,56 @@
     };
   }
 
+  function hasFollowingIndicator(tweetElement) {
+    if (!isElement(tweetElement)) {
+      return false;
+    }
+
+    const controls = tweetElement.querySelectorAll("button, [role='button'], a[aria-label], div[role='button']");
+    for (const control of controls) {
+      const label = safeText([
+        control.getAttribute("aria-label") || "",
+        control.getAttribute("title") || "",
+        control.textContent || ""
+      ].join(" "));
+
+      if (!label) {
+        continue;
+      }
+
+      if (FOLLOWING_TEXT_PATTERN.test(label)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function collectFollowedAuthorHints(root = globalScope.document) {
+    const followed = new Set();
+    const tweets = getTweetCandidates(root);
+
+    for (const tweetElement of tweets) {
+      if (!hasFollowingIndicator(tweetElement)) {
+        continue;
+      }
+
+      const tweet = extractTweetData(tweetElement);
+      const author = typeof tweet.author === "string" ? tweet.author.trim() : "";
+      if (!author) {
+        continue;
+      }
+
+      const handle = author.startsWith("@") ? author.slice(1) : author;
+      followed.add(author);
+      followed.add(author.toLowerCase());
+      followed.add(handle);
+      followed.add(handle.toLowerCase());
+    }
+
+    return followed;
+  }
+
   function toUnifiedTweetSchema(tweet) {
     if (!tweet || !tweet.id) {
       return null;
@@ -570,6 +621,7 @@
     getTweetCandidates,
     locateActionBar,
     findClosestTweetContainer,
+    collectFollowedAuthorHints,
     resolveDomConversationRoot,
     buildInferenceMetadataFromElements,
     parseTweetIdFromUrl,

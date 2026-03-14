@@ -9,6 +9,16 @@ When you click `◇ Explore` on X:
 4. It runs ThinkerRank.
 5. It renders two ranked panel sections.
 
+ThinkerRank is now explicitly:
+- recursive (PageRank-style over reply/quote edges)
+- reach-aware (likes/reposts/replies/quotes affect prior + influence transfer)
+- follower-aware (author follower count contributes to prior)
+- deterministic (stable tie-breaks)
+
+Core idea:
+- you are influential if influential tweets reply/quote you
+- high-reach tweets start with higher prior and pass stronger influence
+
 The project is now layered:
 - `core/`: portable engine (no DOM/browser APIs)
 - `data/`: data retrieval/normalization

@@ -131,6 +131,45 @@
     return `${normalized.slice(0, maxLen - 1)}…`;
   }
 
+  function navigateToTweet(root, targetTweetUrl, scrolled) {
+    if (!targetTweetUrl) {
+      return;
+    }
+
+    const view = root?.defaultView || globalScope;
+    const currentHref = String(view?.location?.href || "");
+
+    // If tweet is already in DOM, keep the panel intact and just update URL state.
+    if (
+      scrolled
+      && view?.history
+      && typeof view.history.pushState === "function"
+      && currentHref
+      && targetTweetUrl.startsWith("http")
+    ) {
+      try {
+        const currentUrl = new URL(currentHref);
+        const nextUrl = new URL(targetTweetUrl);
+        if (currentUrl.origin === nextUrl.origin) {
+          view.history.pushState({}, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+          return;
+        }
+      } catch {
+        // Fall through to open/assign.
+      }
+    }
+
+    // If not loaded in current DOM, open in a new tab to preserve panel context.
+    if (typeof view?.open === "function") {
+      view.open(targetTweetUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    if (view?.location && typeof view.location.assign === "function") {
+      view.location.assign(targetTweetUrl);
+    }
+  }
+
   function normalizeFollowingSet(input) {
     if (!input) {
       return new Set();
@@ -209,6 +248,80 @@
     );
   }
 
+  function extractAuthorProfile(tweet) {
+    if (!tweet || typeof tweet !== "object") {
+      return null;
+    }
+
+    if (tweet.author_profile && typeof tweet.author_profile === "object") {
+      return tweet.author_profile;
+    }
+
+    if (tweet.type === "author_thread" && Array.isArray(tweet.tweets) && tweet.tweets.length > 0) {
+      const first = tweet.tweets[0];
+      if (first?.author_profile && typeof first.author_profile === "object") {
+        return first.author_profile;
+      }
+    }
+
+    return null;
+  }
+
+  function isLikelyHumanAuthor(tweet) {
+    const profile = extractAuthorProfile(tweet);
+    if (!profile) {
+      return false;
+    }
+
+    const username = String(profile.username || "").toLowerCase();
+    const name = String(profile.name || "").toLowerCase();
+    const description = String(profile.description || "").toLowerCase();
+    const verifiedType = String(profile.verified_type || "").toLowerCase();
+
+    if (verifiedType === "business" || verifiedType === "government") {
+      return false;
+    }
+
+    const botSignalPattern = /\b(bot|automated|autopost|rss bot|ai bot|agent|autonomous)\b/i;
+    if (botSignalPattern.test(username) || botSignalPattern.test(name) || botSignalPattern.test(description)) {
+      return false;
+    }
+
+    const followers = Number(profile?.public_metrics?.followers_count);
+    const following = Number(profile?.public_metrics?.following_count);
+    const tweetCount = Number(profile?.public_metrics?.tweet_count);
+    if (Number.isFinite(followers) && Number.isFinite(tweetCount)) {
+      if (followers <= 5 && tweetCount >= 50000) {
+        return false;
+      }
+    }
+    if (Number.isFinite(followers) && Number.isFinite(following)) {
+      if (followers <= 10 && following >= 500) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function hasReplyOrQuoteRelation(tweet) {
+    if (!tweet || typeof tweet !== "object") {
+      return false;
+    }
+
+    if (tweet.type === "author_thread") {
+      const first = Array.isArray(tweet.tweets) && tweet.tweets.length > 0 ? tweet.tweets[0] : null;
+      return hasReplyOrQuoteRelation(first);
+    }
+
+    if (tweet.reply_to || tweet.quote_of) {
+      return true;
+    }
+
+    const refs = Array.isArray(tweet.referenced_tweets) ? tweet.referenced_tweets : [];
+    return refs.some((ref) => ref && (ref.type === "replied_to" || ref.type === "quoted"));
+  }
+
   function readScore(scoreById, tweetId) {
     if (!tweetId) {
       return 0;
@@ -227,7 +340,33 @@
     return 0;
   }
 
-  function buildPanelSections({ nodes, scoreById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10 } = {}) {
+  function readRelationshipLabel(relationshipById, tweetId) {
+    if (!tweetId || !relationshipById) {
+      return "Cousin";
+    }
+
+    let raw = null;
+    if (relationshipById instanceof Map) {
+      raw = relationshipById.get(tweetId);
+    } else if (typeof relationshipById === "object") {
+      raw = relationshipById[tweetId];
+    }
+
+    const normalized = String(raw || "").trim().toLowerCase();
+    if (normalized === "reply") {
+      return "Reply";
+    }
+    if (normalized === "quote") {
+      return "Quote";
+    }
+    if (normalized === "cousin") {
+      return "Cousin";
+    }
+
+    return "Cousin";
+  }
+
+  function buildPanelSections({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false } = {}) {
     const safeNodes = Array.isArray(nodes) ? nodes : [];
     const normalizedFollowingSet = normalizeFollowingSet(followingSet);
     const excludedIds = normalizeExcludedTweetIds(excludedTweetIds);
@@ -238,11 +377,18 @@
       if (!tweet || !tweet.id || tweet.type === "repost_event" || excludedIds.has(String(tweet.id))) {
         continue;
       }
+      if (!hasReplyOrQuoteRelation(tweet)) {
+        continue;
+      }
+      if (humanOnly && !isLikelyHumanAuthor(tweet)) {
+        continue;
+      }
 
       rankedEntries.push({
         id: tweet.id,
         tweet,
         score: readScore(scoreById, tweet.id),
+        relationshipLabel: readRelationshipLabel(relationshipById, tweet.id),
         inputIndex: i
       });
     }
@@ -345,7 +491,7 @@
         scoreLine.className = "ariadex-score";
         scoreLine.textContent = isAuthorThread
           ? `ThinkerRank: ${score.toFixed(4)} · Author thread`
-          : `ThinkerRank: ${score.toFixed(4)}`;
+          : `ThinkerRank: ${score.toFixed(4)} · ${entry.relationshipLabel || "Cousin"}`;
 
         item.appendChild(titleNode);
         item.appendChild(snippet);
@@ -356,12 +502,7 @@
             ? scrollToTweet(targetTweetId, { root })
             : false;
 
-          if (!scrolled && targetTweetUrl) {
-            const view = root?.defaultView || globalScope;
-            if (view?.location && typeof view.location.assign === "function") {
-              view.location.assign(targetTweetUrl);
-            }
-          }
+          navigateToTweet(root, targetTweetUrl, scrolled);
         });
 
         list.appendChild(item);
@@ -373,7 +514,7 @@
     return section;
   }
 
-  function renderConversationPanel({ nodes, scoreById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, statusMessage = "", exploreMode = "fast", onExploreModeChange = null, root = globalScope.document } = {}) {
+  function renderConversationPanel({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false, statusMessage = "", exploreMode = "fast", onExploreModeChange = null, root = globalScope.document } = {}) {
     const panel = ensurePanelExists(root);
     ensureModeToggle(panel, root, { exploreMode, onExploreModeChange });
     const body = panel.querySelector(`.${PANEL_BODY_CLASS}`);
@@ -388,8 +529,10 @@
     const sections = buildPanelSections({
       nodes,
       scoreById,
+      relationshipById,
       followingSet,
       excludedTweetIds,
+      humanOnly,
       networkLimit,
       topLimit
     });
@@ -445,6 +588,7 @@
     createPanelContainer,
     ensurePanelExists,
     buildPanelSections,
+    navigateToTweet,
     renderConversationPanel,
     renderTopThreads
   };

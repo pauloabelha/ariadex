@@ -57,6 +57,9 @@
   const locateActionBar = typeof domCollectorApi.locateActionBar === "function"
     ? domCollectorApi.locateActionBar
     : () => null;
+  const collectFollowedAuthorHints = typeof domCollectorApi.collectFollowedAuthorHints === "function"
+    ? domCollectorApi.collectFollowedAuthorHints
+    : () => new Set();
 
   const resolveConversationRoot = typeof rootResolutionApi.resolveConversationRoot === "function"
     ? rootResolutionApi.resolveConversationRoot
@@ -189,6 +192,137 @@
     return new Set();
   }
 
+  function mergeFollowingSets(...sets) {
+    const merged = new Set();
+    for (const input of sets) {
+      const parsed = parseFollowingSet(input);
+      for (const value of parsed) {
+        merged.add(value);
+      }
+    }
+    return merged;
+  }
+
+  function buildExcludedTweetIds(...ids) {
+    const excluded = new Set();
+    for (const id of ids) {
+      if (id == null) {
+        continue;
+      }
+      const normalized = String(id).trim();
+      if (normalized) {
+        excluded.add(normalized);
+      }
+    }
+    return excluded;
+  }
+
+  function buildRelationshipByIdFromTweets({ tweets, clickedTweetId, canonicalRootId, rootId }) {
+    const map = new Map();
+    const safeTweets = Array.isArray(tweets) ? tweets : [];
+    const clicked = clickedTweetId ? String(clickedTweetId) : "";
+    const canonicalRoot = canonicalRootId ? String(canonicalRootId) : "";
+    const resolvedRoot = rootId ? String(rootId) : "";
+
+    for (const tweet of safeTweets) {
+      if (!tweet?.id) {
+        continue;
+      }
+
+      const id = String(tweet.id);
+      const replyTo = tweet.reply_to ? String(tweet.reply_to) : "";
+      const quoteOf = tweet.quote_of ? String(tweet.quote_of) : "";
+
+      if (quoteOf) {
+        map.set(id, "quote");
+        continue;
+      }
+
+      if (replyTo && (replyTo === clicked || replyTo === canonicalRoot || replyTo === resolvedRoot)) {
+        map.set(id, "reply");
+        continue;
+      }
+
+      map.set(id, "cousin");
+    }
+
+    return map;
+  }
+
+  function buildRelationshipByIdFromGraph({ nodes, edges, clickedTweetId, canonicalRootId, rootId }) {
+    const map = new Map();
+    const safeNodes = Array.isArray(nodes) ? nodes : [];
+    const safeEdges = Array.isArray(edges) ? edges : [];
+    const clicked = clickedTweetId ? String(clickedTweetId) : "";
+    const canonicalRoot = canonicalRootId ? String(canonicalRootId) : "";
+    const resolvedRoot = rootId ? String(rootId) : "";
+
+    const replyChildrenByParent = new Map();
+    const quoteParentByChild = new Map();
+
+    for (const edge of safeEdges) {
+      if (!edge?.source || !edge?.target) {
+        continue;
+      }
+      const source = String(edge.source);
+      const target = String(edge.target);
+      const type = String(edge.type || "").toLowerCase();
+
+      if (type === "reply") {
+        if (!replyChildrenByParent.has(target)) {
+          replyChildrenByParent.set(target, []);
+        }
+        replyChildrenByParent.get(target).push(source);
+      } else if (type === "quote") {
+        quoteParentByChild.set(source, target);
+      }
+    }
+
+    const replyBranchFromClicked = new Set();
+    if (clicked) {
+      const queue = [clicked];
+      let head = 0;
+      while (head < queue.length) {
+        const current = queue[head];
+        head += 1;
+        const children = replyChildrenByParent.get(current) || [];
+        for (const child of children) {
+          if (replyBranchFromClicked.has(child)) {
+            continue;
+          }
+          replyBranchFromClicked.add(child);
+          queue.push(child);
+        }
+      }
+    }
+
+    for (const tweet of safeNodes) {
+      if (!tweet?.id) {
+        continue;
+      }
+      const id = String(tweet.id);
+
+      const quoteParent = quoteParentByChild.get(id) || (tweet.quote_of ? String(tweet.quote_of) : "");
+      if (quoteParent) {
+        map.set(id, "quote");
+        continue;
+      }
+
+      const replyParent = tweet.reply_to ? String(tweet.reply_to) : "";
+      if (
+        replyBranchFromClicked.has(id)
+        || (replyParent && (replyParent === clicked || replyParent === canonicalRoot || replyParent === resolvedRoot))
+      ) {
+        map.set(id, "reply");
+        continue;
+      }
+
+      map.set(id, "cousin");
+    }
+
+    return map;
+  }
+
   function readXApiRuntimeConfig() {
     const settings = typeof globalScope.window !== "undefined" && globalScope.window.AriadexXApiSettings && typeof globalScope.window.AriadexXApiSettings === "object"
       ? globalScope.window.AriadexXApiSettings
@@ -207,6 +341,9 @@
     const apiBaseUrl = typeof settings.apiBaseUrl === "string" && settings.apiBaseUrl.trim().length > 0
       ? settings.apiBaseUrl.trim()
       : null;
+    const graphApiUrl = typeof settings.graphApiUrl === "string" && settings.graphApiUrl.trim().length > 0
+      ? settings.graphApiUrl.trim()
+      : (readLocalStorageValue("ariadex.graph_api_url") || "").trim() || null;
 
     const followingSource = settings.followingSet
       || settings.followingIds
@@ -218,6 +355,7 @@
       bearerToken: bearerToken ? bearerToken.trim() : null,
       tokenSource,
       apiBaseUrl,
+      graphApiUrl,
       followingSet: parseFollowingSet(followingSource),
       tokenDiagnostics: tokenCandidates.map((candidate) => ({
         source: candidate.source,
@@ -232,7 +370,81 @@
     return runtimeConfig;
   }
 
+  function normalizeApiBaseUrl(url) {
+    if (!url || typeof url !== "string") {
+      return null;
+    }
+
+    const trimmed = url.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+  }
+
+  async function fetchSnapshotFromGraphApi(options = {}) {
+    const baseUrl = normalizeApiBaseUrl(options.graphApiUrl);
+    if (!baseUrl) {
+      return null;
+    }
+
+    if (typeof globalScope.window === "undefined" || typeof globalScope.window.fetch !== "function") {
+      return null;
+    }
+
+    const followingSet = options?.rankOptions?.followingSet instanceof Set
+      ? options.rankOptions.followingSet
+      : new Set();
+    const followingIds = [...followingSet];
+
+    const response = await globalScope.window.fetch(`${baseUrl}/v1/conversation-snapshot`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        clickedTweetId: options.clickedTweetId,
+        rootHintTweetId: options.rootHintTweetId || null,
+        mode: options.mode || "fast",
+        force: Boolean(options.forceRefresh),
+        followingIds
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
+    }
+
+    const payload = await response.json();
+    if (!payload || typeof payload !== "object") {
+      throw new Error("Graph API returned invalid payload");
+    }
+
+    return {
+      canonicalRootId: payload.canonicalRootId || null,
+      rootId: payload.rootId || null,
+      root: payload.root || null,
+      nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
+      edges: Array.isArray(payload.edges) ? payload.edges : [],
+      ranking: Array.isArray(payload.ranking) ? payload.ranking : [],
+      rankingMeta: payload.rankingMeta || { scoreById: new Map() },
+      warnings: Array.isArray(payload.warnings) ? payload.warnings : []
+    };
+  }
+
   async function buildConversationSnapshot(options = {}) {
+    if (options.graphApiUrl) {
+      try {
+        const remoteSnapshot = await fetchSnapshotFromGraphApi(options);
+        if (remoteSnapshot) {
+          return remoteSnapshot;
+        }
+      } catch {
+        // Fall through to direct X API collection.
+      }
+    }
+
     if (typeof buildConversationDataset !== "function") {
       throw new Error("X API data client is not available");
     }
@@ -306,16 +518,20 @@
 
       if (renderConversationPanel) {
         const exploreMode = readExploreMode();
-        const seedTweet = clickedTweetData?.id
-          ? clickedTweetData
-          : (rootTweetData?.id ? rootTweetData : null);
-        const seedNodes = seedTweet ? [seedTweet] : [];
-        const seedScoreById = new Map(seedNodes.map((tweet) => [tweet.id, 1]));
+        const seedNodes = [];
+        const seedScoreById = new Map();
+        const initialExcludedIds = buildExcludedTweetIds(
+          clickedTweetId,
+          rootTweetData?.id,
+          clickedTweetData?.quote_of
+        );
         renderConversationPanel({
           nodes: seedNodes,
           scoreById: seedScoreById,
+          relationshipById: new Map(),
           followingSet: new Set(),
-          excludedTweetIds: new Set(),
+          excludedTweetIds: initialExcludedIds,
+          humanOnly: true,
           networkLimit: 0,
           topLimit: 3,
           statusMessage: "Exploring conversation…",
@@ -325,8 +541,10 @@
             renderConversationPanel({
               nodes: seedNodes,
               scoreById: seedScoreById,
+              relationshipById: new Map(),
               followingSet: new Set(),
-              excludedTweetIds: new Set(),
+              excludedTweetIds: initialExcludedIds,
+              humanOnly: true,
               networkLimit: 0,
               topLimit: 3,
               statusMessage: `Mode set to ${savedMode === "deep" ? "Deep" : "Fast"}. Click ◇ Explore again to refresh.`,
@@ -340,9 +558,18 @@
       }
 
       let runtimeConfig = readXApiRuntimeConfig();
+      const domFollowingHints = collectFollowedAuthorHints(globalScope.document);
+      runtimeConfig = {
+        ...runtimeConfig,
+        followingSet: mergeFollowingSets(runtimeConfig.followingSet, domFollowingHints)
+      };
       const exploreMode = readExploreMode();
       if (!runtimeConfig.bearerToken) {
         runtimeConfig = await hydrateRuntimeConfigFromGeneratedConfig(runtimeConfig);
+        runtimeConfig = {
+          ...runtimeConfig,
+          followingSet: mergeFollowingSets(runtimeConfig.followingSet, domFollowingHints)
+        };
       }
 
       if (!runtimeConfig.bearerToken) {
@@ -352,6 +579,7 @@
             scoreById: new Map(),
             followingSet: runtimeConfig.followingSet,
             excludedTweetIds: new Set(),
+            humanOnly: true,
             networkLimit: 5,
             topLimit: 10,
             statusMessage: "Missing X API token. Configure token to fetch conversation data.",
@@ -371,6 +599,8 @@
           rootHintTweetId: rootTweetData.id || null,
           bearerToken: runtimeConfig.bearerToken,
           apiBaseUrl: runtimeConfig.apiBaseUrl || undefined,
+          graphApiUrl: runtimeConfig.graphApiUrl || undefined,
+          mode: exploreMode,
           includeQuoteTweets: exploreMode === "deep",
           includeQuoteReplies: exploreMode === "deep",
           includeRetweets: false,
@@ -385,18 +615,72 @@
               return;
             }
 
-            if (progress?.phase === "data_retrieved") {
+            const phase = progress?.phase;
+            const statusByPhase = {
+              root_resolution_started: "Resolving canonical root…",
+              root_resolved: progress?.canonicalRootId
+                ? `Canonical root resolved: ${progress.canonicalRootId}.`
+                : "Canonical root resolved.",
+              collection_started: "Fetching conversation branches from X API…",
+              collecting_root: progress?.rootId
+                ? `Expanding root ${progress.rootId} (${progress.processedRoots || 0} processed)…`
+                : "Expanding conversation roots…",
+              replies_fetched: `Fetched replies${Number.isFinite(progress?.replies) ? ` (${progress.replies})` : ""}.`,
+              quotes_fetched: `Fetched quote tweets${Number.isFinite(progress?.quotes) ? ` (${progress.quotes})` : ""}.`,
+              quote_reply_expanded: "Expanding replies to quote tweets…",
+              retweets_fetched: `Fetched repost users${Number.isFinite(progress?.retweeters) ? ` (${progress.retweeters})` : ""}.`,
+              references_hydrated: "Hydrating referenced tweets…",
+              authors_hydrated: "Hydrating missing author profiles…",
+              collection_complete: `Collection complete. ${progress?.tweetCount || 0} tweets gathered.`,
+              ranking_complete: "ThinkerRank complete."
+            };
+
+            if (phase && phase !== "data_retrieved") {
+              const interimExcludedIds = buildExcludedTweetIds(
+                clickedTweetId,
+                rootTweetData?.id,
+                clickedTweetData?.quote_of,
+                progress?.canonicalRootId
+              );
+              renderConversationPanel({
+                nodes: [],
+                scoreById: new Map(),
+                relationshipById: new Map(),
+                followingSet: runtimeConfig.followingSet,
+                excludedTweetIds: interimExcludedIds,
+                humanOnly: true,
+                networkLimit: 0,
+                topLimit: 3,
+                statusMessage: statusByPhase[phase] || "Exploring conversation…",
+                exploreMode,
+                root: globalScope.document
+              });
+              return;
+            }
+
+            if (phase === "data_retrieved") {
               const tweets = Array.isArray(progress?.dataset?.tweets) ? progress.dataset.tweets : [];
               const limitedTweets = tweets.slice(0, 25);
               const provisionalScores = new Map(limitedTweets.map((tweet, index) => [tweet.id, limitedTweets.length - index]));
-              const excludedTweetIds = new Set([
+              const relationshipById = buildRelationshipByIdFromTweets({
+                tweets: limitedTweets,
+                clickedTweetId,
+                canonicalRootId: progress?.dataset?.canonicalRootId,
+                rootId: progress?.dataset?.canonicalRootId
+              });
+              const excludedTweetIds = buildExcludedTweetIds(
+                clickedTweetId,
+                rootTweetData?.id,
+                clickedTweetData?.quote_of,
                 progress?.dataset?.canonicalRootId
-              ].filter(Boolean));
+              );
               renderConversationPanel({
                 nodes: limitedTweets,
                 scoreById: provisionalScores,
+                relationshipById,
                 followingSet: runtimeConfig.followingSet,
                 excludedTweetIds,
+                humanOnly: true,
                 networkLimit: 5,
                 topLimit: 10,
                 statusMessage: `Fetched ${tweets.length} tweets. Running ThinkerRank…`,
@@ -411,17 +695,31 @@
           scores: Array.isArray(snapshot.ranking) ? snapshot.ranking : []
         };
         const scoreById = snapshot?.rankingMeta?.scoreById || new Map();
+        const relationshipById = buildRelationshipByIdFromGraph({
+          nodes: snapshot.nodes || [],
+          edges: snapshot.edges || [],
+          clickedTweetId,
+          canonicalRootId: snapshot?.canonicalRootId,
+          rootId: snapshot?.rootId || snapshot?.root?.id || null
+        });
 
         const panelSections = renderConversationPanel
           ? (() => {
-            const excludedTweetIds = new Set([
-              snapshot?.canonicalRootId
-            ].filter(Boolean));
+            const excludedTweetIds = buildExcludedTweetIds(
+              clickedTweetId,
+              rootTweetData?.id,
+              clickedTweetData?.quote_of,
+              snapshot?.canonicalRootId,
+              snapshot?.rootId,
+              snapshot?.root?.id
+            );
             return renderConversationPanel({
               nodes: snapshot.nodes || [],
               scoreById,
+              relationshipById,
               followingSet: runtimeConfig.followingSet,
               excludedTweetIds,
+              humanOnly: true,
               networkLimit: 5,
               topLimit: 10,
               statusMessage: `Done. Ranked ${Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0} nodes.`,
@@ -431,8 +729,10 @@
                 renderConversationPanel({
                   nodes: snapshot.nodes || [],
                   scoreById,
+                  relationshipById,
                   followingSet: runtimeConfig.followingSet,
                   excludedTweetIds,
+                  humanOnly: true,
                   networkLimit: 5,
                   topLimit: 10,
                   statusMessage: `Mode set to ${savedMode === "deep" ? "Deep" : "Fast"}. Click ◇ Explore again to refresh.`,
@@ -469,8 +769,10 @@
           renderConversationPanel({
             nodes: [],
             scoreById: new Map(),
+            relationshipById: new Map(),
             followingSet: runtimeConfig.followingSet,
             excludedTweetIds: new Set(),
+            humanOnly: true,
             networkLimit: 5,
             topLimit: 10,
             statusMessage: "Request failed or rate-limited. Showing no data.",
@@ -596,6 +898,10 @@
     rankConversationGraph,
     buildConversationSnapshot,
     parseFollowingSet,
+    mergeFollowingSets,
+    buildExcludedTweetIds,
+    buildRelationshipByIdFromTweets,
+    buildRelationshipByIdFromGraph,
     readXApiRuntimeConfig,
     findClosestTweetContainer,
     getTweetCandidates,

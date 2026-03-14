@@ -10,7 +10,9 @@
   "packageManager": "npm@10",
   "scripts": {
     "test": "node --test tests/*.js",
-    "sync:env": "node scripts/sync_env_to_generated_config.js"
+    "sync:env": "node scripts/sync_env_to_generated_config.js",
+    "start:graph-cache": "node server/graph_cache_server.js",
+    "dev:cache": "node scripts/dev_with_graph_cache.js"
   },
   "devDependencies": {
     "jsdom": "26.0.0"

@@ -123,3 +123,113 @@ test("ranking includes adjacency index maps for traversal", () => {
   assert.equal(ranking.graphIndex.nodeCount, 2);
   assert.equal(ranking.graphIndex.edgeCount, 1);
 });
+
+test("tweet reach affects ranking even when graph structure is identical", () => {
+  const g = graph(
+    [
+      { id: "A" },
+      { id: "B", likes: 300, reposts: 50, replies: 20, quote_count: 10 },
+      { id: "C" }
+    ],
+    []
+  );
+
+  const ranking = ranker.rankConversationGraph(g);
+  assert.equal(ranking.topTweetIds[0], "B");
+  assert.ok(getScore(ranking, "B") > getScore(ranking, "A"));
+});
+
+test("high-reach citer transfers more recursive influence to cited tweet", () => {
+  const g = graph(
+    [
+      { id: "A" },
+      { id: "D" },
+      { id: "B", likes: 500, reposts: 70, replies: 40, quote_count: 15 },
+      { id: "C", likes: 2, reposts: 0, replies: 1, quote_count: 0 }
+    ],
+    [
+      { source: "B", target: "A", type: "reply" },
+      { source: "C", target: "D", type: "reply" }
+    ]
+  );
+
+  const ranking = ranker.rankConversationGraph(g);
+  assert.ok(getScore(ranking, "A") > getScore(ranking, "D"));
+});
+
+test("ranking exposes reachSignal per scored entry", () => {
+  const g = graph(
+    [
+      { id: "A", likes: 10, reposts: 1, replies: 1, quote_count: 0 },
+      { id: "B", likes: 100, reposts: 10, replies: 4, quote_count: 2 }
+    ],
+    []
+  );
+
+  const ranking = ranker.rankConversationGraph(g);
+  const a = ranking.scores.find((entry) => entry.id === "A");
+  const b = ranking.scores.find((entry) => entry.id === "B");
+
+  assert.ok(a);
+  assert.ok(b);
+  assert.equal(typeof a.reachSignal, "number");
+  assert.equal(typeof b.reachSignal, "number");
+  assert.ok(b.reachSignal > a.reachSignal);
+});
+
+test("disabling reach knobs falls back to author-prior-only behavior", () => {
+  const g = graph(
+    [
+      { id: "A", author_id: "u1", likes: 10000, reposts: 4000, replies: 1000, quote_count: 800 },
+      { id: "B", author_id: "u2", likes: 0, reposts: 0, replies: 0, quote_count: 0 }
+    ],
+    []
+  );
+
+  const ranking = ranker.rankConversationGraph(g, {
+    followingSet: new Set(["u2"]),
+    reachWeight: 0,
+    edgeReachBoost: 0
+  });
+
+  assert.equal(ranking.topTweetIds[0], "B");
+});
+
+test("follower count affects ranking when graph structure is identical", () => {
+  const g = graph(
+    [
+      { id: "A", author_profile: { public_metrics: { followers_count: 20 } } },
+      { id: "B", author_profile: { public_metrics: { followers_count: 250000 } } },
+      { id: "C", author_profile: { public_metrics: { followers_count: 50 } } }
+    ],
+    []
+  );
+
+  const ranking = ranker.rankConversationGraph(g, {
+    reachWeight: 0,
+    edgeReachBoost: 0
+  });
+
+  assert.equal(ranking.topTweetIds[0], "B");
+  assert.ok(getScore(ranking, "B") > getScore(ranking, "A"));
+});
+
+test("disabling follower weight removes follower-count bias", () => {
+  const g = graph(
+    [
+      { id: "A", author_profile: { public_metrics: { followers_count: 10 } } },
+      { id: "B", author_profile: { public_metrics: { followers_count: 1_000_000 } } }
+    ],
+    []
+  );
+
+  const ranking = ranker.rankConversationGraph(g, {
+    followerWeight: 0,
+    reachWeight: 0,
+    edgeReachBoost: 0
+  });
+
+  const a = getScore(ranking, "A");
+  const b = getScore(ranking, "B");
+  assert.ok(Math.abs(a - b) < 1e-8);
+});

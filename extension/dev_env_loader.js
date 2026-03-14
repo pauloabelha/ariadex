@@ -65,15 +65,17 @@
 
     const bearerToken = typeof config.bearerToken === "string" ? config.bearerToken.trim() : "";
     const followingIds = parseFollowingIds(config.followingIds);
+    const graphApiUrl = typeof config.graphApiUrl === "string" ? config.graphApiUrl.trim() : "";
 
-    if (!bearerToken && followingIds.length === 0) {
+    if (!bearerToken && followingIds.length === 0 && !graphApiUrl) {
       return;
     }
 
     window.AriadexXApiSettings = {
       ...(window.AriadexXApiSettings || {}),
       ...(bearerToken ? { bearerToken } : {}),
-      ...(followingIds.length > 0 ? { followingIds } : {})
+      ...(followingIds.length > 0 ? { followingIds } : {}),
+      ...(graphApiUrl ? { graphApiUrl } : {})
     };
 
     if (bearerToken) {
@@ -85,6 +87,12 @@
     if (followingIds.length > 0) {
       try {
         window.localStorage.setItem(FOLLOWING_STORAGE_KEY, JSON.stringify(followingIds));
+      } catch {}
+    }
+
+    if (graphApiUrl) {
+      try {
+        window.localStorage.setItem("ariadex.graph_api_url", graphApiUrl);
       } catch {}
     }
   }

@@ -18,7 +18,14 @@
       }
     }
 
-    return root.querySelector(`[data-tweet-id="${tweetId}"]`) || null;
+    const tweetCandidates = root.querySelectorAll(TWEET_SELECTOR_QUERY);
+    for (const candidate of tweetCandidates) {
+      if (candidate.getAttribute("data-tweet-id") === String(tweetId)) {
+        return candidate;
+      }
+    }
+
+    return null;
   }
 
   function scrollToTweet(tweetId, options = {}) {

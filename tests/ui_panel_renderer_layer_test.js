@@ -5,10 +5,10 @@ const panelRenderer = require("../ui/panel_renderer.js");
 
 test("panel renderer removes network/global duplicates and applies limits", () => {
   const nodes = [
-    { id: "A", author_id: "u1", author: "@u1", text: "A" },
-    { id: "B", author_id: "u2", author: "@u2", text: "B" },
-    { id: "C", author_id: "u3", author: "@u3", text: "C" },
-    { id: "D", author_id: "u4", author: "@u4", text: "D" }
+    { id: "A", author_id: "u1", author: "@u1", text: "A", reply_to: "R", author_profile: { username: "u1", name: "U1", description: "" } },
+    { id: "B", author_id: "u2", author: "@u2", text: "B", reply_to: "R", author_profile: { username: "u2", name: "U2", description: "" } },
+    { id: "C", author_id: "u3", author: "@u3", text: "C", quote_of: "R", author_profile: { username: "u3", name: "U3", description: "" } },
+    { id: "D", author_id: "u4", author: "@u4", text: "D", reply_to: "R", author_profile: { username: "u4", name: "U4", description: "" } }
   ];
 
   const scoreById = new Map([
@@ -37,8 +37,9 @@ test("panel renderer renders into document body", () => {
   global.Element = dom.window.Element;
 
   panelRenderer.renderConversationPanel({
-    nodes: [{ id: "A", author_id: "u1", author: "@u1", text: "hello" }],
+    nodes: [{ id: "A", author_id: "u1", author: "@u1", text: "hello", quote_of: "R", author_profile: { username: "u1", name: "U1", description: "" } }],
     scoreById: new Map([["A", 1]]),
+    relationshipById: new Map([["A", "quote"]]),
     followingSet: new Set(["u1"]),
     root: dom.window.document
   });
@@ -47,14 +48,15 @@ test("panel renderer renders into document body", () => {
   assert.ok(panel);
   assert.match(panel.textContent, /From Your Network/);
   assert.match(panel.textContent, /Top Thinkers/);
+  assert.match(panel.textContent, /Quote/);
 });
 
 test("panel renderer excludes canonical root and clicked tweet ids when requested", () => {
   const nodes = [
-    { id: "ROOT", author_id: "u_root", author: "@root", text: "root tweet" },
-    { id: "CLICKED", author_id: "u_clicked", author: "@clicked", text: "clicked quote" },
-    { id: "A", author_id: "u1", author: "@u1", text: "A" },
-    { id: "B", author_id: "u2", author: "@u2", text: "B" }
+    { id: "ROOT", author_id: "u_root", author: "@root", text: "root tweet", author_profile: { username: "root", name: "Root", description: "" } },
+    { id: "CLICKED", author_id: "u_clicked", author: "@clicked", text: "clicked quote", quote_of: "ROOT", author_profile: { username: "clicked", name: "Clicked", description: "" } },
+    { id: "A", author_id: "u1", author: "@u1", text: "A", reply_to: "ROOT", author_profile: { username: "u1", name: "U1", description: "" } },
+    { id: "B", author_id: "u2", author: "@u2", text: "B", quote_of: "ROOT", author_profile: { username: "u2", name: "U2", description: "" } }
   ];
 
   const scoreById = new Map([
@@ -74,4 +76,112 @@ test("panel renderer excludes canonical root and clicked tweet ids when requeste
   });
 
   assert.deepEqual(sections.topThinkers.map((entry) => entry.id), ["A", "B"]);
+});
+
+test("panel renderer opens tweet in new tab when tweet is not present in DOM", () => {
+  const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  let openedUrl = null;
+  dom.window.open = (url) => {
+    openedUrl = url;
+    return null;
+  };
+
+  panelRenderer.renderConversationPanel({
+    nodes: [{ id: "A", author_id: "u1", author: "@u1", text: "hello", url: "https://x.com/u1/status/1", reply_to: "R", author_profile: { username: "u1", name: "U1", description: "" } }],
+    scoreById: new Map([["A", 1]]),
+    relationshipById: new Map([["A", "reply"]]),
+    followingSet: new Set(["u1"]),
+    root: dom.window.document
+  });
+
+  const card = dom.window.document.querySelector(".ariadex-thread:not(.ariadex-empty)");
+  card.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+
+  assert.equal(openedUrl, "https://x.com/u1/status/1");
+});
+
+test("panel renderer excludes likely bot accounts when humanOnly is enabled", () => {
+  const nodes = [
+    {
+      id: "human-1",
+      author_id: "u1",
+      author: "@alice",
+      text: "human tweet",
+      reply_to: "root",
+      author_profile: { username: "alice", name: "Alice", description: "researcher" }
+    },
+    {
+      id: "bot-1",
+      author_id: "u2",
+      author: "@newsbot",
+      text: "automated update",
+      author_profile: { username: "newsbot", name: "News Bot", description: "automated bot feed" }
+    }
+  ];
+
+  const sections = panelRenderer.buildPanelSections({
+    nodes,
+    scoreById: new Map([["human-1", 0.9], ["bot-1", 0.95]]),
+    followingSet: new Set(),
+    humanOnly: true,
+    topLimit: 10
+  });
+
+  assert.deepEqual(sections.topThinkers.map((entry) => entry.id), ["human-1"]);
+});
+
+test("panel renderer includes only replies/quotes in ranked output", () => {
+  const nodes = [
+    {
+      id: "reply-1",
+      author_id: "u1",
+      author: "@alice",
+      text: "reply",
+      reply_to: "root",
+      author_profile: { username: "alice", name: "Alice", description: "human" }
+    },
+    {
+      id: "quote-1",
+      author_id: "u2",
+      author: "@bob",
+      text: "quote",
+      quote_of: "root",
+      author_profile: { username: "bob", name: "Bob", description: "human" }
+    },
+    {
+      id: "repost-1",
+      author_id: "u3",
+      author: "@carol",
+      text: "repost",
+      repost_of: "root",
+      referenced_tweets: [{ type: "retweeted", id: "root" }],
+      author_profile: { username: "carol", name: "Carol", description: "human" }
+    },
+    {
+      id: "plain-1",
+      author_id: "u4",
+      author: "@dave",
+      text: "plain",
+      author_profile: { username: "dave", name: "Dave", description: "human" }
+    }
+  ];
+
+  const sections = panelRenderer.buildPanelSections({
+    nodes,
+    scoreById: new Map([
+      ["reply-1", 0.7],
+      ["quote-1", 0.9],
+      ["repost-1", 0.99],
+      ["plain-1", 0.95]
+    ]),
+    followingSet: new Set(),
+    humanOnly: true,
+    topLimit: 10
+  });
+
+  assert.deepEqual(sections.topThinkers.map((entry) => entry.id), ["quote-1", "reply-1"]);
 });

@@ -54,30 +54,64 @@ function parseFollowingIds(rawValue) {
   )];
 }
 
-function main() {
-  if (!fs.existsSync(ENV_PATH)) {
-    console.error(`[Ariadex] Missing .env file at ${ENV_PATH}`);
-    process.exitCode = 1;
-    return;
-  }
+function buildEnvObject() {
+  const fileEnv = fs.existsSync(ENV_PATH)
+    ? parseDotEnv(fs.readFileSync(ENV_PATH, "utf8"))
+    : {};
 
-  const env = parseDotEnv(fs.readFileSync(ENV_PATH, "utf8"));
-  const bearerToken = (env.X_BEARER_TOKEN || env.X_API_BEARER_TOKEN || "").trim();
-  if (!bearerToken) {
-    console.error("[Ariadex] Missing X_BEARER_TOKEN (or X_API_BEARER_TOKEN) in .env");
-    process.exitCode = 1;
-    return;
-  }
-
-  const followingIds = parseFollowingIds(env.X_FOLLOWING_IDS || "");
-  const config = {
-    bearerToken,
-    ...(followingIds.length > 0 ? { followingIds } : {})
+  return {
+    ...fileEnv,
+    ...process.env
   };
+}
+
+function buildGeneratedConfig(env) {
+  const safeEnv = env || {};
+  const bearerToken = (safeEnv.X_BEARER_TOKEN || safeEnv.X_API_BEARER_TOKEN || "").trim();
+  if (!bearerToken) {
+    throw new Error("Missing X_BEARER_TOKEN (or X_API_BEARER_TOKEN) in .env/process env");
+  }
+
+  const followingIds = parseFollowingIds(safeEnv.X_FOLLOWING_IDS || "");
+  const graphApiUrl = (safeEnv.ARIADEX_GRAPH_API_URL || "").trim();
+
+  return {
+    bearerToken,
+    ...(followingIds.length > 0 ? { followingIds } : {}),
+    ...(graphApiUrl ? { graphApiUrl } : {})
+  };
+}
+
+function syncFromEnvironment() {
+  if (!fs.existsSync(ENV_PATH)) {
+    throw new Error(`Missing .env file at ${ENV_PATH}`);
+  }
+
+  const env = buildEnvObject();
+  const config = buildGeneratedConfig(env);
 
   fs.writeFileSync(OUTPUT_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   console.log(`[Ariadex] Wrote ${OUTPUT_PATH}`);
   console.log("[Ariadex] Reload the unpacked extension in chrome://extensions to apply updated credentials.");
 }
 
-main();
+function main() {
+  try {
+    syncFromEnvironment();
+  } catch (error) {
+    console.error(`[Ariadex] ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  parseDotEnv,
+  parseFollowingIds,
+  buildEnvObject,
+  buildGeneratedConfig,
+  syncFromEnvironment
+};

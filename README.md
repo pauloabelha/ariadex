@@ -65,6 +65,68 @@ This writes `extension/dev_env.generated.json` (git-ignored). `extension/dev_env
 node --test tests/*.js
 ```
 
+## Persistent graph cache (recommended)
+To avoid repeated X API costs, run the local graph cache server and point the extension to it.
+
+1. One-command local dev (recommended):
+
+```bash
+npm run dev:cache
+```
+
+This command:
+- reads `.env`
+- writes `extension/dev_env.generated.json` with `graphApiUrl=http://127.0.0.1:8787` (or your configured port)
+- starts the persistent graph cache server
+
+2. Manual start (alternative):
+
+```bash
+X_BEARER_TOKEN=... npm run start:graph-cache
+```
+
+3. Optional cache settings:
+- `ARIADEX_GRAPH_CACHE_FILE` (default in `dev:cache`: `.cache/graph_cache_store.json`)
+- `ARIADEX_GRAPH_CACHE_MAX_ENTRIES` (default: `5000`)
+- `ARIADEX_GRAPH_CACHE_PORT` (default: `8787`)
+- `ARIADEX_LOG_LEVEL` (default: `info`, options: `debug|info|warn|error|silent`)
+
+4. Set extension runtime config `graphApiUrl` to `http://127.0.0.1:8787` (via `dev_env.generated.json` or localStorage).
+
+With this enabled, snapshots are cached on disk and reused across server restarts.
+
+### Verify extension is using cache server
+1. Run `npm run dev:cache`.
+2. Reload extension in `chrome://extensions`.
+3. Refresh x.com.
+4. In page DevTools console, check:
+
+```js
+window.AriadexXApiSettings?.graphApiUrl
+```
+
+Expected:
+
+```js
+"http://127.0.0.1:8787"
+```
+
+### Server logging
+Cache server logs are structured JSON lines with request IDs and durations.
+
+Typical events:
+- `server_started`
+- `http_request_started`
+- `snapshot_cache_hit` / `snapshot_cache_populated`
+- `http_request_completed`
+- `http_request_failed`
+
+For verbose diagnostics:
+
+```bash
+ARIADEX_LOG_LEVEL=debug npm run dev:cache
+```
+
 ## Use core engine standalone (Node/server)
 
 ```js

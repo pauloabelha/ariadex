@@ -31,7 +31,11 @@
   const DEFAULT_USER_FIELDS = [
     "id",
     "name",
-    "username"
+    "username",
+    "description",
+    "verified",
+    "verified_type",
+    "public_metrics"
   ];
 
   const DEFAULT_EXPANSIONS = [
@@ -494,6 +498,15 @@
       id,
       author_id: authorId,
       author: username ? `@${username}` : (authorId ? `user:${authorId}` : null),
+      author_profile: user ? {
+        id: user.id || null,
+        username: user.username || null,
+        name: user.name || null,
+        description: user.description || "",
+        verified: Boolean(user.verified),
+        verified_type: user.verified_type || null,
+        public_metrics: user.public_metrics || {}
+      } : null,
       text: tweet?.text || "",
       url: id && !isSynthetic
         ? (username ? `https://x.com/${username}/status/${id}` : `https://x.com/i/web/status/${id}`)
@@ -539,7 +552,7 @@
     return repostTweets;
   }
 
-  async function collectConnectedApiTweets({ rootTweetId, client, onWarning }) {
+  async function collectConnectedApiTweets({ rootTweetId, client, onWarning, onProgress }) {
     const tweetById = new Map();
     const userById = new Map();
 
@@ -548,6 +561,13 @@
     let quoteRateLimited = false;
     let retweetRateLimited = false;
     let repliesRateLimited = false;
+
+    if (typeof onProgress === "function") {
+      onProgress({
+        phase: "collection_started",
+        rootTweetId
+      });
+    }
 
     while (rootQueue.length > 0 && processedRoots.size < client.options.maxConversationRoots) {
       if (tweetById.size >= client.options.maxConnectedTweets) {
@@ -563,6 +583,16 @@
       }
       processedRoots.add(rootId);
 
+      if (typeof onProgress === "function") {
+        onProgress({
+          phase: "collecting_root",
+          rootId,
+          processedRoots: processedRoots.size,
+          queuedRoots: rootQueue.length,
+          tweetCount: tweetById.size
+        });
+      }
+
       const rootLookup = await fetchTweetById(client, rootId);
       addUsersToMap(userById, rootLookup.users);
       addTweetsToMap(tweetById, [rootLookup.tweet], client.options.maxConnectedTweets);
@@ -574,6 +604,14 @@
         });
         addUsersToMap(userById, conversationReplies.users);
         addTweetsToMap(tweetById, conversationReplies.tweets, client.options.maxConnectedTweets);
+        if (typeof onProgress === "function") {
+          onProgress({
+            phase: "replies_fetched",
+            rootId,
+            replies: conversationReplies.tweets.length,
+            tweetCount: tweetById.size
+          });
+        }
       } catch (error) {
         if (typeof onWarning === "function") {
           onWarning(`conversation replies failed for ${rootId}: ${error.message}`);
@@ -602,6 +640,14 @@
 
       addUsersToMap(userById, quoteTweets.users);
       addTweetsToMap(tweetById, quoteTweets.tweets, client.options.maxConnectedTweets);
+      if (client.options.includeQuoteTweets && typeof onProgress === "function") {
+        onProgress({
+          phase: "quotes_fetched",
+          rootId,
+          quotes: quoteTweets.tweets.length,
+          tweetCount: tweetById.size
+        });
+      }
 
       if (client.options.includeQuoteReplies) {
         for (const quoteTweet of quoteTweets.tweets) {
@@ -610,6 +656,13 @@
             continue;
           }
           rootQueue.push(quoteId);
+        }
+        if (typeof onProgress === "function") {
+          onProgress({
+            phase: "quote_reply_expanded",
+            rootId,
+            queuedRoots: rootQueue.length
+          });
         }
       }
 
@@ -623,6 +676,14 @@
             users: repostUsers
           });
           addTweetsToMap(tweetById, repostTweets, client.options.maxConnectedTweets);
+          if (typeof onProgress === "function") {
+            onProgress({
+              phase: "retweets_fetched",
+              rootId,
+              retweeters: repostUsers.length,
+              tweetCount: tweetById.size
+            });
+          }
         } catch (error) {
           if (typeof onWarning === "function") {
             onWarning(`retweeted_by failed for ${rootId}: ${error.message}`);
@@ -640,6 +701,13 @@
         const referencedLookup = await fetchTweetsByIds(client, missingReferencedTweetIds);
         addUsersToMap(userById, referencedLookup.users);
         addTweetsToMap(tweetById, referencedLookup.tweets, client.options.maxConnectedTweets);
+        if (typeof onProgress === "function") {
+          onProgress({
+            phase: "references_hydrated",
+            references: referencedLookup.tweets.length,
+            tweetCount: tweetById.size
+          });
+        }
       } catch (error) {
         if (typeof onWarning === "function") {
           onWarning(`Referenced tweet lookup failed: ${error.message}`);
@@ -657,6 +725,12 @@
       try {
         const users = await fetchUsersByIds(client, missingAuthorIds);
         addUsersToMap(userById, users);
+        if (typeof onProgress === "function") {
+          onProgress({
+            phase: "authors_hydrated",
+            authors: users.length
+          });
+        }
       } catch (error) {
         if (typeof onWarning === "function") {
           onWarning(`Author lookup failed: ${error.message}`);
@@ -664,8 +738,18 @@
       }
     }
 
+    const normalizedTweets = [...tweetById.values()].map((tweet) => normalizeApiTweet(tweet, userById));
+    if (typeof onProgress === "function") {
+      onProgress({
+        phase: "collection_complete",
+        tweetCount: normalizedTweets.length,
+        userCount: userById.size,
+        processedRoots: processedRoots.size
+      });
+    }
+
     return {
-      tweets: [...tweetById.values()].map((tweet) => normalizeApiTweet(tweet, userById)),
+      tweets: normalizedTweets,
       users: [...userById.values()]
     };
   }
@@ -678,11 +762,26 @@
       options
     });
 
+    if (typeof options.onProgress === "function") {
+      options.onProgress({
+        phase: "root_resolution_started",
+        clickedTweetId: options.clickedTweetId || null,
+        rootHintTweetId: options.rootHintTweetId || null
+      });
+    }
+
     const canonicalRootId = await resolveCanonicalRootTweetId({
       clickedTweetId: options.clickedTweetId,
       rootHintTweetId: options.rootHintTweetId,
       client
     });
+
+    if (typeof options.onProgress === "function") {
+      options.onProgress({
+        phase: "root_resolved",
+        canonicalRootId: canonicalRootId || null
+      });
+    }
 
     if (!canonicalRootId) {
       return {
@@ -696,7 +795,8 @@
     const collected = await collectConnectedApiTweets({
       rootTweetId: canonicalRootId,
       client,
-      onWarning: (message) => warnings.push(message)
+      onWarning: (message) => warnings.push(message),
+      onProgress: options.onProgress
     });
 
     const rootTweet = collected.tweets.find((tweet) => tweet.id === canonicalRootId) || null;

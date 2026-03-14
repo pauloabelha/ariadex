@@ -1,5 +1,6 @@
 {
   "bearerToken": "YOUR_X_BEARER_TOKEN",
+  "graphApiUrl": "http://127.0.0.1:8787",
   "followingIds": [
     "123456789"
   ]

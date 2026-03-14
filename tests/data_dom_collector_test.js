@@ -48,3 +48,31 @@ test("resolveDomConversationRoot uses nested quote tweet as root hint", () => {
   const resolved = domCollector.resolveDomConversationRoot(outer);
   assert.equal(resolved, nested);
 });
+
+test("collectFollowedAuthorHints extracts followed author handles from visible tweet cards", () => {
+  const dom = new JSDOM("<main id='scope'></main>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  const scope = document.getElementById("scope");
+  scope.innerHTML = `
+    <article data-testid="tweet" role="article">
+      <div data-testid="User-Name">
+        <a href="/ylecun">Yann LeCun</a>
+      </div>
+      <button aria-label="Following"></button>
+    </article>
+    <article data-testid="tweet" role="article">
+      <div data-testid="User-Name">
+        <a href="/someone_else">Someone Else</a>
+      </div>
+      <button aria-label="Follow"></button>
+    </article>
+  `;
+
+  const hints = domCollector.collectFollowedAuthorHints(scope);
+  assert.equal(hints.has("@ylecun"), true);
+  assert.equal(hints.has("ylecun"), true);
+  assert.equal(hints.has("@someone_else"), false);
+});
