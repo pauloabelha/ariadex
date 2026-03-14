@@ -47,6 +47,7 @@ UI note:
 Ops note:
 - server logs support ANSI color (`ARIADEX_LOG_COLOR=true`) and detailed debug traces (`ARIADEX_LOG_LEVEL=debug`)
 - cache hit requests can run incremental diff refresh (`incremental=true`) to catch new replies/quotes without full rebuild
+- deterministic perf benchmark available via `npm run benchmark:snapshot` (cold/warm latency + request counters)
 
 The same core logic can run in:
 - Chrome extension

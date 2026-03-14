@@ -100,6 +100,24 @@ Environment flags:
 node --test tests/*.js
 ```
 
+## Benchmark (snapshot pipeline)
+Run deterministic cold-vs-warm benchmark without hitting live X API:
+
+```bash
+npm run benchmark:snapshot
+```
+
+Optional parameters:
+
+```bash
+node scripts/benchmark_snapshot_pipeline.js --replyCount=200 --quoteCount=40 --quoteReplyCount=3 --latencyMs=25
+```
+
+Output includes:
+- cold/warm duration
+- per-endpoint request counts (`tweet_lookup`, `search_recent_conversation`, `quote_tweets`, etc.)
+- total request reduction and duration ratio
+
 ## Persistent graph cache (recommended)
 To avoid repeated X API costs, run the local graph cache server and point the extension to it.
 

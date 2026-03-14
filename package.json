@@ -14,7 +14,8 @@
     "env:dev": "node scripts/set_runtime_env.js --env=dev",
     "env:prod": "node scripts/set_runtime_env.js --env=prod",
     "start:graph-cache": "node server/graph_cache_server.js",
-    "dev:cache": "node scripts/dev_with_graph_cache.js"
+    "dev:cache": "node scripts/dev_with_graph_cache.js",
+    "benchmark:snapshot": "node scripts/benchmark_snapshot_pipeline.js"
   },
   "devDependencies": {
     "jsdom": "26.0.0"

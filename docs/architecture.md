@@ -182,6 +182,7 @@ Graph cache server observability:
 - emits structured JSON logs for each HTTP request, X API request, pipeline phase, warning, and completion summary
 - includes ranking diagnostics (`rankingCount`, `nonZeroScoreCount`, `emptyRankingReason`, top score preview) to debug empty panel outputs quickly
 - supports ANSI-colored terminal output via `ARIADEX_LOG_COLOR=true`
+- includes deterministic benchmark harness (`npm run benchmark:snapshot`) for cold/warm latency and endpoint-call tracking
 
 Graph cache update modes:
 - full build: cache miss / force refresh

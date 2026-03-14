@@ -29,6 +29,7 @@ These tests run pure engine/data logic:
 - `tests/data_dom_collector_test.js`
 - `tests/tweet_extraction_test.js`
 - `tests/x_api_client_network_discovery_test.js`
+- `tests/benchmark_snapshot_pipeline_test.js`
 - `tests/openai_contribution_filter_test.js`
 - `tests/graph_cache_server_test.js`
 
@@ -52,6 +53,14 @@ These tests run pure engine/data logic:
 - followed-account discovery pass: `x_api_client_network_discovery_test.js`
 - concurrent collection resilience (reply failure does not drop quote branch): `x_api_client_network_discovery_test.js`
 - adjacency integrity: `conversation_adjacency_test.js`
+
+## Performance Baseline Command
+
+```bash
+npm run benchmark:snapshot
+```
+
+This benchmark is deterministic (synthetic in-memory X API) and reports cold vs warm latency and per-endpoint request counts.
 - core layer has no DOM/extension API usage: `core_layer_boundary_test.js`
 
 ## Manual Extension Smoke Test
