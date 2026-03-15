@@ -16,6 +16,7 @@ Ariadex explores conversations on X by turning connected tweets into a typed gra
   - `Evidence`
   - `People`
   - `Context`
+  - `Digest` (generate article + download PDF)
 
 ## Architecture
 Ariadex is split into explicit layers:
@@ -44,6 +45,7 @@ ariadex/
 
 See `docs/architecture.md` for full contracts and flows.
 Panel details: `docs/panel_dex.md`.
+Digest details: `docs/article_digest.md`.
 
 ## X API credentials (`.env`)
 Ariadex reads your keys from `~/ariadex/.env` through the sync script.
@@ -70,27 +72,19 @@ Security default:
 - X/OpenAI keys stay server-side
 - Graph API calls are proxied by `extension/background.js` (service worker), not page JS fetch
 
-## OpenAI contribution filter (server-side)
-Ariadex now supports an OpenAI-based classifier to remove low-value tweets (shitpost/vaguepost/comedy-only/unrelated) before ranking.
+## OpenAI article digest (server-side)
+Ariadex can generate a structured article digest from the cached conversation snapshot and render it to a downloadable PDF.
 
 Behavior:
-- runs on graph-cache server only (never in content script)
-- classifies tweet contribution in batches
-- keeps canonical root tweet even if classifier is uncertain
-- stores classification inside cached dataset to avoid repeat cost on cache hits
+- runs on graph-cache server only
+- uses ranked human tweets + canonical non-X references as synthesis input
+- falls back to a deterministic local digest if OpenAI is unavailable or fails
+- caches both article JSON and PDF artifacts separately from the base snapshot
 
 Environment flags:
-- `OPENAI_API_KEY` (required to enable)
-- `ARIADEX_ENABLE_OPENAI_CONTRIBUTION_FILTER=true|false` (default `true`)
-- `ARIADEX_OPENAI_MODEL` (default `gpt-4o-mini`)
-- `ARIADEX_CONTRIBUTION_SCORE_THRESHOLD` (default `0.65`)
-- `ARIADEX_ENABLE_HEURISTIC_CONTRIBUTION_FILTER=true|false` (default `true`)
-- `ARIADEX_OPENAI_DEDUPE_BY_TEXT=true|false` (default `true`)
-- `ARIADEX_OPENAI_MAX_CONCURRENT_BATCHES` (default `2`)
-- `ARIADEX_OPENAI_INCLUDE_REASON=true|false` (default `false`; lower cost when false)
-- `ARIADEX_OPENAI_MAX_TWEETS_PER_SNAPSHOT` (default `120`)
-- `ARIADEX_OPENAI_BATCH_SIZE` (default `30`)
-- `ARIADEX_OPENAI_TIMEOUT_MS` (default `20000`)
+- `OPENAI_API_KEY` (required to enable model-backed article generation)
+- `ARIADEX_OPENAI_ARTICLE_MODEL` (default: `ARIADEX_OPENAI_MODEL`, else `gpt-4o-mini`)
+- `ARIADEX_OPENAI_ARTICLE_TIMEOUT_MS` (default: `30000`)
 
 ## Run extension
 1. Open `chrome://extensions`
@@ -152,7 +146,14 @@ X_BEARER_TOKEN=... npm run start:graph-cache
 4. Set extension runtime config `graphApiUrl` to `http://127.0.0.1:8787` (via `dev_env.generated.json` or localStorage).
 
 With this enabled, snapshots are cached on disk and reused across server restarts.
-Cache keys include contribution-filter settings (model/threshold/heuristics), so stricter filter config automatically rebuilds stale snapshots.
+Cache keys include pipeline version, mode, canonical root, and following-set signature.
+
+Cache layers now work like this:
+- entity cache: tweet and user hydrations are memoized by id, so repeated `/2/tweets/:id`, `/2/tweets`, and `/2/users` lookups avoid redundant X fetches
+- snapshot cache: collected conversation datasets are reused per canonical root/mode/following signature
+- article cache: generated article JSON and PDF are cached separately on top of the snapshot
+
+Article generation reuses the cached snapshot by default and does not trigger an incremental refresh unless explicitly requested.
 
 ### Environment-based endpoint config (dev/prod)
 Use environment-aware endpoint mapping so extension always targets a pre-specified server.
@@ -205,6 +206,7 @@ Expected:
 Important:
 - Direct `fetch("http://127.0.0.1:8787/...")` from the x.com page console may fail due CSP/PNA.
 - Ariadex uses extension background fetch (`chrome.runtime.sendMessage` -> `background.js`) for `/v1/conversation-snapshot`, which is the supported path.
+- The same bridge is used for `/v1/conversation-article`.
 
 ### Server logging
 Cache server logs are structured JSON lines with request IDs and durations.
@@ -226,11 +228,7 @@ Ranking diagnostics are logged on snapshot completion:
 - `topRankingPreview`
 - `emptyRankingReason`
 
-OpenAI status is logged at startup (`openAiEnabled`), and filter activity is logged per snapshot (`snapshot_contribution_filter_applied`).
-
-Filter diagnostics now include:
-- `threshold`
-- `heuristicRejectedCount`
+OpenAI status is logged at startup (`openAiEnabled`) for article generation, and snapshot completion logs include ranking diagnostics for the full collected graph.
 - `dedupedCount`
 - `maxConcurrentBatches`
 - `candidateCount`, `classifiedCount`
@@ -258,6 +256,10 @@ Async progress API (used by extension panel):
 - `POST /v1/conversation-snapshot/jobs` starts a snapshot job
 - `GET /v1/conversation-snapshot/jobs/:jobId` returns running/completed/failed status + progress events
 - panel now shows server-driven progress messages while loading, with sections hidden until final ranked data arrives
+
+Article API:
+- `POST /v1/conversation-article` builds or loads an article digest + PDF for one snapshot
+- `Digest` tab lets the user generate the article on demand and download the cached PDF
 
 Incremental update mode:
 - requests include `incremental=true` by default

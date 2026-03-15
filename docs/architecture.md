@@ -158,7 +158,7 @@ Click tweet
    pass A: core topicsphere (replies, quotes, quote-reply expansion)
    pass B: bounded followed-author discovery (`from:<handle>` queries with strict request caps)
    note: per-root replies and quote fetches run concurrently, then are merged in deterministic order
--> optional OpenAI contribution classifier filters low-value tweets
+-> ThinkerRank runs on the full collected graph, with only deterministic structural cleanup
 -> cache hit path can run incremental diff refresh (new replies/quotes) before final rank
 -> core engine ranks remaining graph
 -> content.js renders Dex tabs (Thinkers/Evidence/People/Context)

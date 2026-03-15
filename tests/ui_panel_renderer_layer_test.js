@@ -46,8 +46,8 @@ test("panel renderer renders into document body", () => {
 
   const panel = dom.window.document.querySelector(".ariadex-panel");
   assert.ok(panel);
-  assert.match(panel.textContent, /From Your Network/);
-  assert.match(panel.textContent, /Top Thinkers/);
+  assert.match(panel.textContent, /From your network/);
+  assert.match(panel.textContent, /Reading path/);
   assert.match(panel.textContent, /Quote/);
   assert.equal(panel.querySelector(".ariadex-mode-toggle"), null);
 });
@@ -166,6 +166,26 @@ test("panel renderer excludes likely bot accounts when humanOnly is enabled", ()
   assert.deepEqual(sections.topThinkers.map((entry) => entry.id), ["human-1"]);
 });
 
+test("panel renderer keeps tweets without author_profile when humanOnly is enabled", () => {
+  const sections = panelRenderer.buildPanelSections({
+    nodes: [
+      {
+        id: "reply-1",
+        author_id: "u1",
+        author: "@alice",
+        text: "reply",
+        reply_to: "root"
+      }
+    ],
+    scoreById: new Map([["reply-1", 0.9]]),
+    followingSet: new Set(),
+    humanOnly: true,
+    topLimit: 10
+  });
+
+  assert.deepEqual(sections.topThinkers.map((entry) => entry.id), ["reply-1"]);
+});
+
 test("panel renderer includes only replies/quotes in ranked output", () => {
   const nodes = [
     {
@@ -257,6 +277,27 @@ test("panel renderer canonicalizes and deduplicates evidence URLs in dex view mo
   assert.deepEqual(viewModel.evidence[0].citedByTweetIds, ["t1", "t2"]);
 });
 
+test("panel renderer excludes t.co and x status urls from references", () => {
+  const viewModel = panelRenderer.buildDexViewModel({
+    nodes: [
+      {
+        id: "t1",
+        author_id: "u1",
+        author: "@alice",
+        text: "tweet link https://x.com/a/status/1 short https://t.co/abc doc https://example.com/report",
+        quote_of: "root",
+        author_profile: { username: "alice", name: "Alice", description: "human" }
+      }
+    ],
+    scoreById: new Map([["t1", 1]]),
+    followingSet: new Set(),
+    networkLimit: 5,
+    topLimit: 10
+  });
+
+  assert.deepEqual(viewModel.evidence.map((entry) => entry.canonicalUrl), ["https://example.com/report"]);
+});
+
 test("panel renderer renders tabs and allows evidence tab switch", () => {
   const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
   global.window = dom.window;
@@ -281,12 +322,56 @@ test("panel renderer renders tabs and allows evidence tab switch", () => {
   });
 
   const tabs = dom.window.document.querySelectorAll(".ariadex-tab-button");
-  assert.equal(tabs.length, 4);
-  assert.match(dom.window.document.body.textContent, /From Your Network/);
+  assert.equal(tabs.length, 5);
+  assert.match(dom.window.document.body.textContent, /From your network/);
 
-  const evidenceTab = [...tabs].find((tab) => tab.textContent === "Evidence");
+  const evidenceTab = [...tabs].find((tab) => tab.textContent === "References");
   assert.ok(evidenceTab);
   evidenceTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 
   assert.match(dom.window.document.body.textContent, /example\.com\/doc/);
+});
+
+test("panel renderer renders digest tab and triggers PDF action", () => {
+  const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+  let downloadCalls = 0;
+
+  panelRenderer.renderConversationPanel({
+    nodes: [
+      {
+        id: "A",
+        author_id: "u1",
+        author: "@u1",
+        text: "look https://example.com/doc",
+        author_profile: { username: "u1", name: "U1", description: "" }
+      }
+    ],
+    scoreById: new Map([["A", 1]]),
+    relationshipById: new Map(),
+    followingSet: new Set(),
+    article: {
+      title: "Digest",
+      dek: "Dek",
+      summary: "Summary",
+      sections: [{ heading: "Section", body: "Body" }]
+    },
+    onDownloadPdf: () => {
+      downloadCalls += 1;
+    },
+    root: dom.window.document
+  });
+
+  const digestTab = [...dom.window.document.querySelectorAll(".ariadex-tab-button")]
+    .find((tab) => tab.textContent === "Digest");
+  assert.ok(digestTab);
+  digestTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+
+  const downloadButton = [...dom.window.document.querySelectorAll("button")]
+    .find((button) => button.textContent === "Download PDF");
+  assert.ok(downloadButton);
+  downloadButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert.equal(downloadCalls, 1);
 });

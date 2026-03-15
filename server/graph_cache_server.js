@@ -7,7 +7,8 @@ const path = require("node:path");
 
 const xApiClient = require("../data/x_api_client.js");
 const conversationEngine = require("../core/conversation_engine.js");
-const { createOpenAiContributionClassifier } = require("./openai_contribution_filter.js");
+const { createOpenAiArticleGenerator } = require("./openai_article_generator.js");
+const { createArticlePdfBuffer } = require("./article_pdf.js");
 
 const PIPELINE_VERSION = process.env.ARIADEX_PIPELINE_VERSION || "v1";
 const LOG_LEVELS = {
@@ -394,6 +395,57 @@ function followingSignature(followingSet) {
   return `following:${digest}`;
 }
 
+function entityCacheKey(kind, id) {
+  const normalizedKind = String(kind || "").trim().toLowerCase();
+  const normalizedId = String(id || "").trim();
+  if (!normalizedKind || !normalizedId) {
+    return null;
+  }
+  return `entity:${normalizedKind}:${normalizedId}`;
+}
+
+function createEntityCache({ cacheStore, logger = createLogger({ level: "silent" }), tweetTtlMs = 24 * 60 * 60 * 1000, userTtlMs = 24 * 60 * 60 * 1000 } = {}) {
+  const safeStore = cacheStore || new MemoryCacheStore();
+
+  function getByKey(key) {
+    if (!key) {
+      return null;
+    }
+    const entry = safeStore.get(key);
+    return entry?.value || null;
+  }
+
+  function setByKey(key, value, ttlMs) {
+    if (!key || !value) {
+      return;
+    }
+    safeStore.set(key, value, ttlMs);
+  }
+
+  return {
+    getTweet(tweetId) {
+      const tweet = getByKey(entityCacheKey("tweet", tweetId));
+      return tweet && typeof tweet === "object" ? tweet : null;
+    },
+    setTweet(tweet) {
+      if (!tweet?.id) {
+        return;
+      }
+      setByKey(entityCacheKey("tweet", tweet.id), tweet, tweetTtlMs);
+    },
+    getUser(userId) {
+      const user = getByKey(entityCacheKey("user", userId));
+      return user && typeof user === "object" ? user : null;
+    },
+    setUser(user) {
+      if (!user?.id) {
+        return;
+      }
+      setByKey(entityCacheKey("user", user.id), user, userTtlMs);
+    }
+  };
+}
+
 class MemoryCacheStore {
   constructor() {
     this.map = new Map();
@@ -577,28 +629,12 @@ async function collectDatasetForCanonicalRoot({ canonicalRootId, client, followi
 }
 
 function buildSnapshotFromDataset(dataset, followingSet) {
-  const contributionById = dataset?.contributionById && typeof dataset.contributionById === "object"
-    ? dataset.contributionById
-    : null;
-  const canonicalRootId = dataset?.canonicalRootId || null;
-  const filteredTweets = Array.isArray(dataset?.tweets)
-    ? dataset.tweets.filter((tweet) => {
-      if (!tweet || !tweet.id) {
-        return false;
-      }
-      const id = String(tweet.id);
-      if (canonicalRootId && id === canonicalRootId) {
-        return true;
-      }
-      if (!contributionById) {
-        return true;
-      }
-      return contributionById[id] !== false;
-    })
+  const snapshotTweets = Array.isArray(dataset?.tweets)
+    ? dataset.tweets.filter((tweet) => Boolean(tweet && tweet.id))
     : [];
 
   const engineResult = conversationEngine.runConversationEngine({
-    tweets: filteredTweets,
+    tweets: snapshotTweets,
     rankOptions: {
       followingSet
     }
@@ -626,9 +662,9 @@ function buildSnapshotFromDataset(dataset, followingSet) {
   snapshot.diagnostics = {
     filter: {
       inputTweetCount: Array.isArray(dataset?.tweets) ? dataset.tweets.length : 0,
-      filteredTweetCount: filteredTweets.length,
-      removedTweetCount: Math.max(0, (Array.isArray(dataset?.tweets) ? dataset.tweets.length : 0) - filteredTweets.length),
-      contributionFilterEnabled: Boolean(contributionById)
+      filteredTweetCount: snapshotTweets.length,
+      removedTweetCount: Math.max(0, (Array.isArray(dataset?.tweets) ? dataset.tweets.length : 0) - snapshotTweets.length),
+      contributionFilterEnabled: false
     },
     ranking: rankingSummary,
     warningsPreview: summarizeWarnings(warningList, 5),
@@ -638,20 +674,20 @@ function buildSnapshotFromDataset(dataset, followingSet) {
   return snapshot;
 }
 
-function hasContributionAnnotations(dataset) {
-  if (!dataset || typeof dataset !== "object") {
-    return false;
-  }
-  const map = dataset.contributionById;
-  return Boolean(map && typeof map === "object" && Object.keys(map).length > 0);
-}
-
-function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifier = null, cacheStore = new MemoryCacheStore(), pipelineVersion = PIPELINE_VERSION, logger = createLogger({ level: "silent" }) } = {}) {
+function createGraphCacheService({
+  bearerToken,
+  fetchImpl,
+  articleGenerator = null,
+  cacheStore = new MemoryCacheStore(),
+  pipelineVersion = PIPELINE_VERSION,
+  logger = createLogger({ level: "silent" })
+} = {}) {
   if (!bearerToken || typeof bearerToken !== "string") {
     throw new Error("Missing X bearer token for graph cache service");
   }
 
   const inflightByKey = new Map();
+  const entityCache = createEntityCache({ cacheStore, logger });
 
   async function getSnapshot({ clickedTweetId, rootHintTweetId = null, mode = "fast", force = false, incremental = true, followingIds = [], viewerHandles = [], requestId = null, onProgress = null } = {}) {
     const startedAtMs = nowMs();
@@ -688,7 +724,8 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
     const client = await xApiClient.createClient({
       bearerToken,
       fetchImpl: observedFetch,
-      options: modeOptions(normalizedMode)
+      options: modeOptions(normalizedMode),
+      entityCache
     });
 
     if (followingSet.size === 0) {
@@ -748,28 +785,13 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       };
     }
 
-    const contributionSignature = contributionClassifier?.signature
-      ? String(contributionClassifier.signature)
-      : "openai:none";
     const followingKeyPart = followingSignature(followingSet);
-    const rawKey = `${canonicalRootId}|${normalizedMode}|${pipelineVersion}|${contributionSignature}|${followingKeyPart}`;
+    const rawKey = `${canonicalRootId}|${normalizedMode}|${pipelineVersion}|rank:full_graph|${followingKeyPart}`;
     const cacheKey = hashCacheKey(rawKey);
 
     const cached = !force ? cacheStore.get(cacheKey) : null;
-    const shouldBypassCachedForMissingContribution = Boolean(
-      cached
-      && contributionClassifier?.enabled
-      && !hasContributionAnnotations(cached?.value?.dataset)
-    );
-    if (shouldBypassCachedForMissingContribution) {
-      logger.warn("snapshot_cache_stale_missing_contribution", {
-        canonicalRootId,
-        cacheKey,
-        mode: normalizedMode
-      });
-    }
 
-    if (cached && !shouldBypassCachedForMissingContribution) {
+    if (cached) {
       let datasetForSnapshot = cached.value.dataset;
 
       if (incremental) {
@@ -823,18 +845,6 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
               }
             }
 
-            const mergedContributionById = datasetForSnapshot?.contributionById && typeof datasetForSnapshot.contributionById === "object"
-              ? { ...datasetForSnapshot.contributionById }
-              : {};
-            if (contributionClassifier && contributionClassifier.enabled && typeof contributionClassifier.classifyTweets === "function") {
-              const contribution = await contributionClassifier.classifyTweets(newTweets, {
-                requestId,
-                canonicalRootId,
-                alwaysIncludeIds: new Set([canonicalRootId])
-              });
-              Object.assign(mergedContributionById, contribution.byTweetId || {});
-            }
-
             datasetForSnapshot = {
               ...datasetForSnapshot,
               tweets: [...mergedById.values()],
@@ -842,8 +852,7 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
               warnings: [
                 ...(Array.isArray(datasetForSnapshot?.warnings) ? datasetForSnapshot.warnings : []),
                 ...incrementalWarnings
-              ],
-              contributionById: mergedContributionById
+              ]
             };
 
             cacheStore.set(cacheKey, {
@@ -894,7 +903,7 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
       };
     }
 
-    if (!force && !shouldBypassCachedForMissingContribution && inflightByKey.has(cacheKey)) {
+    if (!force && inflightByKey.has(cacheKey)) {
       pushProgress("waiting_inflight", "Waiting for in-flight snapshot build.", {
         canonicalRootId
       });
@@ -985,45 +994,6 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
         }
       });
 
-      if (contributionClassifier && contributionClassifier.enabled && typeof contributionClassifier.classifyTweets === "function") {
-        pushProgress("classifying", "Classifying contributions with OpenAI.", {
-          canonicalRootId
-        });
-        const contribution = await contributionClassifier.classifyTweets(dataset.tweets, {
-          requestId,
-          canonicalRootId,
-          alwaysIncludeIds: new Set([canonicalRootId])
-        });
-        dataset.contributionById = contribution.byTweetId || {};
-        logger.info("snapshot_contribution_filter_applied", {
-          requestId,
-          canonicalRootId,
-          model: contribution.model || null,
-          threshold: Number(contribution.threshold || 0),
-          candidateCount: Number(contribution.candidateCount || 0),
-          classifiedCount: Number(contribution.classifiedCount || 0),
-          contributingCount: Number(contribution.contributingCount || 0),
-          nonContributingCount: Number(contribution.nonContributingCount || 0),
-          heuristicRejectedCount: Number(contribution.heuristicRejectedCount || 0),
-          dedupedCount: Number(contribution.dedupedCount || 0),
-          maxConcurrentBatches: Number(contribution.maxConcurrentBatches || 0),
-          totalPromptTokens: Number(contribution?.usage?.promptTokens || 0),
-          totalCompletionTokens: Number(contribution?.usage?.completionTokens || 0),
-          totalTokens: Number(contribution?.usage?.totalTokens || 0)
-        });
-        pushProgress("classifying_complete", "Contribution classification complete.", {
-          canonicalRootId,
-          classifiedCount: Number(contribution.classifiedCount || 0),
-          nonContributingCount: Number(contribution.nonContributingCount || 0)
-        });
-      } else {
-        logger.info("snapshot_contribution_filter_skipped", {
-          requestId,
-          canonicalRootId,
-          reason: "classifier_disabled_or_missing"
-        });
-      }
-
       cacheStore.set(cacheKey, {
         dataset
       }, cacheTtlMsForMode(normalizedMode));
@@ -1084,8 +1054,119 @@ function createGraphCacheService({ bearerToken, fetchImpl, contributionClassifie
     };
   }
 
+  async function getArticle({
+    clickedTweetId,
+    rootHintTweetId = null,
+    mode = "fast",
+    force = false,
+    incremental = false,
+    followingIds = [],
+    viewerHandles = [],
+    requestId = null
+  } = {}) {
+    const snapshot = await getSnapshot({
+      clickedTweetId,
+      rootHintTweetId,
+      mode,
+      force,
+      incremental,
+      followingIds,
+      viewerHandles,
+      requestId
+    });
+
+    const snapshotCacheKey = snapshot?.cache?.key || null;
+    if (!snapshotCacheKey) {
+      return {
+        article: null,
+        pdf: null,
+        snapshot
+      };
+    }
+
+    const articleSignature = articleGenerator?.signature
+      ? String(articleGenerator.signature)
+      : "article:fallback";
+    const articleCacheKey = hashCacheKey(`${snapshotCacheKey}|${articleSignature}|pdf:v1`);
+    const cached = !force ? cacheStore.get(articleCacheKey) : null;
+    if (cached?.value?.article && cached?.value?.pdf) {
+      logger.info("snapshot_article_cache_hit", {
+        requestId,
+        canonicalRootId: snapshot?.canonicalRootId || null,
+        articleCacheKey,
+        snapshotCacheKey
+      });
+      return {
+        article: cached.value.article,
+        pdf: cached.value.pdf,
+        snapshot,
+        cache: {
+          hit: true,
+          key: articleCacheKey,
+          snapshotKey: snapshotCacheKey,
+          expiresAtMs: cached.expiresAtMs || null
+        }
+      };
+    }
+
+    const dataset = snapshotCacheKey ? cacheStore.get(snapshotCacheKey)?.value?.dataset : null;
+    const article = articleGenerator && typeof articleGenerator.generateArticle === "function"
+      ? await articleGenerator.generateArticle({
+        dataset,
+        snapshot,
+        requestId,
+        canonicalRootId: snapshot?.canonicalRootId || null,
+        clickedTweetId
+      })
+      : null;
+
+    const normalizedArticle = article || {
+      title: "Ariadex Digest",
+      dek: "",
+      summary: "No article could be generated.",
+      sections: [],
+      references: [],
+      usedOpenAi: false,
+      model: null,
+      input: null
+    };
+    const pdfBuffer = createArticlePdfBuffer(normalizedArticle);
+    const filenameRoot = String(snapshot?.canonicalRootId || clickedTweetId || "conversation").replace(/[^a-zA-Z0-9_-]+/g, "-");
+    const pdf = {
+      filename: `ariadex-${filenameRoot}.pdf`,
+      mimeType: "application/pdf",
+      base64: pdfBuffer.toString("base64"),
+      byteLength: pdfBuffer.length
+    };
+
+    cacheStore.set(articleCacheKey, {
+      article: normalizedArticle,
+      pdf
+    }, cacheTtlMsForMode(mode));
+    logger.info("snapshot_article_cache_populated", {
+      requestId,
+      canonicalRootId: snapshot?.canonicalRootId || null,
+      articleCacheKey,
+      snapshotCacheKey,
+      byteLength: pdf.byteLength,
+      usedOpenAi: Boolean(normalizedArticle.usedOpenAi)
+    });
+
+    return {
+      article: normalizedArticle,
+      pdf,
+      snapshot,
+      cache: {
+        hit: false,
+        key: articleCacheKey,
+        snapshotKey: snapshotCacheKey
+      }
+    };
+  }
+
   return {
-    getSnapshot
+    getSnapshot,
+    getArticle
   };
 }
 
@@ -1337,6 +1418,71 @@ function createServer(service, { logger = createLogger({ level: "silent" }) } = 
       return;
     }
 
+    if (req.method === "POST" && req.url === "/v1/conversation-article") {
+      let rawBody = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        rawBody += chunk;
+      });
+      req.on("end", async () => {
+        let body = {};
+        try {
+          body = rawBody ? JSON.parse(rawBody) : {};
+        } catch {
+          jsonResponse(res, 400, { error: "invalid_json" });
+          logger.warn("http_request_invalid_json", {
+            requestId,
+            method,
+            url,
+            statusCode: 400,
+            durationMs: nowMs() - startedAtMs
+          });
+          return;
+        }
+
+        try {
+          const articleResult = await service.getArticle({
+            clickedTweetId: body.clickedTweetId,
+            rootHintTweetId: body.rootHintTweetId || null,
+            mode: body.mode || "fast",
+            force: Boolean(body.force),
+            incremental: Object.prototype.hasOwnProperty.call(body, "incremental")
+              ? body.incremental !== false
+              : undefined,
+            followingIds: body.followingIds || [],
+            viewerHandles: body.viewerHandles || [],
+            requestId
+          });
+          jsonResponse(res, 200, articleResult);
+          logger.info("http_request_completed", {
+            requestId,
+            method,
+            url,
+            statusCode: 200,
+            durationMs: nowMs() - startedAtMs,
+            canonicalRootId: articleResult?.snapshot?.canonicalRootId || null,
+            articleCacheHit: Boolean(articleResult?.cache?.hit),
+            articleTitle: articleResult?.article?.title || null,
+            pdfBytes: Number(articleResult?.pdf?.byteLength || 0)
+          });
+        } catch (error) {
+          jsonResponse(res, 500, {
+            error: "article_generation_failed",
+            message: error?.message || "unknown_error"
+          });
+          logger.error("http_request_failed", {
+            requestId,
+            method,
+            url,
+            statusCode: 500,
+            durationMs: nowMs() - startedAtMs,
+            errorMessage: error?.message || "unknown_error"
+          });
+        }
+      });
+      return;
+    }
+
     if (req.method === "GET" && req.url && req.url.startsWith("/v1/conversation-snapshot/jobs/")) {
       cleanupJobs();
       const jobId = req.url.split("/").pop();
@@ -1384,7 +1530,7 @@ async function main() {
   const service = createGraphCacheService({
     bearerToken,
     cacheStore,
-    contributionClassifier: createOpenAiContributionClassifier({ logger }),
+    articleGenerator: createOpenAiArticleGenerator({ logger }),
     logger
   });
 
@@ -1434,5 +1580,7 @@ module.exports = {
   normalizeViewerHandles,
   enrichFollowingSetFromViewerHandles,
   hashCacheKey,
-  modeOptions
+  modeOptions,
+  buildSnapshotFromDataset,
+  createEntityCache
 };

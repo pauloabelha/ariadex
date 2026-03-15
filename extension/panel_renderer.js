@@ -29,22 +29,21 @@
   const PEOPLE_CARD_CLASS = "ariadex-people-card";
   const CONTEXT_CARD_CLASS = "ariadex-context-card";
   const DEFAULT_TAB = "thinkers";
+  const DIGEST_CARD_CLASS = "ariadex-digest-card";
+  const PANEL_HEADER_META_CLASS = "ariadex-header-meta";
+  const PANEL_SHELL_CLASS = "ariadex-shell";
+  const PANEL_NAV_CLASS = "ariadex-nav";
+  const PANEL_MAIN_CLASS = "ariadex-main";
+  const PANEL_FOOTER_CLASS = "ariadex-footer";
+  const CARD_CLASS = "ariadex-card";
 
   function applyFloatingPanelStyles(panel) {
     panel.style.position = "fixed";
-    panel.style.top = "120px";
+    panel.style.top = "88px";
     panel.style.right = "24px";
-    panel.style.width = "360px";
-    panel.style.maxHeight = "68vh";
-    panel.style.overflow = "auto";
-    panel.style.background = "#111";
-    panel.style.color = "white";
-    panel.style.border = "1px solid #444";
-    panel.style.borderRadius = "10px";
-    panel.style.padding = "12px";
+    panel.style.width = "min(448px, calc(100vw - 32px))";
+    panel.style.maxHeight = "calc(100vh - 120px)";
     panel.style.zIndex = "9999999";
-    panel.style.fontSize = "13px";
-    panel.style.boxShadow = "0 6px 30px rgba(0,0,0,.4)";
   }
 
   function createPanelContainer(root = globalScope.document) {
@@ -59,7 +58,17 @@
 
     const header = root.createElement("div");
     header.className = HEADER_CLASS;
-    header.textContent = "Ariadex Panel";
+
+    const title = root.createElement("div");
+    title.className = "ariadex-header-title";
+    title.textContent = "Ariadex";
+
+    const meta = root.createElement("div");
+    meta.className = PANEL_HEADER_META_CLASS;
+    meta.textContent = "Reading instrument for discourse";
+
+    header.appendChild(title);
+    header.appendChild(meta);
 
     const body = root.createElement("div");
     body.className = PANEL_BODY_CLASS;
@@ -106,6 +115,29 @@
     }
 
     return `${normalized.slice(0, maxLen - 1)}…`;
+  }
+
+  function deriveConversationTitle(nodes, article) {
+    const articleTitle = String(article?.title || "").trim();
+    if (articleTitle) {
+      return articleTitle;
+    }
+    const safeNodes = Array.isArray(nodes) ? nodes : [];
+    for (const node of safeNodes) {
+      const text = String(node?.text || "").trim();
+      if (text) {
+        return truncateText(text, 88);
+      }
+    }
+    return "Conversation digest";
+  }
+
+  function deriveConversationMeta(viewModel, nodes) {
+    const nodeCount = Array.isArray(nodes) ? nodes.length : 0;
+    const branchCount = Array.isArray(viewModel?.sections?.rankedEntries)
+      ? Math.max(1, Math.min(9, viewModel.sections.rankedEntries.length))
+      : 0;
+    return `${nodeCount} tweets${branchCount ? ` · ${branchCount} live threads` : ""}`;
   }
 
   function navigateToTweet(root, targetTweetUrl, scrolled) {
@@ -263,7 +295,7 @@
   function isLikelyHumanAuthor(tweet) {
     const profile = extractAuthorProfile(tweet);
     if (!profile) {
-      return false;
+      return true;
     }
 
     const username = String(profile.username || "").toLowerCase();
@@ -401,6 +433,30 @@
     return `${parsed.protocol}//${host}${parsed.pathname}${normalizedSearch ? `?${normalizedSearch}` : ""}`;
   }
 
+  function isExternalEvidenceUrl(rawUrl) {
+    const canonical = canonicalizeUrl(rawUrl);
+    if (!canonical) {
+      return false;
+    }
+
+    try {
+      const parsed = new URL(canonical);
+      const host = String(parsed.hostname || "").toLowerCase();
+      if (host === "t.co") {
+        return false;
+      }
+      if (host === "x.com" || host === "twitter.com") {
+        return false;
+      }
+      if (host.endsWith(".x.com") || host.endsWith(".twitter.com")) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function extractUrlsFromText(text) {
     const content = String(text || "");
     if (!content) {
@@ -432,7 +488,7 @@
       const tweetScore = readScore(scoreById, tweetId);
       for (let j = 0; j < urls.length; j += 1) {
         const canonicalUrl = canonicalizeUrl(urls[j]);
-        if (!canonicalUrl) {
+        if (!canonicalUrl || !isExternalEvidenceUrl(canonicalUrl)) {
           continue;
         }
         let entry = byCanonicalUrl.get(canonicalUrl);
@@ -725,9 +781,7 @@
         const score = Number.isFinite(entry.score) ? entry.score : 0;
 
         const titleNode = root.createElement("div");
-        titleNode.style.display = "flex";
-        titleNode.style.alignItems = "center";
-        titleNode.style.gap = "8px";
+        titleNode.className = "ariadex-card-header";
 
         if (profileImageUrl) {
           const avatar = root.createElement("img");
@@ -736,16 +790,26 @@
           avatar.loading = "lazy";
           avatar.width = 24;
           avatar.height = 24;
-          avatar.style.width = "24px";
-          avatar.style.height = "24px";
-          avatar.style.borderRadius = "999px";
-          avatar.style.objectFit = "cover";
+          avatar.className = "ariadex-avatar";
           titleNode.appendChild(avatar);
         }
 
+        const authorBlock = root.createElement("div");
+        authorBlock.className = "ariadex-card-author-block";
+
         const strong = root.createElement("strong");
-        strong.textContent = `${i + 1}. ${author}`;
-        titleNode.appendChild(strong);
+        strong.className = "ariadex-card-author";
+        strong.textContent = author;
+        authorBlock.appendChild(strong);
+
+        const meta = root.createElement("div");
+        meta.className = "ariadex-card-meta";
+        meta.textContent = isAuthorThread
+          ? `Thread aggregate · score ${score.toFixed(3)}`
+          : `${entry.relationshipLabel || "Cousin"} · score ${score.toFixed(3)}`;
+        authorBlock.appendChild(meta);
+
+        titleNode.appendChild(authorBlock);
 
         const snippet = root.createElement("div");
         snippet.className = "ariadex-snippet";
@@ -754,8 +818,8 @@
         const scoreLine = root.createElement("div");
         scoreLine.className = "ariadex-score";
         scoreLine.textContent = isAuthorThread
-          ? `ThinkerRank: ${score.toFixed(4)} · Author thread`
-          : `ThinkerRank: ${score.toFixed(4)} · ${entry.relationshipLabel || "Cousin"}`;
+          ? "Collapsed author thread"
+          : "Open in conversation";
 
         item.appendChild(titleNode);
         item.appendChild(snippet);
@@ -769,7 +833,7 @@
           const evidenceLine = root.createElement("div");
           evidenceLine.className = "ariadex-evidence-line";
           const topRefs = evidenceRefs.slice(0, 2);
-          evidenceLine.textContent = `Evidence: ${topRefs.join(" · ")}`;
+          evidenceLine.textContent = topRefs.join(" · ");
           item.appendChild(evidenceLine);
         }
 
@@ -790,7 +854,23 @@
     return section;
   }
 
-  function renderConversationPanel({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit = 5, topLimit = 10, humanOnly = false, statusMessage = "", loadingOnly = false, root = globalScope.document } = {}) {
+  function renderConversationPanel({
+    nodes,
+    scoreById,
+    relationshipById,
+    followingSet,
+    excludedTweetIds,
+    networkLimit = 5,
+    topLimit = 10,
+    humanOnly = false,
+    statusMessage = "",
+    loadingOnly = false,
+    article = null,
+    articleLoading = false,
+    onGenerateArticle = null,
+    onDownloadPdf = null,
+    root = globalScope.document
+  } = {}) {
     const panel = ensurePanelExists(root);
     const body = panel.querySelector(`.${PANEL_BODY_CLASS}`);
     if (!body) {
@@ -828,6 +908,17 @@
 
     body.innerHTML = "";
     const fragment = root.createDocumentFragment();
+    const header = panel.querySelector(`.${HEADER_CLASS}`);
+    if (header) {
+      const titleNode = header.querySelector(".ariadex-header-title");
+      const metaNode = header.querySelector(`.${PANEL_HEADER_META_CLASS}`);
+      if (titleNode) {
+        titleNode.textContent = deriveConversationTitle(nodes, article);
+      }
+      if (metaNode) {
+        metaNode.textContent = deriveConversationMeta(viewModel, nodes);
+      }
+    }
     if (statusMessage) {
       const statusNode = root.createElement("div");
       statusNode.className = STATUS_CLASS;
@@ -836,28 +927,115 @@
     }
     if (!loadingOnly) {
       const state = ensurePanelState(panel);
+      const shell = root.createElement("div");
+      shell.className = PANEL_SHELL_CLASS;
+
       const tabBar = root.createElement("div");
-      tabBar.className = TAB_BAR_CLASS;
-      tabBar.style.display = "flex";
-      tabBar.style.gap = "6px";
-      tabBar.style.margin = "8px 0 10px";
+      tabBar.className = `${TAB_BAR_CLASS} ${PANEL_NAV_CLASS}`;
 
       const tabContent = root.createElement("div");
-      tabContent.className = PANEL_TAB_CONTENT_CLASS;
+      tabContent.className = `${PANEL_TAB_CONTENT_CLASS} ${PANEL_MAIN_CLASS}`;
+
+      const footer = root.createElement("div");
+      footer.className = PANEL_FOOTER_CLASS;
 
       const tabs = [
-        { id: "thinkers", label: "Thinkers" },
-        { id: "evidence", label: "Evidence" },
+        { id: "context", label: "Context" },
+        { id: "thinkers", label: "Branches" },
+        { id: "evidence", label: "References" },
         { id: "people", label: "People" },
-        { id: "context", label: "Context" }
+        { id: "digest", label: "Digest" }
       ];
 
       function renderTabContent(tabId) {
         tabContent.innerHTML = "";
+        footer.innerHTML = "";
+        if (tabId === "digest") {
+          const card = root.createElement("div");
+          card.className = `${DIGEST_CARD_CLASS} ${CARD_CLASS}`;
+
+          if (articleLoading) {
+            card.textContent = "Generating article and PDF…";
+            tabContent.appendChild(card);
+            return;
+          }
+
+          if (!article || typeof article !== "object") {
+            const intro = root.createElement("div");
+            intro.className = "ariadex-digest-intro";
+            intro.textContent = "Generate a structured article digest from this conversation and download it as a PDF.";
+            card.appendChild(intro);
+            tabContent.appendChild(card);
+            if (typeof onGenerateArticle === "function") {
+              const button = root.createElement("button");
+              button.type = "button";
+              button.className = "ariadex-action-button ariadex-action-button-primary";
+              button.textContent = "Digest";
+              button.addEventListener("click", () => onGenerateArticle());
+              footer.appendChild(button);
+            }
+            return;
+          }
+
+          const title = root.createElement("h3");
+          title.className = SECTION_TITLE_CLASS;
+          title.textContent = article.title || "Ariadex Digest";
+          card.appendChild(title);
+
+          if (article.dek) {
+            const dek = root.createElement("div");
+            dek.className = "ariadex-digest-dek";
+            dek.textContent = article.dek;
+            card.appendChild(dek);
+          }
+
+          if (article.summary) {
+            const summary = root.createElement("div");
+            summary.className = "ariadex-digest-summary";
+            summary.textContent = article.summary;
+            card.appendChild(summary);
+          }
+
+          const sections = Array.isArray(article.sections) ? article.sections : [];
+          for (const section of sections) {
+            const heading = root.createElement("h4");
+            heading.className = SECTION_TITLE_CLASS;
+            heading.textContent = section.heading || "Section";
+            card.appendChild(heading);
+
+            const bodyCopy = root.createElement("div");
+            bodyCopy.className = "ariadex-digest-body";
+            bodyCopy.style.whiteSpace = "pre-wrap";
+            bodyCopy.textContent = section.body || "";
+            card.appendChild(bodyCopy);
+          }
+
+          if (typeof onDownloadPdf === "function") {
+            const download = root.createElement("button");
+            download.type = "button";
+            download.className = "ariadex-action-button";
+            download.textContent = "Download PDF";
+            download.addEventListener("click", () => onDownloadPdf());
+            footer.appendChild(download);
+          }
+
+          if (typeof onGenerateArticle === "function") {
+            const regenerate = root.createElement("button");
+            regenerate.type = "button";
+            regenerate.className = "ariadex-action-button ariadex-action-button-primary";
+            regenerate.textContent = "Refresh Digest";
+            regenerate.addEventListener("click", () => onGenerateArticle());
+            footer.appendChild(regenerate);
+          }
+
+          tabContent.appendChild(card);
+          return;
+        }
+
         if (tabId === "evidence") {
           if (!Array.isArray(viewModel.evidence) || viewModel.evidence.length === 0) {
             const empty = root.createElement("div");
-            empty.className = `${EVIDENCE_CARD_CLASS} ${EMPTY_CLASS}`;
+            empty.className = `${EVIDENCE_CARD_CLASS} ${EMPTY_CLASS} ${CARD_CLASS}`;
             empty.textContent = "No referenced documents found.";
             tabContent.appendChild(empty);
             return;
@@ -865,12 +1043,20 @@
           for (let i = 0; i < viewModel.evidence.length; i += 1) {
             const ev = viewModel.evidence[i];
             const card = root.createElement("div");
-            card.className = EVIDENCE_CARD_CLASS;
-            card.style.padding = "8px";
-            card.style.border = "1px solid #333";
-            card.style.borderRadius = "8px";
-            card.style.marginBottom = "8px";
-            card.textContent = `${i + 1}. ${ev.displayUrl} (${ev.domain || "unknown"}) · cites:${ev.citationCount} · score:${ev.weightedCitationScore.toFixed(4)}`;
+            card.className = `${EVIDENCE_CARD_CLASS} ${CARD_CLASS}`;
+            card.innerHTML = "";
+            const title = root.createElement("div");
+            title.className = "ariadex-link-title";
+            title.textContent = ev.displayUrl;
+            const domain = root.createElement("div");
+            domain.className = "ariadex-link-domain";
+            domain.textContent = ev.domain || "external";
+            const meta = root.createElement("div");
+            meta.className = "ariadex-link-meta";
+            meta.textContent = `${ev.citationCount} citations · score ${ev.weightedCitationScore.toFixed(3)}`;
+            card.appendChild(title);
+            card.appendChild(domain);
+            card.appendChild(meta);
             card.addEventListener("click", () => {
               navigateToTweet(root, ev.canonicalUrl, false);
             });
@@ -889,7 +1075,7 @@
             tabContent.appendChild(h);
             if (!entries.length) {
               const empty = root.createElement("div");
-              empty.className = `${PEOPLE_CARD_CLASS} ${EMPTY_CLASS}`;
+              empty.className = `${PEOPLE_CARD_CLASS} ${EMPTY_CLASS} ${CARD_CLASS}`;
               empty.textContent = "No entries.";
               tabContent.appendChild(empty);
               return;
@@ -897,28 +1083,21 @@
             for (let i = 0; i < entries.length && i < 10; i += 1) {
               const person = entries[i];
               const card = root.createElement("div");
-              card.className = PEOPLE_CARD_CLASS;
-              card.style.padding = "8px";
-              card.style.border = "1px solid #333";
-              card.style.borderRadius = "8px";
-              card.style.marginBottom = "8px";
-              card.textContent = `${i + 1}. ${person.author} · tweets:${person.tweetsCount} · agg:${person.aggregateScore.toFixed(4)}`;
+              card.className = `${PEOPLE_CARD_CLASS} ${CARD_CLASS}`;
+              card.textContent = `${person.author} · ${person.tweetsCount} tweets · aggregate ${person.aggregateScore.toFixed(3)}`;
               tabContent.appendChild(card);
             }
           };
-          renderPeopleGroup("⭐ Followed", followed);
-          renderPeopleGroup("👥 Others", others);
+          renderPeopleGroup("From your network", followed);
+          renderPeopleGroup("Others", others);
           return;
         }
 
         if (tabId === "context") {
           const context = viewModel.context || {};
           const card = root.createElement("div");
-          card.className = CONTEXT_CARD_CLASS;
-          card.style.padding = "8px";
-          card.style.border = "1px solid #333";
-          card.style.borderRadius = "8px";
-          card.textContent = `Nodes:${context.nodeCount || 0} · Ranked:${context.rankedCount || 0} · Replies:${context.replies || 0} · Quotes:${context.quotes || 0} · Cousins:${context.cousins || 0}`;
+          card.className = `${CONTEXT_CARD_CLASS} ${CARD_CLASS}`;
+          card.textContent = `Tweets ${context.nodeCount || 0} · Ranked ${context.rankedCount || 0} · Replies ${context.replies || 0} · Quotes ${context.quotes || 0} · Cousins ${context.cousins || 0}`;
           tabContent.appendChild(card);
           return;
         }
@@ -927,10 +1106,10 @@
           ? "Following set is empty. Configure following IDs/handles to populate this section."
           : "No ranked tweets from followed accounts.";
         tabContent.appendChild(
-          createSection(root, "⭐ From Your Network", sections.fromNetwork, networkEmptyText, evidenceByTweetId)
+          createSection(root, "From your network", sections.fromNetwork, networkEmptyText, evidenceByTweetId)
         );
         tabContent.appendChild(
-          createSection(root, "🔥 Top Thinkers", sections.topThinkers, "No ranked tweets available.", evidenceByTweetId)
+          createSection(root, "Reading path", sections.topThinkers, "No ranked tweets available.", evidenceByTweetId)
         );
       }
 
@@ -940,31 +1119,25 @@
         btn.type = "button";
         btn.className = TAB_BUTTON_CLASS;
         btn.textContent = tab.label;
-        btn.style.border = "1px solid #2f4f66";
-        btn.style.borderRadius = "999px";
-        btn.style.padding = "4px 8px";
-        btn.style.background = "transparent";
-        btn.style.color = "#9ed8ff";
         if (state.activeTab === tab.id) {
           btn.classList.add(TAB_BUTTON_ACTIVE_CLASS);
-          btn.style.background = "#12334a";
         }
         btn.addEventListener("click", () => {
           state.activeTab = tab.id;
           const buttons = tabBar.querySelectorAll(`.${TAB_BUTTON_CLASS}`);
           for (const b of buttons) {
-            b.style.background = "transparent";
             b.classList.remove(TAB_BUTTON_ACTIVE_CLASS);
           }
-          btn.style.background = "#12334a";
           btn.classList.add(TAB_BUTTON_ACTIVE_CLASS);
           renderTabContent(tab.id);
         });
         tabBar.appendChild(btn);
       }
 
-      fragment.appendChild(tabBar);
-      fragment.appendChild(tabContent);
+      shell.appendChild(tabBar);
+      shell.appendChild(tabContent);
+      shell.appendChild(footer);
+      fragment.appendChild(shell);
       renderTabContent(state.activeTab || DEFAULT_TAB);
     }
 

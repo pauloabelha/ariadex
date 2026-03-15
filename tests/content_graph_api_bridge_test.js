@@ -114,3 +114,49 @@ test("buildConversationSnapshot falls back to window.fetch when extension bridge
   assert.equal(fetchCalls >= 1, true);
   assert.equal(snapshot.canonicalRootId, "fallback-root");
 });
+
+test("buildConversationArticle uses extension message bridge for article endpoint", async () => {
+  let sentMessage = null;
+  global.chrome = {
+    runtime: {
+      id: "test-extension-id",
+      sendMessage(message, callback) {
+        sentMessage = message;
+        callback({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: {
+            article: {
+              title: "Digest",
+              dek: "Dek",
+              summary: "Summary",
+              sections: [{ heading: "One", body: "Body" }]
+            },
+            pdf: {
+              filename: "digest.pdf",
+              mimeType: "application/pdf",
+              base64: "JVBERi0xLjQ="
+            }
+          }
+        });
+      }
+    }
+  };
+  global.window = {
+    fetch() {
+      throw new Error("window.fetch should not be used when bridge is available");
+    },
+    localStorage: { getItem: () => null }
+  };
+
+  const article = await content.buildConversationArticle({
+    clickedTweetId: "200",
+    graphApiUrl: "http://127.0.0.1:8787",
+    rankOptions: { followingSet: new Set(["42"]) }
+  });
+
+  assert.equal(article.article.title, "Digest");
+  assert.equal(sentMessage.url, "http://127.0.0.1:8787/v1/conversation-article");
+  assert.equal(sentMessage.method, "POST");
+});

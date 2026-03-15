@@ -473,6 +473,44 @@
     });
   }
 
+  async function sendGraphApiJsonRequest({ url, method = "GET", body = null }) {
+    const bridgeResponse = await sendGraphApiRequestViaExtension({
+      type: "ariadex_graph_api_request",
+      url,
+      method,
+      headers: {
+        "content-type": "application/json"
+      },
+      body: body == null ? undefined : JSON.stringify(body)
+    });
+
+    if (bridgeResponse) {
+      if (!bridgeResponse.ok) {
+        const reason = bridgeResponse.error
+          ? String(bridgeResponse.error)
+          : `${bridgeResponse.status || 500} ${bridgeResponse.statusText || "Graph API request failed"}`;
+        throw new Error(`Graph API request failed (${reason})`);
+      }
+      return bridgeResponse.body;
+    }
+
+    if (typeof globalScope.window === "undefined" || typeof globalScope.window.fetch !== "function") {
+      return null;
+    }
+
+    const response = await globalScope.window.fetch(url, {
+      method,
+      headers: {
+        "content-type": "application/json"
+      },
+      ...(body == null ? {} : { body: JSON.stringify(body) })
+    });
+    if (!response.ok) {
+      throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
+    }
+    return response.json();
+  }
+
   async function fetchSnapshotFromGraphApi(options = {}) {
     const baseUrl = normalizeApiBaseUrl(options.graphApiUrl);
     if (!baseUrl) {
@@ -497,48 +535,10 @@
     const snapshotUrl = `${baseUrl}/v1/conversation-snapshot`;
     const jobsUrl = `${snapshotUrl}/jobs`;
 
-    async function sendRequestViaBridgeOrFetch({ url, method = "GET", body = null }) {
-      const bridgeResponse = await sendGraphApiRequestViaExtension({
-        type: "ariadex_graph_api_request",
-        url,
-        method,
-        headers: {
-          "content-type": "application/json"
-        },
-        body: body == null ? undefined : JSON.stringify(body)
-      });
-
-      if (bridgeResponse) {
-        if (!bridgeResponse.ok) {
-          const reason = bridgeResponse.error
-            ? String(bridgeResponse.error)
-            : `${bridgeResponse.status || 500} ${bridgeResponse.statusText || "Graph API request failed"}`;
-          throw new Error(`Graph API request failed (${reason})`);
-        }
-        return bridgeResponse.body;
-      }
-
-      if (typeof globalScope.window === "undefined" || typeof globalScope.window.fetch !== "function") {
-        return null;
-      }
-
-      const response = await globalScope.window.fetch(url, {
-        method,
-        headers: {
-          "content-type": "application/json"
-        },
-        ...(body == null ? {} : { body: JSON.stringify(body) })
-      });
-      if (!response.ok) {
-        throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
-      }
-      return response.json();
-    }
-
     let payload = null;
 
     try {
-      const started = await sendRequestViaBridgeOrFetch({
+      const started = await sendGraphApiJsonRequest({
         url: jobsUrl,
         method: "POST",
         body: requestPayload
@@ -549,7 +549,7 @@
         let lastMessage = "";
         while (Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 600));
-          const polled = await sendRequestViaBridgeOrFetch({
+          const polled = await sendGraphApiJsonRequest({
             url: `${jobsUrl}/${jobId}`,
             method: "GET"
           });
@@ -578,40 +578,11 @@
     } catch {}
 
     if (!payload) {
-      const bridgeResponse = await sendGraphApiRequestViaExtension({
-        type: "ariadex_graph_api_request",
+      payload = await sendGraphApiJsonRequest({
         url: snapshotUrl,
         method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
-        body: payloadBody
+        body: requestPayload
       });
-
-      if (bridgeResponse) {
-        if (!bridgeResponse.ok) {
-          const reason = bridgeResponse.error
-            ? String(bridgeResponse.error)
-            : `${bridgeResponse.status || 500} ${bridgeResponse.statusText || "Graph API request failed"}`;
-          throw new Error(`Graph API request failed (${reason})`);
-        }
-        payload = bridgeResponse.body;
-      } else {
-        if (typeof globalScope.window === "undefined" || typeof globalScope.window.fetch !== "function") {
-          return null;
-        }
-        const response = await globalScope.window.fetch(snapshotUrl, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json"
-          },
-          body: payloadBody
-        });
-        if (!response.ok) {
-          throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
-        }
-        payload = await response.json();
-      }
     }
 
     if (!payload || typeof payload !== "object") {
@@ -631,6 +602,67 @@
         ? payload.diagnostics
         : null
     };
+  }
+
+  async function buildConversationArticle(options = {}) {
+    const baseUrl = normalizeApiBaseUrl(options.graphApiUrl);
+    if (!baseUrl) {
+      throw new Error("Graph API is required for article generation");
+    }
+
+    const followingSet = options?.rankOptions?.followingSet instanceof Set
+      ? options.rankOptions.followingSet
+      : new Set();
+    const requestPayload = {
+      clickedTweetId: options.clickedTweetId,
+      rootHintTweetId: options.rootHintTweetId || null,
+      mode: options.mode || "fast",
+      force: Boolean(options.forceRefresh),
+      incremental: options.incremental === true,
+      followingIds: [...followingSet],
+      viewerHandles: Array.isArray(options.viewerHandles) ? options.viewerHandles : []
+    };
+
+    const payload = await sendGraphApiJsonRequest({
+      url: `${baseUrl}/v1/conversation-article`,
+      method: "POST",
+      body: requestPayload
+    });
+    if (!payload || typeof payload !== "object") {
+      throw new Error("Graph API returned invalid article payload");
+    }
+    return payload;
+  }
+
+  function downloadPdfFromBase64(pdf) {
+    const base64 = String(pdf?.base64 || "").trim();
+    if (!base64 || !globalScope.window || !globalScope.document || typeof globalScope.window.atob !== "function") {
+      return false;
+    }
+
+    const binary = globalScope.window.atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+
+    const blob = new Blob([bytes], { type: pdf?.mimeType || "application/pdf" });
+    const objectUrl = globalScope.window.URL?.createObjectURL?.(blob);
+    if (!objectUrl) {
+      return false;
+    }
+
+    const anchor = globalScope.document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = String(pdf?.filename || "ariadex-digest.pdf");
+    anchor.style.display = "none";
+    globalScope.document.body?.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    globalScope.window.setTimeout(() => {
+      globalScope.window.URL?.revokeObjectURL?.(objectUrl);
+    }, 1000);
+    return true;
   }
 
   async function buildConversationSnapshot(options = {}) {
@@ -941,39 +973,76 @@
           canonicalRootId: snapshot?.canonicalRootId,
           rootId: snapshot?.rootId || snapshot?.root?.id || null
         });
+        let articleResult = null;
+        let articleLoading = false;
+        const excludedTweetIds = buildExcludedTweetIds(
+          clickedTweetId,
+          rootTweetData?.id,
+          clickedTweetData?.quote_of,
+          snapshot?.canonicalRootId,
+          snapshot?.rootId,
+          snapshot?.root?.id
+        );
+        const doneStatusMessage = (() => {
+          const traversedCount = Number(snapshot?.diagnostics?.filter?.inputTweetCount);
+          const safeTraversed = Number.isFinite(traversedCount)
+            ? traversedCount
+            : (Array.isArray(snapshot.ranking) ? snapshot.ranking.length : 0);
+          const rankedCount = Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0;
+          return `Done. Traversed ${safeTraversed} tweets. Ranked ${rankedCount} nodes.`;
+        })();
 
-        const panelSections = renderConversationPanel
-          ? (() => {
-            const excludedTweetIds = buildExcludedTweetIds(
-              clickedTweetId,
-              rootTweetData?.id,
-              clickedTweetData?.quote_of,
-              snapshot?.canonicalRootId,
-              snapshot?.rootId,
-              snapshot?.root?.id
-            );
-            return renderConversationPanel({
-              nodes: snapshot.nodes || [],
-              scoreById,
-              relationshipById,
-              followingSet: runtimeConfig.followingSet,
-              excludedTweetIds,
-              humanOnly: true,
-              networkLimit: 5,
-              topLimit: 10,
-              statusMessage: (() => {
-                const traversedCount = Number(snapshot?.diagnostics?.filter?.inputTweetCount);
-                const safeTraversed = Number.isFinite(traversedCount)
-                  ? traversedCount
-                  : (Array.isArray(snapshot.ranking) ? snapshot.ranking.length : 0);
-                const rankedCount = Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0;
-                return `Done. Traversed ${safeTraversed} tweets. Ranked ${rankedCount} nodes.`;
-              })(),
-              exploreMode,
-              root: globalScope.document
-            });
-          })()
-          : renderTopThreads((ranking.scores || []).slice(0, 5), globalScope.document);
+        const rerenderPanel = () => {
+          if (!renderConversationPanel) {
+            return renderTopThreads((ranking.scores || []).slice(0, 5), globalScope.document);
+          }
+          return renderConversationPanel({
+            nodes: snapshot.nodes || [],
+            scoreById,
+            relationshipById,
+            followingSet: runtimeConfig.followingSet,
+            excludedTweetIds,
+            humanOnly: true,
+            networkLimit: 5,
+            topLimit: 10,
+            statusMessage: doneStatusMessage,
+            article: articleResult?.article || null,
+            articleLoading,
+            onGenerateArticle: async () => {
+              if (articleLoading) {
+                return;
+              }
+              articleLoading = true;
+              rerenderPanel();
+              try {
+                articleResult = await buildConversationArticle({
+                  clickedTweetId,
+                  rootHintTweetId: rootTweetData.id || null,
+                  graphApiUrl: runtimeConfig.graphApiUrl || undefined,
+                  mode: exploreMode,
+                  viewerHandles: [...viewerHandleHints],
+                  rankOptions: {
+                    followingSet: runtimeConfig.followingSet
+                  }
+                });
+              } catch (articleError) {
+                console.error("[Ariadex] Failed to build article", articleError);
+              } finally {
+                articleLoading = false;
+                rerenderPanel();
+              }
+            },
+            onDownloadPdf: () => {
+              if (articleResult?.pdf) {
+                downloadPdfFromBase64(articleResult.pdf);
+              }
+            },
+            exploreMode,
+            root: globalScope.document
+          });
+        };
+
+        const panelSections = rerenderPanel();
 
         const debugEnabled = typeof globalScope.window !== "undefined"
           && Boolean(globalScope.window.AriadexDebug);
@@ -1133,6 +1202,7 @@
     collapseAuthorThread,
     rankConversationGraph,
     buildConversationSnapshot,
+    buildConversationArticle,
     resolveScoreByIdFromSnapshot,
     parseFollowingSet,
     mergeFollowingSets,

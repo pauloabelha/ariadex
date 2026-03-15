@@ -16,6 +16,7 @@ When you click `◇ Explore` on X:
    - Evidence
    - People
    - Context
+   - Digest
 
 ThinkerRank is now explicitly:
 - recursive (PageRank-style over reply/quote edges)
@@ -45,6 +46,7 @@ Server filtering note:
 UI note:
 - ranking cards show author avatars when `author_profile.profile_image_url` is available
 - Fast/Deep toggle was removed; exploration is deep-only
+- `Digest` can generate an article view and downloadable PDF from the server-side cached snapshot
 - if `followingSet` is empty, "From Your Network" will stay empty by design
 - app-only bearer token mode cannot fetch the viewer's full following graph from X API
 - extension now extracts viewer handle hints from X header DOM for diagnostics/debugging
@@ -53,6 +55,7 @@ UI note:
 Ops note:
 - server logs support ANSI color (`ARIADEX_LOG_COLOR=true`) and detailed debug traces (`ARIADEX_LOG_LEVEL=debug`)
 - cache hit requests can run incremental diff refresh (`incremental=true`) to catch new replies/quotes without full rebuild
+- article generation reuses snapshot cache identity and stores article JSON + PDF as separate cached artifacts
 - deterministic perf benchmark available via `npm run benchmark:snapshot` (cold/warm latency + request counters)
 
 The same core logic can run in:

@@ -8,8 +8,25 @@ Tabs:
 - `Evidence`
 - `People`
 - `Context`
+- `Digest`
 
 `Thinkers` remains the default tab for backward compatibility.
+
+## Digest Tab
+`Digest` is an on-demand article view backed by the graph-cache server.
+
+Behavior:
+- user clicks `Generate Article`
+- extension requests `POST /v1/conversation-article`
+- server reuses the cached snapshot, synthesizes article JSON, renders a PDF, and caches both
+- panel renders the article sections and exposes `Download PDF`
+
+The current digest is intentionally derived from the existing snapshot model:
+- ranked human tweets
+- root tweet context
+- canonical non-X references
+
+This keeps the feature useful now without blocking on the future branch-first discourse refactor.
 
 ## View Model
 `buildDexViewModel(...)` returns:

@@ -3,9 +3,6 @@
 ## Overview
 ThinkerRank is implemented in `core/conversation_rank.js` and mirrored for extension runtime in `extension/conversation_rank.js`.
 
-Upstream note:
-- when server-side OpenAI contribution filtering is enabled, ThinkerRank runs on the filtered tweet set (non-contributing tweets removed, canonical root retained).
-
 It is a recursive PageRank-style algorithm over the conversation graph, with three added signals:
 1. author prior (`followingSet` boost)
 2. tweet reach (likes/reposts/replies/quotes)

@@ -79,6 +79,42 @@
     return merged;
   }
 
+  function normalizeEntityId(value) {
+    const normalized = String(value || "").trim();
+    return normalized || null;
+  }
+
+  function createEntityCacheFacade(cache) {
+    if (!cache || typeof cache !== "object") {
+      return null;
+    }
+
+    return {
+      getTweet(tweetId) {
+        if (typeof cache.getTweet === "function") {
+          return cache.getTweet(tweetId);
+        }
+        return null;
+      },
+      setTweet(tweet) {
+        if (typeof cache.setTweet === "function") {
+          cache.setTweet(tweet);
+        }
+      },
+      getUser(userId) {
+        if (typeof cache.getUser === "function") {
+          return cache.getUser(userId);
+        }
+        return null;
+      },
+      setUser(user) {
+        if (typeof cache.setUser === "function") {
+          cache.setUser(user);
+        }
+      }
+    };
+  }
+
   function createConcurrencyLimiter(maxConcurrent) {
     const limit = Math.max(1, Math.floor(Number(maxConcurrent) || 1));
     const queue = [];
@@ -345,7 +381,7 @@
     return out;
   }
 
-  async function createClient({ bearerToken, fetchImpl, options }) {
+  async function createClient({ bearerToken, fetchImpl, options, entityCache = null }) {
     if (!bearerToken || typeof bearerToken !== "string") {
       throw new Error("Missing X API bearer token");
     }
@@ -401,7 +437,8 @@
 
     return {
       request,
-      options: normalizedOptions
+      options: normalizedOptions,
+      entityCache: createEntityCacheFacade(entityCache)
     };
   }
 
@@ -415,15 +452,41 @@
   }
 
   async function fetchTweetById(client, tweetId) {
+    const normalizedTweetId = normalizeEntityId(tweetId);
+    if (!normalizedTweetId) {
+      return {
+        tweet: null,
+        users: []
+      };
+    }
+
+    const cachedTweet = client?.entityCache?.getTweet(normalizedTweetId) || null;
+    if (cachedTweet) {
+      const cachedAuthorId = normalizeEntityId(cachedTweet.author_id);
+      const cachedUser = cachedAuthorId ? (client?.entityCache?.getUser(cachedAuthorId) || null) : null;
+      return {
+        tweet: cachedTweet,
+        users: cachedUser ? [cachedUser] : []
+      };
+    }
+
     const response = await client.request(`/tweets/${tweetId}`, baseTweetParams());
+    const tweet = response?.data || null;
+    const users = ensureArray(response?.includes?.users);
+    if (tweet) {
+      client?.entityCache?.setTweet(tweet);
+    }
+    for (const user of users) {
+      client?.entityCache?.setUser(user);
+    }
     return {
-      tweet: response?.data || null,
-      users: ensureArray(response?.includes?.users)
+      tweet,
+      users
     };
   }
 
   async function fetchTweetsByIds(client, tweetIds) {
-    const ids = ensureArray(tweetIds).filter(Boolean);
+    const ids = ensureArray(tweetIds).map(normalizeEntityId).filter(Boolean);
     if (ids.length === 0) {
       return {
         tweets: [],
@@ -431,45 +494,90 @@
       };
     }
 
-    const collectedTweets = [];
-    const collectedUsers = [];
+    const tweetById = new Map();
+    const userById = new Map();
+    const missingIds = [];
 
-    for (let i = 0; i < ids.length; i += 100) {
-      const chunk = ids.slice(i, i + 100);
+    for (const id of ids) {
+      const cachedTweet = client?.entityCache?.getTweet(id) || null;
+      if (cachedTweet) {
+        tweetById.set(String(cachedTweet.id), cachedTweet);
+        const authorId = normalizeEntityId(cachedTweet.author_id);
+        if (authorId) {
+          const cachedUser = client?.entityCache?.getUser(authorId) || null;
+          if (cachedUser?.id) {
+            userById.set(String(cachedUser.id), cachedUser);
+          }
+        }
+        continue;
+      }
+      missingIds.push(id);
+    }
+
+    for (let i = 0; i < missingIds.length; i += 100) {
+      const chunk = missingIds.slice(i, i + 100);
       const response = await client.request("/tweets", {
         ...baseTweetParams(),
         ids: chunk.join(",")
       });
 
-      collectedTweets.push(...ensureArray(response?.data));
-      collectedUsers.push(...ensureArray(response?.includes?.users));
+      for (const tweet of ensureArray(response?.data)) {
+        if (!tweet?.id) {
+          continue;
+        }
+        tweetById.set(String(tweet.id), tweet);
+        client?.entityCache?.setTweet(tweet);
+      }
+      for (const user of ensureArray(response?.includes?.users)) {
+        if (!user?.id) {
+          continue;
+        }
+        userById.set(String(user.id), user);
+        client?.entityCache?.setUser(user);
+      }
     }
 
     return {
-      tweets: collectedTweets,
-      users: collectedUsers
+      tweets: [...tweetById.values()],
+      users: [...userById.values()]
     };
   }
 
   async function fetchUsersByIds(client, userIds) {
-    const ids = ensureArray(userIds).filter(Boolean);
+    const ids = ensureArray(userIds).map(normalizeEntityId).filter(Boolean);
     if (ids.length === 0) {
       return [];
     }
 
-    const collectedUsers = [];
+    const userById = new Map();
+    const missingIds = [];
 
-    for (let i = 0; i < ids.length; i += 100) {
-      const chunk = ids.slice(i, i + 100);
+    for (const id of ids) {
+      const cachedUser = client?.entityCache?.getUser(id) || null;
+      if (cachedUser?.id) {
+        userById.set(String(cachedUser.id), cachedUser);
+        continue;
+      }
+      missingIds.push(id);
+    }
+
+    for (let i = 0; i < missingIds.length; i += 100) {
+      const chunk = missingIds.slice(i, i + 100);
       const response = await client.request("/users", {
         ids: chunk.join(","),
         "user.fields": DEFAULT_USER_FIELDS
       });
 
-      collectedUsers.push(...ensureArray(response?.data));
+      for (const user of ensureArray(response?.data)) {
+        if (!user?.id) {
+          continue;
+        }
+        userById.set(String(user.id), user);
+        client?.entityCache?.setUser(user);
+      }
     }
 
-    return collectedUsers;
+    return [...userById.values()];
   }
 
   async function fetchUserByUsername(client, username) {
@@ -1191,7 +1299,8 @@
     const client = await createClient({
       bearerToken: options.bearerToken,
       fetchImpl: options.fetchImpl,
-      options
+      options,
+      entityCache: options.entityCache || null
     });
 
     if (typeof options.onProgress === "function") {
@@ -1252,6 +1361,9 @@
     buildConversationDataset,
     fetchUserByUsername,
     fetchFollowingUserIds,
+    fetchTweetById,
+    fetchTweetsByIds,
+    fetchUsersByIds,
     normalizeApiTweet,
     pickReferencedTweet
   };

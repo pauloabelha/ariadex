@@ -29,9 +29,12 @@ These tests run pure engine/data logic:
 - `tests/data_dom_collector_test.js`
 - `tests/tweet_extraction_test.js`
 - `tests/x_api_client_network_discovery_test.js`
+- `tests/x_api_client_cache_test.js`
 - `tests/benchmark_snapshot_pipeline_test.js`
 - `tests/openai_contribution_filter_test.js`
 - `tests/graph_cache_server_test.js`
+- `tests/openai_article_generator_test.js`
+- `tests/article_pdf_test.js`
 
 ## UI / Extension DOM
 - `tests/ui_panel_render_test.js`
@@ -54,6 +57,9 @@ These tests run pure engine/data logic:
 - followed-account discovery pass: `x_api_client_network_discovery_test.js`
 - concurrent collection resilience (reply failure does not drop quote branch): `x_api_client_network_discovery_test.js`
 - adjacency integrity: `conversation_adjacency_test.js`
+- article input excludes synthetic/X-only references and preserves canonical non-X references: `openai_article_generator_test.js`
+- PDF rendering returns a valid PDF header and includes article content: `article_pdf_test.js`
+- article endpoint and panel digest actions work through the extension bridge: `graph_cache_server_test.js`, `content_graph_api_bridge_test.js`, `ui_panel_renderer_layer_test.js`
 
 ## Performance Baseline Command
 
@@ -71,6 +77,7 @@ This benchmark is deterministic (synthetic in-memory X API) and reports cold vs 
 3. Open `https://x.com`
 4. Click `◇ Explore` on a tweet
 5. Verify panel renders and clicking cards scrolls/highlights tweets
+6. Open `Digest`, click `Generate Article`, and verify `Download PDF` appears
 
 ## Observability Smoke Test
 1. Run `ARIADEX_LOG_COLOR=true ARIADEX_LOG_LEVEL=debug npm run dev:cache`
@@ -78,5 +85,6 @@ This benchmark is deterministic (synthetic in-memory X API) and reports cold vs 
 3. Confirm logs include:
 - `x_api_request_started` / `x_api_request_completed`
 - `snapshot_phase`
-- `snapshot_contribution_filter_applied` (when OpenAI enabled)
 - `snapshot_completed` with ranking diagnostics
+- `snapshot_article_cache_hit` / `snapshot_article_cache_populated`
+- `openai_article_generated` or `openai_article_generation_failed`
