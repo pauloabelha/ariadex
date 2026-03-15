@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   buildArticleInput,
   buildFallbackArticle,
+  createOpenAiArticleGenerator,
   createReferenceEntries,
   isExternalReferenceUrl
 } = require("../server/openai_article_generator.js");
@@ -48,6 +49,21 @@ test("buildArticleInput excludes synthetic tweets and preserves top human tweets
     snapshot: {
       canonicalRootId: "root",
       root: { id: "root", author: "@root", text: "root text" },
+      pathAnchored: {
+        selectedTweetIds: ["human-1", "root"],
+        references: [
+          {
+            canonicalUrl: "https://example.com/report",
+            displayUrl: "https://example.com/report",
+            domain: "example.com",
+            citationCount: 1,
+            citedByTweetIds: ["human-1"]
+          }
+        ],
+        artifact: {
+          version: "path-anchored/v1"
+        }
+      },
       ranking: [
         { id: "human-1", score: 0.9 },
         { id: "repost:root:u2", score: 0.8 },
@@ -62,6 +78,34 @@ test("buildArticleInput excludes synthetic tweets and preserves top human tweets
   assert.deepEqual(input.topTweets.map((tweet) => tweet.id), ["human-1", "root"]);
   assert.equal(input.references.length, 1);
   assert.equal(input.references[0].canonicalUrl, "https://example.com/report");
+  assert.equal(Array.isArray(input.sourceTweets), true);
+  assert.equal(input.sourceTweets.some((tweet) => tweet.id === "human-1"), true);
+  assert.equal(input.artifact.version, "path-anchored/v1");
+});
+
+test("buildArticleInput prefers the canonical root tweet over the synthetic author thread node", () => {
+  const input = buildArticleInput({
+    clickedTweetId: "seed",
+    dataset: {
+      canonicalRootId: "root",
+      rootTweet: { id: "author_thread:@root", author: "@root", text: "" },
+      tweets: [
+        { id: "root", author: "@root", text: "actual root text" },
+        { id: "seed", author: "@seed", text: "seed text", quote_of: "root" }
+      ]
+    },
+    snapshot: {
+      canonicalRootId: "root",
+      root: { id: "author_thread:@root", author: "@root", text: "" },
+      ranking: [
+        { id: "seed", score: 0.8 },
+        { id: "root", score: 0.7 }
+      ]
+    }
+  });
+
+  assert.equal(input.rootTweet.id, "root");
+  assert.equal(input.rootTweet.text, "actual root text");
 });
 
 test("buildFallbackArticle returns deterministic digest sections", () => {
@@ -70,7 +114,8 @@ test("buildFallbackArticle returns deterministic digest sections", () => {
     rootTweet: { author: "@root", text: "root text" },
     topTweets: [
       { author: "@u1", text: "point one" },
-      { author: "@u2", text: "point two" }
+      { author: "@u2", text: "point two", reply_to: "seed" },
+      { author: "@u3", text: "point three", quote_of: "root" }
     ],
     references: [
       { displayUrl: "https://example.com/report", domain: "example.com", citationCount: 2 }
@@ -79,15 +124,148 @@ test("buildFallbackArticle returns deterministic digest sections", () => {
 
   assert.match(article.title, /@root conversation/);
   assert.equal(article.dek, "seed text");
-  assert.match(article.tldr, /top-ranked visible contribution/);
+  assert.match(article.tldr, /@u1 wrote/);
+  assert.match(article.tldr, /"point one"/);
+  assert.match(article.tldr, /"point two"/);
   assert.match(article.context, /@seed wrote/);
-  assert.match(article.context, /canonical root/);
+  assert.match(article.context, /Canonical root/);
   assert.match(article.context, /"root text"/);
   assert.equal(Array.isArray(article.branches), true);
-  assert.equal(article.branches.length >= 1, true);
+  assert.equal(article.branches.length >= 2, true);
   assert.match(article.branches[0].quotes[0].text, /point/);
   assert.equal(Array.isArray(article.openQuestions), true);
   assert.equal(article.sections.length >= 4, true);
   assert.match(article.sections.map((section) => section.heading).join(" | "), /TL;DR/);
   assert.match(article.sections.map((section) => section.heading).join(" | "), /References/);
+  assert.equal(article.sections.some((section) => /wrote:\n\n"/.test(section.body)), true);
+});
+
+test("buildFallbackArticle filters low-signal tweets from digest branches and summary", () => {
+  const article = buildFallbackArticle({
+    seedTweet: { id: "seed", author: "@seed", text: "seed text" },
+    rootTweet: { id: "root", author: "@root", text: "root text" },
+    topTweets: [
+      { id: "seed", author: "@seed", text: "seed text" },
+      { id: "low-1", author: "@elon", text: "@x @y Wow", reply_to: "root" },
+      { id: "low-2", author: "@threadreaderapp", text: "@a @b please #unroll", reply_to: "root" },
+      { id: "high-1", author: "@critic", text: "@root There’s no paper here yet, so the claims are still hard to evaluate.", reply_to: "root" },
+      { id: "high-2", author: "@analyst", text: "A more detailed post says vision is decorative and does not drive the behavior outputs yet.", quote_of: "root" }
+    ],
+    references: []
+  });
+
+  assert.doesNotMatch(article.tldr, /Wow/);
+  assert.doesNotMatch(article.tldr, /#unroll/);
+  const branchText = article.sections.map((section) => section.body).join("\n");
+  assert.doesNotMatch(branchText, /Wow/);
+  assert.doesNotMatch(branchText, /#unroll/);
+  assert.match(branchText, /There’s no paper here yet/);
+  assert.match(branchText, /vision is decorative/);
+});
+
+test("buildFallbackArticle emits standard digest section order when artifact is available", () => {
+  const article = buildFallbackArticle({
+    artifact: {
+      exploredTweetId: "seed",
+      rootTweet: { id: "root", author: "@root", text: "root text" },
+      mandatoryPath: [
+        { id: "root", author: "@root", text: "root text" },
+        { id: "seed", author: "@seed", text: "seed text", quoteOf: "root" }
+      ],
+      expansions: [
+        {
+          depth: 1,
+          tweets: [
+            { id: "r1", author: "@reply", text: "reply text", relationType: "reply" }
+          ]
+        }
+      ],
+      selectedTweets: []
+    },
+    clickedTweetId: "seed",
+    seedTweet: { id: "seed", author: "@seed", text: "seed text" },
+    rootTweet: { id: "root", author: "@root", text: "root text" },
+    topTweets: [{ id: "seed", author: "@seed", text: "seed text" }],
+    references: [{ canonicalUrl: "https://example.com/doc", displayUrl: "https://example.com/doc", domain: "example.com", citationCount: 1 }]
+  });
+
+  assert.deepEqual(
+    article.sections.map((section) => section.heading),
+    [
+      "Original tweet",
+      "Why this appeared",
+      "Ancestor path",
+      "Important replies and branches",
+      "Evidence",
+      "Digest summary"
+    ]
+  );
+});
+
+test("createOpenAiArticleGenerator accepts minimal model schema and builds standard sections locally", async () => {
+  const generator = createOpenAiArticleGenerator({
+    apiKey: "test-key",
+    enabled: true,
+    fetchImpl: async () => ({
+      ok: true,
+      async text() {
+        return JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  title: "Digest title",
+                  dek: "Digest dek",
+                  summary: "A concise model-written summary."
+                })
+              }
+            }
+          ]
+        });
+      }
+    })
+  });
+
+  const article = await generator.generateArticle({
+    clickedTweetId: "seed",
+    dataset: {
+      canonicalRootId: "root",
+      rootTweet: { id: "root", author: "@root", text: "root text" },
+      tweets: [
+        { id: "root", author: "@root", text: "root text" },
+        { id: "seed", author: "@seed", text: "seed text", quote_of: "root" }
+      ]
+    },
+    snapshot: {
+      canonicalRootId: "root",
+      root: { id: "root", author: "@root", text: "root text" },
+      pathAnchored: {
+        selectedTweetIds: ["root", "seed"],
+        references: [],
+        artifact: {
+          exploredTweetId: "seed",
+          rootTweet: { id: "root", author: "@root", text: "root text" },
+          mandatoryPath: [
+            { id: "root", author: "@root", text: "root text" },
+            { id: "seed", author: "@seed", text: "seed text", quoteOf: "root" }
+          ],
+          expansions: [],
+          selectedTweets: []
+        }
+      },
+      ranking: [
+        { id: "seed", score: 1 },
+        { id: "root", score: 0.9 }
+      ]
+    }
+  });
+
+  assert.equal(article.usedOpenAi, true);
+  assert.equal(article.title, "Digest title");
+  assert.equal(article.dek, "Digest dek");
+  assert.equal(article.summary, "A concise model-written summary.");
+  assert.deepEqual(
+    article.sections.map((section) => section.heading),
+    ["Original tweet", "Why this appeared", "Ancestor path", "Digest summary"]
+  );
 });

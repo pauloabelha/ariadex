@@ -4,18 +4,21 @@ Ariadex is a conversation analysis engine plus a Chrome extension UI.
 
 When you click `◇ Explore` on X:
 1. Ariadex canonicalizes the root tweet.
-2. It retrieves connected tweets from the official X API in two passes:
+2. On cache miss, it retrieves connected tweets from the official X API in two passes:
    - core topicsphere pass (replies/quotes/quote-replies)
    - bounded followed-author discovery pass
    - replies and quotes are fetched concurrently per root to reduce latency
-3. It builds a typed graph.
-4. It runs ThinkerRank.
-5. It renders two ranked panel sections.
-6. It renders Ariadex Dex tabs:
-   - Thinkers
-   - Evidence
+3. It builds a path-anchored snapshot around the clicked tweet:
+   - mandatory ancestor path from root to explored tweet
+   - recursive expansion of only important replies/quotes
+   - canonical reference extraction
+4. It runs ThinkerRank on the selected subgraph.
+5. It renders Ariadex Dex tabs:
+   - Branches
+   - References
    - People
    - Context
+   - Log
    - Digest
 
 ThinkerRank is now explicitly:
@@ -33,6 +36,7 @@ The project is now layered:
 - `data/`: data retrieval/normalization
 - `ui/`: panel + tweet highlight
 - `extension/`: thin integration glue
+- `server/`: path-anchored snapshot, caching, digest artifact generation
 
 Extension networking note:
 - `content.js` asks `background.js` to call the Graph API.
@@ -47,6 +51,8 @@ UI note:
 - ranking cards show author avatars when `author_profile.profile_image_url` is available
 - Fast/Deep toggle was removed; exploration is deep-only
 - `Digest` can generate an article view and downloadable PDF from the server-side cached snapshot
+- `People` shows profile images and selected-tweet counts
+- `Log` shows structured snapshot diagnostics
 - if `followingSet` is empty, "From Your Network" will stay empty by design
 - app-only bearer token mode cannot fetch the viewer's full following graph from X API
 - extension now extracts viewer handle hints from X header DOM for diagnostics/debugging
@@ -54,7 +60,10 @@ UI note:
 
 Ops note:
 - server logs support ANSI color (`ARIADEX_LOG_COLOR=true`) and detailed debug traces (`ARIADEX_LOG_LEVEL=debug`)
-- cache hit requests can run incremental diff refresh (`incremental=true`) to catch new replies/quotes without full rebuild
+- snapshot/article/entity caches persist to disk in `.cache/graph_cache_store.json`
+- known tweets are frozen after retrieval
+- cache-hit snapshot requests do not re-scan the whole conversation root
+- cache-hit snapshot requests may hydrate only missing path tweets if the explored path includes unseen ids
 - article generation reuses snapshot cache identity and stores article JSON + PDF as separate cached artifacts
 - deterministic perf benchmark available via `npm run benchmark:snapshot` (cold/warm latency + request counters)
 

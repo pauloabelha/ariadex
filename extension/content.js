@@ -665,6 +665,184 @@
     return true;
   }
 
+  function formatExploreProgressMessage(progress = {}) {
+    const phase = String(progress?.phase || "").trim();
+    const tweetCount = Number(progress?.tweetCount || 0);
+    const replies = Number(progress?.replies || 0);
+    const quotes = Number(progress?.quotes || 0);
+    const processedRoots = Number(progress?.processedRoots || 0);
+    const queuedRoots = Number(progress?.queuedRoots || 0);
+    const selectedTweetCount = Number(progress?.selectedTweetCount || 0);
+    const referenceCount = Number(progress?.referenceCount || 0);
+    const mandatoryPathLength = Number(progress?.mandatoryPathLength || 0);
+
+    if (phase === "request_received") {
+      return "Preparing the conversation workspace…";
+    }
+    if (phase === "root_resolution_started") {
+      return "Resolving the clicked tweet and its context…";
+    }
+    if (phase === "root_resolved") {
+      return "Context resolved. Building the reading path…";
+    }
+    if (phase === "incremental_refresh") {
+      return "Refreshing cached conversation data…";
+    }
+    if (phase === "cache_hit") {
+      return "Loaded a cached conversation map.";
+    }
+    if (phase === "waiting_inflight") {
+      return "Another snapshot is already being built. Reusing it when ready…";
+    }
+    if (phase === "cache_hit_after_wait") {
+      return "Loaded the shared cached conversation map.";
+    }
+    if (phase === "collecting") {
+      return "Collecting conversation branches and evidence…";
+    }
+    if (phase === "collection_started") {
+      return "Scanning the conversation graph…";
+    }
+    if (phase === "collecting_root") {
+      return processedRoots > 1 || queuedRoots > 0
+        ? `Tracing relevant branches. ${processedRoots} scanned, ${queuedRoots} pending.`
+        : "Tracing the core conversation path…";
+    }
+    if (phase === "replies_fetched") {
+      return replies > 0
+        ? `Collected direct replies. ${replies} candidate replies found.`
+        : "Collected direct replies for this branch.";
+    }
+    if (phase === "quotes_fetched") {
+      return quotes > 0
+        ? `Collected quote branches. ${quotes} quote tweets found.`
+        : "Collected quote branches for this tweet.";
+    }
+    if (phase === "quote_reply_expanded") {
+      return queuedRoots > 0
+        ? `Expanding quote branches. ${queuedRoots} still worth checking.`
+        : "Finished expanding quote branches.";
+    }
+    if (phase === "network_discovery_batch") {
+      return "Checking relevant voices from your network…";
+    }
+    if (phase === "references_hydrated") {
+      return "Linking referenced tweets and citations…";
+    }
+    if (phase === "authors_hydrated") {
+      return "Hydrating author context…";
+    }
+    if (phase === "collection_complete") {
+      return tweetCount > 0
+        ? `Conversation collection complete. ${tweetCount} tweets available for selection.`
+        : "Conversation collection complete.";
+    }
+    if (phase === "path_selection_started") {
+      return "Building the mandatory path and selecting important branches…";
+    }
+    if (phase === "path_selection_complete") {
+      return selectedTweetCount > 0 || mandatoryPathLength > 0
+        ? `Structured the conversation. ${mandatoryPathLength} path tweets and ${selectedTweetCount} selected tweets kept.`
+        : "Structured the conversation around the clicked tweet.";
+    }
+    if (phase === "evidence_compiled") {
+      return referenceCount > 0
+        ? `Compiled evidence. ${referenceCount} canonical references linked.`
+        : "Compiled evidence from the selected branches.";
+    }
+    if (phase === "ranking_complete") {
+      return selectedTweetCount > 0
+        ? `Ranked the selected branches. ${selectedTweetCount} tweets are ready to read.`
+        : "Ranked the selected branches.";
+    }
+    if (phase === "cache_populated") {
+      return "Saved the conversation map to cache.";
+    }
+    if (phase === "completed") {
+      return "Conversation ready.";
+    }
+    return "Building the conversation view…";
+  }
+
+  function toMilestoneProgressMessage(progress = {}) {
+    const phase = String(progress?.phase || "").trim();
+    const rawStatus = String(progress?.statusMessage || "").trim().toLowerCase();
+
+    if (
+      phase === "request_received"
+      || phase === "root_resolution_started"
+      || rawStatus.includes("preparing")
+      || rawStatus.includes("resolving")
+    ) {
+      return "Resolving context…";
+    }
+
+    if (
+      phase === "cache_hit"
+      || phase === "cache_hit_after_wait"
+      || rawStatus.includes("cached conversation map")
+      || rawStatus.includes("shared cached")
+    ) {
+      return "Using cached conversation map…";
+    }
+
+    if (
+      phase === "collecting"
+      || phase === "collection_started"
+      || phase === "collecting_root"
+      || phase === "replies_fetched"
+      || phase === "quotes_fetched"
+      || phase === "quote_reply_expanded"
+      || phase === "network_discovery_batch"
+      || rawStatus.includes("collecting")
+      || rawStatus.includes("scanning")
+      || rawStatus.includes("tracing")
+      || rawStatus.includes("expanding")
+    ) {
+      return "Mapping the conversation…";
+    }
+
+    if (
+      phase === "path_selection_started"
+      || phase === "path_selection_complete"
+      || rawStatus.includes("mandatory path")
+      || rawStatus.includes("structured the conversation")
+      || rawStatus.includes("important branches")
+    ) {
+      return "Selecting the important path and branches…";
+    }
+
+    if (
+      phase === "references_hydrated"
+      || phase === "authors_hydrated"
+      || phase === "evidence_compiled"
+      || rawStatus.includes("evidence")
+      || rawStatus.includes("citations")
+      || rawStatus.includes("author context")
+    ) {
+      return "Linking evidence and context…";
+    }
+
+    if (
+      phase === "ranking_complete"
+      || rawStatus.includes("ranked")
+      || rawStatus.includes("ready to read")
+    ) {
+      return "Ranking what matters…";
+    }
+
+    if (
+      phase === "cache_populated"
+      || phase === "completed"
+      || rawStatus.includes("conversation ready")
+      || rawStatus.includes("saved the conversation map")
+    ) {
+      return "Conversation ready.";
+    }
+
+    return "Exploring conversation…";
+  }
+
   async function buildConversationSnapshot(options = {}) {
     if (options.graphApiUrl) {
       try {
@@ -838,6 +1016,7 @@
       button.setAttribute("aria-busy", "true");
 
       try {
+        let lastMilestoneMessage = "Exploring conversation…";
         const snapshot = await buildConversationSnapshot({
           clickedTweetId,
           rootHintTweetId: rootTweetData.id || null,
@@ -860,28 +1039,13 @@
             if (!renderConversationPanel) {
               return;
             }
+            const milestoneMessage = toMilestoneProgressMessage(progress);
+            if (milestoneMessage === lastMilestoneMessage && progress?.phase !== "data_retrieved") {
+              return;
+            }
+            lastMilestoneMessage = milestoneMessage;
 
             const phase = progress?.phase;
-            const statusByPhase = {
-              root_resolution_started: "Resolving canonical root…",
-              root_resolved: progress?.canonicalRootId
-                ? `Canonical root resolved: ${progress.canonicalRootId}.`
-                : "Canonical root resolved.",
-              collection_started: "Fetching conversation branches from X API…",
-              collecting_root: progress?.rootId
-                ? `Expanding root ${progress.rootId} (${progress.processedRoots || 0} processed)…`
-                : "Expanding conversation roots…",
-              replies_fetched: `Fetched replies${Number.isFinite(progress?.replies) ? ` (${progress.replies})` : ""}.`,
-              quotes_fetched: `Fetched quote tweets${Number.isFinite(progress?.quotes) ? ` (${progress.quotes})` : ""}.`,
-              quote_reply_expanded: "Expanding replies to quote tweets…",
-              network_discovery_batch: "Discovering followed-account posts in this topicsphere…",
-              retweets_fetched: `Fetched repost users${Number.isFinite(progress?.retweeters) ? ` (${progress.retweeters})` : ""}.`,
-              references_hydrated: "Hydrating referenced tweets…",
-              authors_hydrated: "Hydrating missing author profiles…",
-              collection_complete: `Collection complete. ${progress?.tweetCount || 0} tweets gathered.`,
-              ranking_complete: "ThinkerRank complete."
-            };
-
             if (phase === "server_progress") {
               const interimExcludedIds = buildExcludedTweetIds(
                 clickedTweetId,
@@ -898,7 +1062,7 @@
               networkLimit: 0,
               topLimit: 0,
               loadingOnly: true,
-              statusMessage: progress?.statusMessage || "Server is processing…",
+              statusMessage: milestoneMessage,
               exploreMode,
               root: globalScope.document
             });
@@ -922,7 +1086,7 @@
                 networkLimit: 0,
                 topLimit: 0,
                 loadingOnly: true,
-                statusMessage: statusByPhase[phase] || "Exploring conversation…",
+                statusMessage: milestoneMessage,
                 exploreMode,
                 root: globalScope.document
               });
@@ -1036,6 +1200,14 @@
               if (articleResult?.pdf) {
                 downloadPdfFromBase64(articleResult.pdf);
               }
+            },
+            snapshotMeta: {
+              clickedTweetId,
+              canonicalRootId: snapshot?.canonicalRootId || null,
+              diagnostics: snapshot?.diagnostics || null,
+              pathAnchored: snapshot?.pathAnchored || null,
+              cache: snapshot?.cache || null,
+              warnings: snapshot?.warnings || []
             },
             exploreMode,
             root: globalScope.document

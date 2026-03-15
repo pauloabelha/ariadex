@@ -401,33 +401,61 @@
       return null;
     }
 
+    parsed.username = "";
+    parsed.password = "";
     parsed.hash = "";
+    if ((parsed.protocol === "https:" && parsed.port === "443") || (parsed.protocol === "http:" && parsed.port === "80")) {
+      parsed.port = "";
+    }
     const blockedParams = [
       "utm_source",
       "utm_medium",
       "utm_campaign",
       "utm_term",
       "utm_content",
+      "utm_id",
+      "utm_name",
       "fbclid",
       "gclid",
+      "igshid",
+      "mc_cid",
+      "mc_eid",
       "ref",
       "ref_src",
-      "s"
+      "s",
+      "si"
     ];
     for (const param of blockedParams) {
       parsed.searchParams.delete(param);
     }
 
     const host = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.replace(/\/+$/, "") || "/";
     if (host === "x.com" || host === "twitter.com") {
-      const statusMatch = parsed.pathname.match(/^\/([^/]+)\/status\/(\d+)/);
+      const statusMatch = pathname.match(/^\/([^/]+)\/status\/(\d+)/);
       if (statusMatch) {
         return `https://x.com/${statusMatch[1]}/status/${statusMatch[2]}`;
       }
     }
+    if (host === "youtu.be") {
+      const videoId = pathname.replace(/^\//, "");
+      return videoId ? `https://www.youtube.com/watch?v=${videoId}` : null;
+    }
+    if (host === "www.youtube.com" || host === "youtube.com") {
+      if (pathname === "/watch") {
+        const videoId = parsed.searchParams.get("v");
+        return videoId ? `https://www.youtube.com/watch?v=${videoId}` : "https://www.youtube.com/watch";
+      }
+    }
+    if (host === "arxiv.org") {
+      const pdfMatch = pathname.match(/^\/pdf\/([^/]+?)(?:\.pdf)?$/);
+      if (pdfMatch) {
+        return `https://arxiv.org/abs/${pdfMatch[1]}`;
+      }
+    }
 
     const normalizedSearch = parsed.searchParams.toString();
-    return `${parsed.protocol}//${host}${parsed.pathname}${normalizedSearch ? `?${normalizedSearch}` : ""}`;
+    return `${parsed.protocol}//${host}${pathname}${normalizedSearch ? `?${normalizedSearch}` : ""}`;
   }
 
   function isExternalEvidenceUrl(rawUrl) {
@@ -559,10 +587,12 @@
       }
       let person = byAuthorId.get(key);
       if (!person) {
+        const profile = extractAuthorProfile(tweet);
         person = {
           id: key,
           author_id: authorId || null,
           author,
+          profile,
           tweetsCount: 0,
           aggregateScore: 0,
           bestTweetId: entry.id,
@@ -574,6 +604,9 @@
       const entryScore = Number(entry.score) || 0;
       person.tweetsCount += 1;
       person.aggregateScore += entryScore;
+      if (!person.profile) {
+        person.profile = extractAuthorProfile(tweet);
+      }
       if (entryScore > person.bestScore) {
         person.bestTweetId = entry.id;
         person.bestScore = entryScore;
@@ -626,7 +659,186 @@
     };
   }
 
-  function buildDexViewModel({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit, topLimit, humanOnly } = {}) {
+  function buildLogSummary({ snapshotMeta, nodes, rankedEntries } = {}) {
+    const diagnostics = snapshotMeta?.diagnostics || {};
+    const filter = diagnostics?.filter || {};
+    const ranking = diagnostics?.ranking || {};
+    const pathAnchored = snapshotMeta?.pathAnchored || {};
+    const pathDiagnostics = pathAnchored?.diagnostics || diagnostics?.pathAnchored || {};
+    const artifact = pathAnchored?.artifact || null;
+    const safeNodes = Array.isArray(nodes) ? nodes : [];
+    const safeRankedEntries = Array.isArray(rankedEntries) ? rankedEntries : [];
+    const cache = snapshotMeta?.cache || null;
+    const warnings = Array.isArray(snapshotMeta?.warnings) ? snapshotMeta.warnings : [];
+
+    let replyEdges = 0;
+    let quoteEdges = 0;
+    for (let i = 0; i < safeNodes.length; i += 1) {
+      const tweet = safeNodes[i];
+      if (tweet?.reply_to) {
+        replyEdges += 1;
+      }
+      if (tweet?.quote_of) {
+        quoteEdges += 1;
+      }
+    }
+
+    return [
+      { label: "Cache", value: cache?.hit ? "hit" : "miss" },
+      { label: "Explored tweet", value: artifact?.exploredTweetId || snapshotMeta?.clickedTweetId || "unknown" },
+      { label: "Canonical root", value: snapshotMeta?.canonicalRootId || artifact?.canonicalRootId || "unknown" },
+      { label: "Collected tweets", value: Number.isFinite(Number(filter?.inputTweetCount)) ? String(filter.inputTweetCount) : String(safeNodes.length) },
+      { label: "Selected tweets", value: Number.isFinite(Number(pathDiagnostics?.selectedTweetCount)) ? String(pathDiagnostics.selectedTweetCount) : String(safeNodes.length) },
+      { label: "Ranked entries", value: Number.isFinite(Number(ranking?.rankingCount)) ? String(ranking.rankingCount) : String(safeRankedEntries.length) },
+      { label: "Ancestor path", value: Number.isFinite(Number(pathDiagnostics?.mandatoryPathLength)) ? String(pathDiagnostics.mandatoryPathLength) : String(Array.isArray(pathAnchored?.mandatoryPathIds) ? pathAnchored.mandatoryPathIds.length : 0) },
+      { label: "Expansion levels", value: artifact ? String(Array.isArray(artifact.expansions) ? artifact.expansions.length : 0) : String(Array.isArray(pathAnchored?.expansions) ? pathAnchored.expansions.length : 0) },
+      { label: "Reply edges", value: String(replyEdges) },
+      { label: "Quote edges", value: String(quoteEdges) },
+      { label: "References", value: Number.isFinite(Number(pathDiagnostics?.referenceCount)) ? String(pathDiagnostics.referenceCount) : String(Array.isArray(pathAnchored?.references) ? pathAnchored.references.length : 0) },
+      { label: "Warnings", value: String(warnings.length) }
+    ];
+  }
+
+  function createDigestNarrative(root, text) {
+    const body = root.createElement("div");
+    body.className = "ariadex-digest-body";
+    body.textContent = String(text || "").trim();
+    return body;
+  }
+
+  function createDigestQuote(root, tweet, label = "") {
+    const wrap = root.createElement("div");
+    wrap.className = "ariadex-digest-quote";
+
+    if (label) {
+      const labelNode = root.createElement("div");
+      labelNode.className = "ariadex-digest-quote-label";
+      labelNode.textContent = label;
+      wrap.appendChild(labelNode);
+    }
+
+    const author = root.createElement("div");
+    author.className = "ariadex-digest-quote-author";
+    author.textContent = String(tweet?.author || "@unknown");
+    wrap.appendChild(author);
+
+    const text = root.createElement("div");
+    text.className = "ariadex-digest-quote-text";
+    text.textContent = String(tweet?.text || "").trim();
+    wrap.appendChild(text);
+
+    return wrap;
+  }
+
+  function renderStandardDigest(card, article, root) {
+    const artifact = article?.input?.artifact || null;
+    if (!artifact || !Array.isArray(artifact.mandatoryPath)) {
+      return false;
+    }
+
+    const exploredTweetId = String(artifact.exploredTweetId || "");
+    const mandatoryPath = artifact.mandatoryPath || [];
+    const exploredTweet = mandatoryPath.find((tweet) => String(tweet?.id || "") === exploredTweetId)
+      || artifact.selectedTweets?.find?.((tweet) => String(tweet?.id || "") === exploredTweetId)
+      || null;
+    const rootTweet = artifact.rootTweet || (mandatoryPath.length > 0 ? mandatoryPath[0] : null);
+    const relationshipText = (() => {
+      if (!exploredTweet) {
+        return "";
+      }
+      if (exploredTweet.quoteOf && rootTweet?.id && String(exploredTweet.quoteOf) === String(rootTweet.id)) {
+        return "This came as a response to the quoted tweet below.";
+      }
+      if (exploredTweet.replyTo && rootTweet?.id && String(exploredTweet.replyTo) === String(rootTweet.id)) {
+        return "This came as a direct reply to the root tweet below.";
+      }
+      if (exploredTweet.quoteOf || exploredTweet.replyTo) {
+        return "This sits inside a larger ancestor path that gives the conversation its context.";
+      }
+      return "This is the starting tweet for the digest.";
+    })();
+
+    const appendSection = (headingText) => {
+      const heading = root.createElement("h4");
+      heading.className = SECTION_TITLE_CLASS;
+      heading.textContent = headingText;
+      card.appendChild(heading);
+    };
+
+    if (exploredTweet) {
+      appendSection("Original tweet");
+      card.appendChild(createDigestNarrative(root, "The original tweet said:"));
+      card.appendChild(createDigestQuote(root, exploredTweet, "Explored tweet"));
+    }
+
+    appendSection("Why this appeared");
+    card.appendChild(createDigestNarrative(root, relationshipText || (article.summary || article.dek || "This digest follows the clicked tweet and the path above it.")));
+    if (rootTweet && (!exploredTweet || String(rootTweet.id) !== String(exploredTweet.id))) {
+      card.appendChild(createDigestQuote(root, rootTweet, "Root tweet"));
+    }
+
+    if (mandatoryPath.length > 1) {
+      appendSection("Ancestor path");
+      card.appendChild(createDigestNarrative(root, "This is the path from the clicked tweet back through its parent context."));
+      for (let i = 0; i < mandatoryPath.length; i += 1) {
+        const tweet = mandatoryPath[i];
+        const label = i === 0
+          ? "Root"
+          : (String(tweet?.id || "") === exploredTweetId ? "Explored tweet" : `Ancestor ${i}`);
+        card.appendChild(createDigestQuote(root, tweet, label));
+      }
+    }
+
+    const expansionTweets = [];
+    for (const level of Array.isArray(artifact.expansions) ? artifact.expansions : []) {
+      for (const tweet of Array.isArray(level?.tweets) ? level.tweets : []) {
+        expansionTweets.push({
+          ...tweet,
+          depth: level?.depth || 0
+        });
+      }
+    }
+
+    if (expansionTweets.length > 0) {
+      appendSection("Important replies and branches");
+      card.appendChild(createDigestNarrative(root, "These are the substantive replies and quote branches selected from the conversation."));
+      const topExpansionTweets = expansionTweets.slice(0, 8);
+      for (let i = 0; i < topExpansionTweets.length; i += 1) {
+        const tweet = topExpansionTweets[i];
+        const label = tweet.relationType === "quote"
+          ? `Quote branch · depth ${tweet.depth || 1}`
+          : `Reply branch · depth ${tweet.depth || 1}`;
+        card.appendChild(createDigestQuote(root, tweet, label));
+      }
+    }
+
+    if (Array.isArray(article.references) && article.references.length > 0) {
+      appendSection("Evidence");
+      card.appendChild(createDigestNarrative(root, "These references were cited in the selected conversation branches."));
+      for (const ref of article.references) {
+        const refCard = root.createElement("div");
+        refCard.className = "ariadex-card";
+        const title = root.createElement("div");
+        title.className = "ariadex-link-title";
+        title.textContent = ref.displayUrl || ref.canonicalUrl || "";
+        const meta = root.createElement("div");
+        meta.className = "ariadex-link-meta";
+        meta.textContent = `${ref.domain || "external"} · ${Number(ref.citationCount || 0)} citations`;
+        refCard.appendChild(title);
+        refCard.appendChild(meta);
+        card.appendChild(refCard);
+      }
+    }
+
+    if (article.summary) {
+      appendSection("Digest summary");
+      card.appendChild(createDigestNarrative(root, article.summary));
+    }
+
+    return true;
+  }
+
+  function buildDexViewModel({ nodes, scoreById, relationshipById, followingSet, excludedTweetIds, networkLimit, topLimit, humanOnly, snapshotMeta } = {}) {
     const sections = buildPanelSections({
       nodes,
       scoreById,
@@ -650,12 +862,18 @@
       nodes,
       rankedEntries: sections.rankedEntries
     });
+    const log = buildLogSummary({
+      snapshotMeta,
+      nodes,
+      rankedEntries: sections.rankedEntries
+    });
 
     return {
       sections,
       evidence,
       people,
-      context
+      context,
+      log
     };
   }
 
@@ -863,6 +1081,7 @@
     articleLoading = false,
     onGenerateArticle = null,
     onDownloadPdf = null,
+    snapshotMeta = null,
     root = globalScope.document
   } = {}) {
     const panel = ensurePanelExists(root);
@@ -884,7 +1103,8 @@
       excludedTweetIds,
       humanOnly,
       networkLimit,
-      topLimit
+      topLimit,
+      snapshotMeta
     });
     const sections = viewModel.sections;
     const evidenceByTweetId = new Map();
@@ -936,6 +1156,7 @@
         { id: "thinkers", label: "Branches" },
         { id: "evidence", label: "References" },
         { id: "people", label: "People" },
+        { id: "log", label: "Log" },
         { id: "digest", label: "Digest" }
       ];
 
@@ -988,18 +1209,21 @@
             card.appendChild(summary);
           }
 
-          const sections = Array.isArray(article.sections) ? article.sections : [];
-          for (const section of sections) {
-            const heading = root.createElement("h4");
-            heading.className = SECTION_TITLE_CLASS;
-            heading.textContent = section.heading || "Section";
-            card.appendChild(heading);
+          const renderedStandardDigest = renderStandardDigest(card, article, root);
+          if (!renderedStandardDigest) {
+            const sections = Array.isArray(article.sections) ? article.sections : [];
+            for (const section of sections) {
+              const heading = root.createElement("h4");
+              heading.className = SECTION_TITLE_CLASS;
+              heading.textContent = section.heading || "Section";
+              card.appendChild(heading);
 
-            const bodyCopy = root.createElement("div");
-            bodyCopy.className = "ariadex-digest-body";
-            bodyCopy.style.whiteSpace = "pre-wrap";
-            bodyCopy.textContent = section.body || "";
-            card.appendChild(bodyCopy);
+              const bodyCopy = root.createElement("div");
+              bodyCopy.className = "ariadex-digest-body";
+              bodyCopy.style.whiteSpace = "pre-wrap";
+              bodyCopy.textContent = section.body || "";
+              card.appendChild(bodyCopy);
+            }
           }
 
           if (typeof onDownloadPdf === "function") {
@@ -1074,7 +1298,35 @@
               const person = entries[i];
               const card = root.createElement("div");
               card.className = `${PEOPLE_CARD_CLASS} ${CARD_CLASS}`;
-              card.textContent = `${person.author} · ${person.tweetsCount} tweets · aggregate ${person.aggregateScore.toFixed(3)}`;
+              const header = root.createElement("div");
+              header.className = "ariadex-card-header";
+              const profile = person.profile && typeof person.profile === "object" ? person.profile : null;
+              const profileImageUrl = typeof profile?.profile_image_url === "string"
+                ? profile.profile_image_url.trim()
+                : "";
+              if (profileImageUrl) {
+                const avatar = root.createElement("img");
+                avatar.src = profileImageUrl;
+                avatar.alt = `${person.author} profile image`;
+                avatar.loading = "lazy";
+                avatar.width = 28;
+                avatar.height = 28;
+                avatar.className = "ariadex-avatar";
+                header.appendChild(avatar);
+              }
+
+              const authorBlock = root.createElement("div");
+              authorBlock.className = "ariadex-card-author-block";
+              const authorLine = root.createElement("div");
+              authorLine.className = "ariadex-card-author";
+              authorLine.textContent = person.author;
+              const metaLine = root.createElement("div");
+              metaLine.className = "ariadex-card-meta";
+              metaLine.textContent = `${person.tweetsCount} selected tweet${person.tweetsCount === 1 ? "" : "s"} considered · aggregate ${person.aggregateScore.toFixed(3)}`;
+              authorBlock.appendChild(authorLine);
+              authorBlock.appendChild(metaLine);
+              header.appendChild(authorBlock);
+              card.appendChild(header);
               tabContent.appendChild(card);
             }
           };
@@ -1089,6 +1341,25 @@
           card.className = `${CONTEXT_CARD_CLASS} ${CARD_CLASS}`;
           card.textContent = `Tweets ${context.nodeCount || 0} · Ranked ${context.rankedCount || 0} · Replies ${context.replies || 0} · Quotes ${context.quotes || 0} · Cousins ${context.cousins || 0}`;
           tabContent.appendChild(card);
+          return;
+        }
+
+        if (tabId === "log") {
+          const entries = Array.isArray(viewModel.log) ? viewModel.log : [];
+          for (let i = 0; i < entries.length; i += 1) {
+            const entry = entries[i] || {};
+            const card = root.createElement("div");
+            card.className = `${CONTEXT_CARD_CLASS} ${CARD_CLASS}`;
+            const label = root.createElement("div");
+            label.className = "ariadex-link-domain";
+            label.textContent = entry.label || "Metric";
+            const value = root.createElement("div");
+            value.className = "ariadex-link-title";
+            value.textContent = entry.value || "0";
+            card.appendChild(label);
+            card.appendChild(value);
+            tabContent.appendChild(card);
+          }
           return;
         }
 

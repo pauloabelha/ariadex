@@ -19,7 +19,9 @@ The goal is not to replace panel exploration. The goal is to let users:
 4. The extension requests `POST /v1/conversation-article`.
 5. The graph-cache server:
    - reuses the snapshot cache
-   - derives structured article input from ranked human tweets + canonical non-X references
+   - derives a path-anchored conversation artifact JSON from mandatory path tweets, selected branches, and canonical non-X references
+   - asks the model only for minimal narrative metadata (`title`, `dek`, `summary`)
+   - builds the final digest sections deterministically from the artifact
    - uses OpenAI when available, otherwise falls back to deterministic local article generation
    - renders a PDF
    - caches both article JSON and PDF payload
@@ -85,21 +87,80 @@ Response body:
 
 The PDF is returned as base64 because the current extension bridge is JSON-only.
 
-## Article Input Model
-The article generator currently derives a compact input from the existing snapshot model:
+`incremental` no longer means “refresh the whole conversation root”.
+It now means:
+- on cache miss: build a full root bag
+- on cache hit: hydrate only missing path tweets, if any
+
+## Conversation Artifact
+
+The snapshot now carries a path-anchored JSON artifact intended to be the canonical LLM-facing input:
 
 ```js
 {
+  version: "path-anchored/v1",
+  exploredTweetId,
   canonicalRootId,
-  rootTweet,
+  rootTweet: { id, author, text, replyTo, quoteOf, likes, replies, quotes, followers, importanceScore, url },
+  mandatoryPath: [
+    { id, author, text, replyTo, quoteOf, likes, replies, quotes, followers, importanceScore, url }
+  ],
+  expansions: [
+    {
+      depth,
+      tweets: [
+        { id, author, text, relationType, parentId, importanceScore, ... }
+      ]
+    }
+  ],
+  selectedTweets: [
+    { id, author, text, replyTo, quoteOf, likes, replies, quotes, followers, importanceScore, url }
+  ],
+  references: [
+    {
+      canonicalUrl,
+      displayUrl,
+      domain,
+      kind,
+      citationCount,
+      weightedCitationScore,
+      citedByTweetIds
+    }
+  ],
+  diagnostics: {
+    totalCollectedTweetCount,
+    selectedTweetCount,
+    mandatoryPathLength,
+    expansionDepthCount,
+    referenceCount
+  }
+}
+```
+
+This artifact is designed to be:
+
+- deterministic
+- JSON-only
+- cacheable
+- safe to reuse as the direct input to an LLM digest step
+
+Artifact semantics:
+- `mandatoryPath` is the required ancestor chain from root to explored tweet
+- `expansions` are recursive important branches selected from replies/quotes to path/frontier tweets
+- `references` are canonical non-X references cited anywhere in selected tweets, including entity-backed external URLs from ancestor tweets
+
+## Article Input Model
+The article generator now sends a reduced model input centered on the artifact:
+
+```js
+{
+  artifact,
+  canonicalRootId,
   metrics: {
     collectedTweetCount,
     rankedTweetCount,
     referenceCount
   },
-  topTweets: [
-    { id, author, text, score, reply_to, quote_of }
-  ],
   references: [
     {
       canonicalUrl,
@@ -115,13 +176,40 @@ The article generator currently derives a compact input from the existing snapsh
 
 Important constraints:
 
-- only human tweets are included
-- synthetic repost nodes are excluded
+- the model is not responsible for quote layout or branch ordering
+- quote rendering comes from the artifact, not model output
 - canonical references exclude X/Twitter URLs
-- article generation is grounded in structured data, not raw tweet dumps
+- article generation is grounded in structured data and the path-anchored artifact, not raw tweet dumps
 
 ## OpenAI Behavior
-If `OPENAI_API_KEY` is available, Ariadex uses the article generator model:
+If `OPENAI_API_KEY` is available, Ariadex uses the article generator model.
+
+The model is asked to return strict JSON in this minimal schema:
+
+```json
+{
+  "title": "...",
+  "dek": "...",
+  "summary": "..."
+}
+```
+
+The final digest section order is built locally from the artifact:
+
+- `Original tweet`
+- `Why this appeared`
+- `Ancestor path`
+- `Important replies and branches`
+- `Evidence`
+- `Digest summary`
+
+The renderer treats:
+- source tweet text as source material
+- model text as connective narrative only
+
+This is why the model schema is intentionally minimal.
+
+Model selection:
 
 - `ARIADEX_OPENAI_ARTICLE_MODEL`
 - fallback: `ARIADEX_OPENAI_MODEL`
@@ -141,7 +229,7 @@ Article generation uses the snapshot cache as its base identity.
 Cache layering:
 
 - snapshot cache key: existing conversation snapshot key
-- article cache key: `hash(snapshotCacheKey + article signature + pdf version)`
+- article cache key: `hash(snapshotCacheKey + article signature + clickedTweetId + rootHintTweetId + pdf version)`
 
 Cached article entries store:
 
@@ -157,6 +245,15 @@ This means:
 - article/PDF generation does not refetch X data when snapshot cache is warm
 - changes in article model/signature invalidate article cache cleanly
 - snapshot and article artifacts can evolve independently
+
+Snapshot cache persistence:
+- file-backed disk cache in `.cache/graph_cache_store.json`
+- survives server restarts
+- known tweets are reused rather than re-collected
+
+Snapshot cache refresh semantics:
+- Ariadex does not re-scan the full conversation root on cache hits
+- Ariadex only fetches missing path tweets not already present in the cached dataset
 
 ## UI Contract
 The panel now includes:
@@ -184,10 +281,11 @@ The current PDF renderer is intentionally minimal:
 This is a first pass, optimized for reliability and cheap generation rather than typography.
 
 ## Current Limitations
-- article generation still summarizes the current root-centered snapshot model, not the future branch-centered discourse model
+- the model still returns freeform summary text rather than a fully typed rhetorical analysis schema
 - PDF output is basic and text-heavy
+- native media/video evidence is still less complete than a fully media-aware evidence graph
 - digest generation is on-demand, not precomputed during snapshot build
 - article response does not yet expose branch objects or context-chain objects
 
 ## Next Step
-When Ariadex moves to a `seed + branches + references + context_chain` snapshot model, the article generator should switch to that richer input without changing the panel contract.
+Promote the path-anchored artifact to the single source of truth for both digest generation and downstream export, so the article generator becomes a thin renderer over the artifact rather than rebuilding structure internally.

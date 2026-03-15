@@ -24,6 +24,7 @@
 
   const DEFAULT_TWEET_FIELDS = [
     "author_id",
+    "entities",
     "conversation_id",
     "created_at",
     "in_reply_to_user_id",
@@ -211,6 +212,26 @@
     const refs = ensureArray(tweet?.referenced_tweets);
     const match = refs.find((ref) => ref && ref.type === type && ref.id);
     return match ? match.id : null;
+  }
+
+  function extractExternalUrls(tweet) {
+    const urls = [];
+    const push = (value) => {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || urls.includes(normalized)) {
+        return;
+      }
+      urls.push(normalized);
+    };
+
+    const entityUrls = ensureArray(tweet?.entities?.urls);
+    for (const entry of entityUrls) {
+      push(entry?.unwound_url);
+      push(entry?.expanded_url);
+      push(entry?.url);
+    }
+
+    return urls;
   }
 
   function addUsersToMap(userById, users) {
@@ -653,6 +674,7 @@
     const replyTo = pickReferencedTweet(tweet, "replied_to");
     const quoteOf = pickReferencedTweet(tweet, "quoted");
     const repostOf = pickReferencedTweet(tweet, "retweeted");
+    const externalUrls = extractExternalUrls(tweet);
     const referenced_tweets = [];
     if (replyTo) {
       referenced_tweets.push({ type: "replied_to", id: replyTo });
@@ -687,6 +709,7 @@
       likes: Number.isFinite(metrics.like_count) ? metrics.like_count : 0,
       quote_count: Number.isFinite(metrics.quote_count) ? metrics.quote_count : 0,
       metrics,
+      external_urls: externalUrls,
       referenced_tweets,
       reply_to: replyTo,
       quote_of: quoteOf,
@@ -1250,6 +1273,8 @@
     collectConnectedApiTweets,
     collectConnectedApiTweetsIncremental,
     buildConversationDataset,
+    fetchTweetById,
+    fetchTweetsByIds,
     fetchUserByUsername,
     fetchFollowingUserIds,
     normalizeApiTweet,

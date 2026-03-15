@@ -9,8 +9,10 @@ const xApiClient = require("../data/x_api_client.js");
 const conversationEngine = require("../core/conversation_engine.js");
 const { createOpenAiArticleGenerator } = require("./openai_article_generator.js");
 const { createArticlePdfBuffer } = require("./article_pdf.js");
+const { buildPathAnchoredSelection } = require("./path_anchored_snapshot.js");
+const { buildConversationArtifact } = require("./conversation_artifact.js");
 
-const PIPELINE_VERSION = process.env.ARIADEX_PIPELINE_VERSION || "v1";
+const PIPELINE_VERSION = process.env.ARIADEX_PIPELINE_VERSION || "v2";
 const LOG_LEVELS = {
   debug: 10,
   info: 20,
@@ -373,8 +375,165 @@ function cacheTtlMsForMode(mode) {
     : 15 * 60 * 1000;
 }
 
+function incrementalRefreshWindowMsForMode(mode) {
+  return normalizeMode(mode) === "deep"
+    ? 5 * 60 * 1000
+    : 90 * 1000;
+}
+
 function hashCacheKey(rawKey) {
   return crypto.createHash("sha256").update(String(rawKey)).digest("hex");
+}
+
+function estimateCacheAgeMs(cacheEntry, mode) {
+  const cachedAtMs = Number(cacheEntry?.value?.cachedAtMs || 0);
+  if (cachedAtMs > 0) {
+    return Math.max(0, nowMs() - cachedAtMs);
+  }
+
+  const expiresAtMs = Number(cacheEntry?.expiresAtMs || 0);
+  if (expiresAtMs > 0) {
+    const ttlMsRemaining = Math.max(0, expiresAtMs - nowMs());
+    return Math.max(0, cacheTtlMsForMode(mode) - ttlMsRemaining);
+  }
+
+  return Number.POSITIVE_INFINITY;
+}
+
+function shouldRunIncrementalRefresh(cacheEntry, mode, incremental) {
+  if (!incremental || !cacheEntry) {
+    return false;
+  }
+  return estimateCacheAgeMs(cacheEntry, mode) >= incrementalRefreshWindowMsForMode(mode);
+}
+
+function collectPathSeedIds({ clickedTweetId, rootHintTweetId }) {
+  return [...new Set(
+    [clickedTweetId, rootHintTweetId]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  )];
+}
+
+function collectPathParentIds(tweet) {
+  const ordered = [];
+  const push = (value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized || ordered.includes(normalized)) {
+      return;
+    }
+    ordered.push(normalized);
+  };
+
+  push(tweet?.quote_of);
+  push(tweet?.reply_to);
+
+  const refs = Array.isArray(tweet?.referenced_tweets) ? tweet.referenced_tweets : [];
+  for (const ref of refs) {
+    if (String(ref?.type || "").trim().toLowerCase() === "quoted") {
+      push(ref?.id);
+    }
+  }
+  for (const ref of refs) {
+    if (String(ref?.type || "").trim().toLowerCase() === "replied_to") {
+      push(ref?.id);
+    }
+  }
+
+  return ordered;
+}
+
+async function hydrateMissingPathTweets({
+  dataset,
+  client,
+  clickedTweetId = null,
+  rootHintTweetId = null,
+  logger = null,
+  requestId = null
+} = {}) {
+  const baseDataset = dataset && typeof dataset === "object" ? dataset : {};
+  const mergedTweetById = new Map();
+  const mergedUserById = new Map();
+
+  for (const tweet of Array.isArray(baseDataset.tweets) ? baseDataset.tweets : []) {
+    if (tweet?.id) {
+      mergedTweetById.set(String(tweet.id), tweet);
+    }
+  }
+  for (const user of Array.isArray(baseDataset.users) ? baseDataset.users : []) {
+    if (user?.id) {
+      mergedUserById.set(String(user.id), user);
+    }
+  }
+
+  const queue = collectPathSeedIds({ clickedTweetId, rootHintTweetId });
+  const requested = new Set();
+  let hydratedTweetCount = 0;
+
+  while (queue.length > 0 && hydratedTweetCount < 24) {
+    const tweetId = String(queue.shift() || "").trim();
+    if (!tweetId || mergedTweetById.has(tweetId) || requested.has(tweetId)) {
+      continue;
+    }
+    requested.add(tweetId);
+
+    let lookup = null;
+    try {
+      lookup = await xApiClient.fetchTweetById(client, tweetId);
+    } catch (error) {
+      logger?.warn?.("snapshot_path_hydration_failed", {
+        requestId,
+        tweetId,
+        errorMessage: error?.message || "unknown_error"
+      });
+      continue;
+    }
+
+    if (!lookup?.tweet?.id) {
+      continue;
+    }
+
+    for (const user of Array.isArray(lookup.users) ? lookup.users : []) {
+      if (user?.id) {
+        mergedUserById.set(String(user.id), user);
+      }
+    }
+
+    const normalizedTweet = xApiClient.normalizeApiTweet(lookup.tweet, mergedUserById);
+    if (!normalizedTweet?.id) {
+      continue;
+    }
+    mergedTweetById.set(String(normalizedTweet.id), normalizedTweet);
+    hydratedTweetCount += 1;
+
+    for (const parentId of collectPathParentIds(normalizedTweet)) {
+      if (!mergedTweetById.has(parentId) && !requested.has(parentId)) {
+        queue.push(parentId);
+      }
+    }
+  }
+
+  if (hydratedTweetCount === 0) {
+    return {
+      dataset: baseDataset,
+      hydratedTweetCount: 0
+    };
+  }
+
+  const mergedDataset = {
+    ...baseDataset,
+    tweets: [...mergedTweetById.values()],
+    users: [...mergedUserById.values()]
+  };
+  const canonicalRootId = String(baseDataset?.canonicalRootId || "").trim();
+  if (canonicalRootId && mergedTweetById.has(canonicalRootId)) {
+    mergedDataset.rootTweet = mergedTweetById.get(canonicalRootId) || baseDataset.rootTweet || null;
+  }
+
+  return {
+    dataset: mergedDataset,
+    hydratedTweetCount
+  };
 }
 
 function followingSignature(followingSet) {
@@ -444,6 +603,117 @@ function createEntityCache({ cacheStore, logger = createLogger({ level: "silent"
       setByKey(entityCacheKey("user", user.id), user, userTtlMs);
     }
   };
+}
+
+function formatSnapshotProgressMessage(progress = {}) {
+  const phase = String(progress?.phase || "").trim();
+  const processedRoots = Number(progress?.processedRoots || 0);
+  const queuedRoots = Number(progress?.queuedRoots || 0);
+  const tweetCount = Number(progress?.tweetCount || 0);
+  const replies = Number(progress?.replies || 0);
+  const quotes = Number(progress?.quotes || 0);
+  const discovered = Number(progress?.discovered || 0);
+  const references = Number(progress?.references || 0);
+  const authors = Number(progress?.authors || 0);
+  const selectedTweetCount = Number(progress?.selectedTweetCount || 0);
+  const referenceCount = Number(progress?.referenceCount || 0);
+  const mandatoryPathLength = Number(progress?.mandatoryPathLength || 0);
+
+  if (phase === "request_received") {
+    return "Preparing the conversation workspace.";
+  }
+  if (phase === "root_resolution_started") {
+    return "Resolving the clicked tweet and its surrounding context.";
+  }
+  if (phase === "root_resolved") {
+    return "Context resolved. Building the reading path.";
+  }
+  if (phase === "incremental_refresh") {
+    return "Refreshing cached conversation data.";
+  }
+  if (phase === "cache_hit") {
+    return "Loaded a cached conversation map.";
+  }
+  if (phase === "waiting_inflight") {
+    return "Another snapshot is already being built. Reusing it when ready.";
+  }
+  if (phase === "cache_hit_after_wait") {
+    return "Loaded the shared cached conversation map.";
+  }
+  if (phase === "collecting") {
+    return "Collecting conversation branches and evidence.";
+  }
+
+  if (phase === "collection_started") {
+    return "Scanning the conversation graph.";
+  }
+  if (phase === "collecting_root") {
+    if (processedRoots > 1 || queuedRoots > 0) {
+      return `Tracing relevant branches. ${processedRoots} scanned, ${queuedRoots} pending.`;
+    }
+    return "Tracing the core conversation path.";
+  }
+  if (phase === "replies_fetched") {
+    return replies > 0
+      ? `Collected direct replies. ${replies} candidate replies found.`
+      : "Collected direct replies for this branch.";
+  }
+  if (phase === "quotes_fetched") {
+    return quotes > 0
+      ? `Collected quote branches. ${quotes} quote tweets found.`
+      : "Collected quote branches for this tweet.";
+  }
+  if (phase === "quote_reply_expanded") {
+    return queuedRoots > 0
+      ? `Expanding quote branches. ${queuedRoots} still worth checking.`
+      : "Finished expanding quote branches.";
+  }
+  if (phase === "network_discovery_batch") {
+    return discovered > 0
+      ? `Checking relevant voices from your network. ${discovered} extra candidates found.`
+      : "Checking relevant voices from your network.";
+  }
+  if (phase === "references_hydrated") {
+    return references > 0
+      ? `Linking referenced tweets and citations. ${references} missing links filled in.`
+      : "Linking referenced tweets and citations.";
+  }
+  if (phase === "authors_hydrated") {
+    return authors > 0
+      ? `Hydrating author context. ${authors} profiles added.`
+      : "Loading missing author details.";
+  }
+  if (phase === "collection_complete") {
+    return tweetCount > 0
+      ? `Conversation collection complete. ${tweetCount} tweets available for selection.`
+      : "Conversation collection complete.";
+  }
+  if (phase === "path_selection_started") {
+    return "Building the mandatory path and selecting important branches.";
+  }
+  if (phase === "path_selection_complete") {
+    if (selectedTweetCount > 0 || mandatoryPathLength > 0) {
+      return `Structured the conversation. ${mandatoryPathLength} path tweets and ${selectedTweetCount} selected tweets kept.`;
+    }
+    return "Structured the conversation around the clicked tweet.";
+  }
+  if (phase === "evidence_compiled") {
+    return referenceCount > 0
+      ? `Compiled evidence. ${referenceCount} canonical references linked to the selected branches.`
+      : "Compiled evidence from the selected branches.";
+  }
+  if (phase === "ranking_complete") {
+    return selectedTweetCount > 0
+      ? `Ranked the selected branches. ${selectedTweetCount} tweets are ready to read.`
+      : "Ranked the selected branches.";
+  }
+  if (phase === "cache_populated") {
+    return "Saved the conversation map to cache.";
+  }
+  if (phase === "completed") {
+    return "Conversation ready.";
+  }
+  return "Building the conversation view.";
 }
 
 class MemoryCacheStore {
@@ -628,10 +898,19 @@ async function collectDatasetForCanonicalRoot({ canonicalRootId, client, followi
   };
 }
 
-function buildSnapshotFromDataset(dataset, followingSet) {
-  const snapshotTweets = Array.isArray(dataset?.tweets)
-    ? dataset.tweets.filter((tweet) => Boolean(tweet && tweet.id))
-    : [];
+function buildSnapshotFromDataset(dataset, followingSet, options = {}) {
+  const usePathAnchoredSelection = Boolean(String(options.clickedTweetId || dataset?.clickedTweetId || "").trim());
+  const pathAnchored = usePathAnchoredSelection
+    ? buildPathAnchoredSelection(dataset, {
+      clickedTweetId: options.clickedTweetId || dataset?.clickedTweetId || null,
+      rootHintTweetId: options.rootHintTweetId || dataset?.rootHintTweetId || null
+    })
+    : null;
+  const snapshotTweets = usePathAnchoredSelection && Array.isArray(pathAnchored?.tweets) && pathAnchored.tweets.length > 0
+    ? pathAnchored.tweets.filter((tweet) => Boolean(tweet && tweet.id))
+    : (Array.isArray(dataset?.tweets)
+      ? dataset.tweets.filter((tweet) => Boolean(tweet && tweet.id))
+      : []);
 
   const engineResult = conversationEngine.runConversationEngine({
     tweets: snapshotTweets,
@@ -639,6 +918,14 @@ function buildSnapshotFromDataset(dataset, followingSet) {
       followingSet
     }
   });
+  const conversationArtifact = usePathAnchoredSelection
+    ? buildConversationArtifact({
+      dataset,
+      selection: pathAnchored,
+      clickedTweetId: options.clickedTweetId || dataset?.clickedTweetId || null,
+      canonicalRootId: dataset?.canonicalRootId || null
+    })
+    : null;
 
   const snapshot = {
     canonicalRootId: dataset.canonicalRootId,
@@ -648,7 +935,15 @@ function buildSnapshotFromDataset(dataset, followingSet) {
     edges: engineResult.edges || [],
     ranking: engineResult.ranking || [],
     rankingMeta: engineResult.rankingMeta || { scoreById: new Map() },
-    warnings: Array.isArray(dataset.warnings) ? dataset.warnings : []
+    warnings: Array.isArray(dataset.warnings) ? dataset.warnings : [],
+    pathAnchored: {
+      mandatoryPathIds: Array.isArray(pathAnchored?.mandatoryPathIds) ? pathAnchored.mandatoryPathIds : [],
+      selectedTweetIds: Array.isArray(pathAnchored?.selectedTweetIds) ? pathAnchored.selectedTweetIds : [],
+      expansions: Array.isArray(pathAnchored?.expansions) ? pathAnchored.expansions : [],
+      references: Array.isArray(pathAnchored?.references) ? pathAnchored.references : [],
+      diagnostics: pathAnchored?.diagnostics || null,
+      artifact: conversationArtifact
+    }
   };
 
   const rankingSummary = summarizeRanking(snapshot.ranking);
@@ -667,6 +962,7 @@ function buildSnapshotFromDataset(dataset, followingSet) {
       contributionFilterEnabled: false
     },
     ranking: rankingSummary,
+    pathAnchored: pathAnchored?.diagnostics || null,
     warningsPreview: summarizeWarnings(warningList, 5),
     emptyRankingReason: emptyReason
   };
@@ -746,6 +1042,7 @@ function createGraphCacheService({
       }
     }
 
+    pushProgress("root_resolution_started", formatSnapshotProgressMessage({ phase: "root_resolution_started" }));
     const canonicalRootId = await resolveCanonicalRoot({
       client,
       clickedTweetId,
@@ -786,7 +1083,7 @@ function createGraphCacheService({
     }
 
     const followingKeyPart = followingSignature(followingSet);
-    const rawKey = `${canonicalRootId}|${normalizedMode}|${pipelineVersion}|rank:full_graph|${followingKeyPart}`;
+    const rawKey = `${canonicalRootId}|${normalizedMode}|${pipelineVersion}|rank:path_anchored_graph|${followingKeyPart}`;
     const cacheKey = hashCacheKey(rawKey);
 
     const cached = !force ? cacheStore.get(cacheKey) : null;
@@ -795,89 +1092,35 @@ function createGraphCacheService({
       let datasetForSnapshot = cached.value.dataset;
 
       if (incremental) {
-        try {
-          pushProgress("incremental_refresh", "Checking for new replies/quotes since cached snapshot.", {
-            canonicalRootId
-          });
-          const incrementalWarnings = [];
-          const incrementalResult = await xApiClient.collectConnectedApiTweetsIncremental({
-            rootTweetId: canonicalRootId,
-            existingTweets: Array.isArray(datasetForSnapshot?.tweets) ? datasetForSnapshot.tweets : [],
-            client,
-            onWarning: (message) => incrementalWarnings.push(message),
-            onProgress: (progress) => {
-              pushProgress(
-                progress?.phase || "incremental_refresh",
-                progress?.phase === "incremental_complete"
-                  ? `Incremental refresh complete (${Number(progress?.newTweetCount || 0)} new tweets).`
-                  : "Refreshing recent conversation activity…",
-                {
-                  canonicalRootId,
-                  ...progress
-                }
-              );
-            }
-          });
+        const hydrated = await hydrateMissingPathTweets({
+          dataset: datasetForSnapshot,
+          client,
+          clickedTweetId,
+          rootHintTweetId,
+          logger,
+          requestId
+        });
+        if (hydrated.hydratedTweetCount > 0) {
+          datasetForSnapshot = hydrated.dataset;
+          cacheStore.set(cacheKey, {
+            dataset: datasetForSnapshot,
+            cachedAtMs: Number(cached?.value?.cachedAtMs || nowMs())
+          }, cacheTtlMsForMode(normalizedMode));
 
-          const newTweets = Array.isArray(incrementalResult?.tweets) ? incrementalResult.tweets : [];
-          if (newTweets.length > 0) {
-            const mergedById = new Map();
-            for (const tweet of Array.isArray(datasetForSnapshot?.tweets) ? datasetForSnapshot.tweets : []) {
-              if (tweet?.id) {
-                mergedById.set(String(tweet.id), tweet);
-              }
-            }
-            for (const tweet of newTweets) {
-              if (tweet?.id) {
-                mergedById.set(String(tweet.id), tweet);
-              }
-            }
-
-            const mergedUsersById = new Map();
-            for (const user of Array.isArray(datasetForSnapshot?.users) ? datasetForSnapshot.users : []) {
-              if (user?.id) {
-                mergedUsersById.set(String(user.id), user);
-              }
-            }
-            for (const user of Array.isArray(incrementalResult?.users) ? incrementalResult.users : []) {
-              if (user?.id) {
-                mergedUsersById.set(String(user.id), user);
-              }
-            }
-
-            datasetForSnapshot = {
-              ...datasetForSnapshot,
-              tweets: [...mergedById.values()],
-              users: [...mergedUsersById.values()],
-              warnings: [
-                ...(Array.isArray(datasetForSnapshot?.warnings) ? datasetForSnapshot.warnings : []),
-                ...incrementalWarnings
-              ]
-            };
-
-            cacheStore.set(cacheKey, {
-              dataset: datasetForSnapshot
-            }, cacheTtlMsForMode(normalizedMode));
-
-            logger.info("snapshot_incremental_merged", {
-              canonicalRootId,
-              cacheKey,
-              mode: normalizedMode,
-              newTweetCount: newTweets.length,
-              mergedTweetCount: datasetForSnapshot.tweets.length
-            });
-          }
-        } catch (error) {
-          logger.warn("snapshot_incremental_failed", {
+          logger.info("snapshot_path_hydrated", {
             canonicalRootId,
             cacheKey,
             mode: normalizedMode,
-            errorMessage: error?.message || "unknown_error"
+            hydratedTweetCount: hydrated.hydratedTweetCount,
+            mergedTweetCount: Array.isArray(datasetForSnapshot?.tweets) ? datasetForSnapshot.tweets.length : 0
           });
         }
       }
 
-      const snapshot = buildSnapshotFromDataset(datasetForSnapshot, followingSet);
+      const snapshot = buildSnapshotFromDataset(datasetForSnapshot, followingSet, {
+        clickedTweetId,
+        rootHintTweetId
+      });
       pushProgress("cache_hit", "Loaded snapshot from cache.", {
         canonicalRootId
       });
@@ -915,7 +1158,10 @@ function createGraphCacheService({
       await inflightByKey.get(cacheKey);
       const afterInflight = cacheStore.get(cacheKey);
       if (afterInflight) {
-        const snapshot = buildSnapshotFromDataset(afterInflight.value.dataset, followingSet);
+        const snapshot = buildSnapshotFromDataset(afterInflight.value.dataset, followingSet, {
+          clickedTweetId,
+          rootHintTweetId
+        });
         pushProgress("cache_hit_after_wait", "Loaded snapshot from cache after wait.", {
           canonicalRootId
         });
@@ -951,19 +1197,7 @@ function createGraphCacheService({
         client,
         followingSet,
         onProgress: (progress) => {
-          const phaseLabels = {
-            collection_started: "Collection started.",
-            collecting_root: progress?.rootId ? `Collecting root ${progress.rootId}.` : "Collecting root.",
-            replies_fetched: `Replies fetched${Number.isFinite(progress?.replies) ? ` (${progress.replies})` : ""}.`,
-            quotes_fetched: `Quotes fetched${Number.isFinite(progress?.quotes) ? ` (${progress.quotes})` : ""}.`,
-            quote_reply_expanded: "Expanding quote replies.",
-            retweets_fetched: `Retweets fetched${Number.isFinite(progress?.retweeters) ? ` (${progress.retweeters})` : ""}.`,
-            references_hydrated: "Hydrating referenced tweets.",
-            authors_hydrated: "Hydrating author profiles.",
-            collection_complete: `Collection complete${Number.isFinite(progress?.tweetCount) ? ` (${progress.tweetCount} tweets)` : ""}.`,
-            network_discovery_batch: `Discovering followed-author posts${Number.isFinite(progress?.discovered) ? ` (${progress.discovered})` : ""}.`
-          };
-          pushProgress(progress?.phase || "collecting", phaseLabels[progress?.phase] || "Collecting data…", {
+          pushProgress(progress?.phase || "collecting", formatSnapshotProgressMessage(progress), {
             canonicalRootId,
             ...progress
           });
@@ -995,7 +1229,8 @@ function createGraphCacheService({
       });
 
       cacheStore.set(cacheKey, {
-        dataset
+        dataset,
+        cachedAtMs: nowMs()
       }, cacheTtlMsForMode(normalizedMode));
       pushProgress("cache_populated", "Snapshot cached.", {
         canonicalRootId
@@ -1025,7 +1260,36 @@ function createGraphCacheService({
       warnings: ["cache build completed without stored dataset"]
     };
 
-    const snapshot = buildSnapshotFromDataset(dataset, followingSet);
+    pushProgress("path_selection_started", formatSnapshotProgressMessage({ phase: "path_selection_started" }), {
+      canonicalRootId
+    });
+    const snapshot = buildSnapshotFromDataset(dataset, followingSet, {
+      clickedTweetId,
+      rootHintTweetId
+    });
+    pushProgress("path_selection_complete", formatSnapshotProgressMessage({
+      phase: "path_selection_complete",
+      mandatoryPathLength: Number(snapshot?.pathAnchored?.diagnostics?.mandatoryPathLength || 0),
+      selectedTweetCount: Array.isArray(snapshot?.pathAnchored?.selectedTweetIds) ? snapshot.pathAnchored.selectedTweetIds.length : 0
+    }), {
+      canonicalRootId,
+      mandatoryPathLength: Number(snapshot?.pathAnchored?.diagnostics?.mandatoryPathLength || 0),
+      selectedTweetCount: Array.isArray(snapshot?.pathAnchored?.selectedTweetIds) ? snapshot.pathAnchored.selectedTweetIds.length : 0
+    });
+    pushProgress("evidence_compiled", formatSnapshotProgressMessage({
+      phase: "evidence_compiled",
+      referenceCount: Array.isArray(snapshot?.pathAnchored?.references) ? snapshot.pathAnchored.references.length : 0
+    }), {
+      canonicalRootId,
+      referenceCount: Array.isArray(snapshot?.pathAnchored?.references) ? snapshot.pathAnchored.references.length : 0
+    });
+    pushProgress("ranking_complete", formatSnapshotProgressMessage({
+      phase: "ranking_complete",
+      selectedTweetCount: Array.isArray(snapshot?.pathAnchored?.selectedTweetIds) ? snapshot.pathAnchored.selectedTweetIds.length : Number(snapshot?.diagnostics?.ranking?.rankingCount || 0)
+    }), {
+      canonicalRootId,
+      selectedTweetCount: Array.isArray(snapshot?.pathAnchored?.selectedTweetIds) ? snapshot.pathAnchored.selectedTweetIds.length : Number(snapshot?.diagnostics?.ranking?.rankingCount || 0)
+    });
     pushProgress("completed", "Snapshot complete.", {
       canonicalRootId
     });
@@ -1087,7 +1351,11 @@ function createGraphCacheService({
     const articleSignature = articleGenerator?.signature
       ? String(articleGenerator.signature)
       : "article:fallback";
-    const articleCacheKey = hashCacheKey(`${snapshotCacheKey}|${articleSignature}|pdf:v1`);
+    const articleScope = [
+      `clicked:${String(clickedTweetId || "").trim() || "none"}`,
+      `rootHint:${String(rootHintTweetId || "").trim() || "none"}`
+    ].join("|");
+    const articleCacheKey = hashCacheKey(`${snapshotCacheKey}|${articleSignature}|${articleScope}|pdf:v1`);
     const cached = !force ? cacheStore.get(articleCacheKey) : null;
     if (cached?.value?.article && cached?.value?.pdf) {
       logger.info("snapshot_article_cache_hit", {

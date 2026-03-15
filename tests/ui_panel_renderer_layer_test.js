@@ -83,6 +83,61 @@ test("panel renderer shows profile image when available", () => {
   assert.match(avatar.src, /profile_images\/test_normal\.jpg/);
 });
 
+test("panel renderer shows people avatars and selected tweet counts", () => {
+  const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  panelRenderer.renderConversationPanel({
+    nodes: [
+      {
+        id: "A",
+        author_id: "u1",
+        author: "@u1",
+        text: "first substantive reply",
+        reply_to: "R",
+        author_profile: {
+          username: "u1",
+          name: "U1",
+          description: "",
+          profile_image_url: "https://pbs.twimg.com/profile_images/u1_normal.jpg"
+        }
+      },
+      {
+        id: "B",
+        author_id: "u1",
+        author: "@u1",
+        text: "second substantive reply",
+        quote_of: "R",
+        author_profile: {
+          username: "u1",
+          name: "U1",
+          description: "",
+          profile_image_url: "https://pbs.twimg.com/profile_images/u1_normal.jpg"
+        }
+      }
+    ],
+    scoreById: new Map([["A", 0.9], ["B", 0.8]]),
+    relationshipById: new Map([["A", "reply"], ["B", "quote"]]),
+    followingSet: new Set(),
+    root: dom.window.document
+  });
+
+  const peopleTab = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent.trim() === "People");
+  assert.ok(peopleTab);
+  peopleTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+
+  const peopleCard = [...dom.window.document.querySelectorAll(".ariadex-people-card")].find((node) => /selected tweets considered/.test(node.textContent));
+  assert.ok(peopleCard);
+  assert.match(peopleCard.textContent, /@u1/);
+  assert.match(peopleCard.textContent, /2 selected tweets considered/);
+
+  const avatar = peopleCard.querySelector("img.ariadex-avatar");
+  assert.ok(avatar);
+  assert.match(avatar.src, /profile_images\/u1_normal\.jpg/);
+});
+
 test("panel renderer excludes canonical root and clicked tweet ids when requested", () => {
   const nodes = [
     { id: "ROOT", author_id: "u_root", author: "@root", text: "root tweet", author_profile: { username: "root", name: "Root", description: "" } },
@@ -298,6 +353,17 @@ test("panel renderer excludes t.co and x status urls from references", () => {
   assert.deepEqual(viewModel.evidence.map((entry) => entry.canonicalUrl), ["https://example.com/report"]);
 });
 
+test("panel renderer canonicalizes youtube shortlinks and arxiv pdf links", () => {
+  assert.equal(
+    panelRenderer.canonicalizeUrl("https://youtu.be/abc123?si=tracking"),
+    "https://www.youtube.com/watch?v=abc123"
+  );
+  assert.equal(
+    panelRenderer.canonicalizeUrl("https://arxiv.org/pdf/1234.5678.pdf?utm_source=x"),
+    "https://arxiv.org/abs/1234.5678"
+  );
+});
+
 test("panel renderer renders tabs and allows evidence tab switch", () => {
   const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
   global.window = dom.window;
@@ -322,7 +388,7 @@ test("panel renderer renders tabs and allows evidence tab switch", () => {
   });
 
   const tabs = dom.window.document.querySelectorAll(".ariadex-tab-button");
-  assert.equal(tabs.length, 5);
+  assert.equal(tabs.length, 6);
   assert.match(dom.window.document.body.textContent, /From your network/);
 
   const evidenceTab = [...tabs].find((tab) => tab.textContent === "References");
@@ -330,6 +396,75 @@ test("panel renderer renders tabs and allows evidence tab switch", () => {
   evidenceTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 
   assert.match(dom.window.document.body.textContent, /example\.com\/doc/);
+});
+
+test("panel renderer renders log tab with structured snapshot summary", () => {
+  const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  panelRenderer.renderConversationPanel({
+    nodes: [
+      {
+        id: "ROOT",
+        author_id: "u1",
+        author: "@root",
+        text: "root",
+        author_profile: { username: "root", name: "Root", description: "" }
+      },
+      {
+        id: "A",
+        author_id: "u2",
+        author: "@u2",
+        text: "reply with https://example.com/doc",
+        reply_to: "ROOT",
+        author_profile: { username: "u2", name: "U2", description: "" }
+      }
+    ],
+    scoreById: new Map([["A", 1]]),
+    relationshipById: new Map([["A", "reply"]]),
+    followingSet: new Set(),
+    snapshotMeta: {
+      clickedTweetId: "A",
+      canonicalRootId: "ROOT",
+      diagnostics: {
+        filter: { inputTweetCount: 12 },
+        ranking: { rankingCount: 4 }
+      },
+      pathAnchored: {
+        mandatoryPathIds: ["ROOT", "A"],
+        expansions: [{ depth: 1, tweets: [{ id: "A" }] }],
+        references: [{ canonicalUrl: "https://example.com/doc" }],
+        diagnostics: {
+          selectedTweetCount: 2,
+          mandatoryPathLength: 2,
+          referenceCount: 1
+        },
+        artifact: {
+          exploredTweetId: "A",
+          expansions: [{ depth: 1, tweets: [{ id: "A" }] }]
+        }
+      },
+      cache: { hit: true },
+      warnings: ["warn1", "warn2"]
+    },
+    root: dom.window.document
+  });
+
+  const tabs = [...dom.window.document.querySelectorAll(".ariadex-tab-button")];
+  const logTab = tabs.find((tab) => tab.textContent === "Log");
+  assert.ok(logTab);
+  logTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+
+  const text = dom.window.document.body.textContent;
+  assert.match(text, /Cache/);
+  assert.match(text, /hit/);
+  assert.match(text, /Collected tweets/);
+  assert.match(text, /12/);
+  assert.match(text, /Ancestor path/);
+  assert.match(text, /References/);
+  assert.match(text, /Warnings/);
 });
 
 test("panel renderer renders digest tab and triggers PDF action", () => {
@@ -374,4 +509,90 @@ test("panel renderer renders digest tab and triggers PDF action", () => {
   assert.ok(downloadButton);
   downloadButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   assert.equal(downloadCalls, 1);
+});
+
+test("panel renderer renders standard digest structure from artifact with distinct quote blocks", () => {
+  const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  panelRenderer.renderConversationPanel({
+    nodes: [
+      {
+        id: "ROOT",
+        author_id: "u1",
+        author: "@root",
+        text: "Root text",
+        author_profile: { username: "root", name: "Root", description: "" }
+      },
+      {
+        id: "SEED",
+        author_id: "u2",
+        author: "@seed",
+        text: "Explored text",
+        quote_of: "ROOT",
+        author_profile: { username: "seed", name: "Seed", description: "" }
+      }
+    ],
+    scoreById: new Map([["SEED", 1]]),
+    relationshipById: new Map([["SEED", "quote"]]),
+    followingSet: new Set(),
+    article: {
+      title: "Digest",
+      dek: "Dek",
+      summary: "Summary",
+      references: [
+        {
+          canonicalUrl: "https://example.com/doc",
+          displayUrl: "https://example.com/doc",
+          domain: "example.com",
+          citationCount: 1
+        }
+      ],
+      input: {
+        artifact: {
+          exploredTweetId: "SEED",
+          rootTweet: {
+            id: "ROOT",
+            author: "@root",
+            text: "Root text"
+          },
+          mandatoryPath: [
+            { id: "ROOT", author: "@root", text: "Root text" },
+            { id: "SEED", author: "@seed", text: "Explored text", quoteOf: "ROOT" }
+          ],
+          expansions: [
+            {
+              depth: 1,
+              tweets: [
+                {
+                  id: "R1",
+                  author: "@reply",
+                  text: "Important reply",
+                  relationType: "reply"
+                }
+              ]
+            }
+          ],
+          selectedTweets: []
+        }
+      },
+      sections: []
+    },
+    root: dom.window.document
+  });
+
+  const digestTab = [...dom.window.document.querySelectorAll(".ariadex-tab-button")]
+    .find((tab) => tab.textContent === "Digest");
+  assert.ok(digestTab);
+  digestTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+
+  const text = dom.window.document.body.textContent;
+  assert.match(text, /Original tweet/);
+  assert.match(text, /Why this appeared/);
+  assert.match(text, /Ancestor path/);
+  assert.match(text, /Important replies and branches/);
+  assert.match(text, /Evidence/);
+  assert.equal(dom.window.document.querySelectorAll(".ariadex-digest-quote").length >= 3, true);
 });

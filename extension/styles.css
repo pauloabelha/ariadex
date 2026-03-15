@@ -360,6 +360,40 @@
   color: var(--ariadex-text);
   font-size: 14px;
   line-height: 1.62;
+  white-space: pre-wrap;
+}
+
+.ariadex-digest-quote {
+  display: grid;
+  gap: 6px;
+  padding: 14px 15px;
+  border-radius: 16px;
+  border: 1px solid var(--ariadex-border);
+  background: var(--ariadex-quote-bg);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.ariadex-digest-quote-label {
+  color: var(--ariadex-text-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ariadex-digest-quote-author {
+  color: var(--ariadex-text);
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 650;
+}
+
+.ariadex-digest-quote-text {
+  color: var(--ariadex-text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .ariadex-footer {

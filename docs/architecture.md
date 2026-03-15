@@ -7,6 +7,7 @@ Ariadex now uses a layered design so the conversation logic is reusable outside 
 - `data/` retrieves and normalizes tweet data.
 - `ui/` renders ranked output.
 - `extension/` wires X page events to the three layers.
+- `server/` now assembles a path-anchored snapshot artifact for caching, ranking, and digest generation.
 
 This refactor is structural only. Behavior is preserved.
 
@@ -78,6 +79,7 @@ Responsibilities:
 - collect tweets from source-specific systems
 - normalize to a unified tweet schema
 - resolve canonical root before retrieval
+- preserve entity-backed external URLs for later evidence extraction
 
 Modules:
 - `data/dom_collector.js`: DOM discovery/extraction + schema normalization helpers
@@ -87,6 +89,9 @@ Canonical root rules:
 1. if clicked tweet quotes another tweet, the quoted tweet is root
 2. else follow reply chain (`replied_to`) to origin
 3. DOM ancestor hint can be supplied as `rootHintTweetId`
+
+Normalized tweet contract now also preserves:
+- `external_urls`: expanded/unwound external URLs derived from X tweet entities
 
 ### UI Layer (`ui/`)
 Responsibilities:
@@ -158,10 +163,12 @@ Click tweet
    pass A: core topicsphere (replies, quotes, quote-reply expansion)
    pass B: bounded followed-author discovery (`from:<handle>` queries with strict request caps)
    note: per-root replies and quote fetches run concurrently, then are merged in deterministic order
--> ThinkerRank runs on the full collected graph, with only deterministic structural cleanup
--> cache hit path can run incremental diff refresh (new replies/quotes) before final rank
--> core engine ranks remaining graph
--> content.js renders Dex tabs (Thinkers/Evidence/People/Context)
+-> snapshot assembly builds a path-anchored view:
+   - mandatory ancestor path from the explored tweet
+   - recursive important-branch expansion
+   - canonical reference extraction
+-> core engine ranks the selected subgraph
+-> content.js renders Dex tabs (Branches/References/People/Context/Log/Digest)
 ```
 
 Why this bridge exists:
@@ -184,10 +191,83 @@ Graph cache server observability:
 - supports ANSI-colored terminal output via `ARIADEX_LOG_COLOR=true`
 - includes deterministic benchmark harness (`npm run benchmark:snapshot`) for cold/warm latency and endpoint-call tracking
 
-Graph cache update modes:
-- full build: cache miss / force refresh
-- incremental merge: cache hit + `incremental=true` fetches newest replies/quotes and merges diffs into cached dataset
-- cache key includes canonical root + mode + pipeline/classifier signatures + following signature (followed-author discovery is viewer-dependent)
+## Path-Anchored Snapshot Algorithm
+
+Given `clickedTweetId` and optional `rootHintTweetId`:
+
+1. Load or reuse the cached conversation bag for the canonical root.
+2. Build the `mandatoryPath` starting at the explored tweet.
+3. Parent resolution rule for every hop:
+   - prefer `quote_of`
+   - otherwise use `reply_to`
+   - also consult `referenced_tweets` when normalized shortcut fields are missing
+4. Continue recursively on the parent tweet until no parent exists.
+5. Force-include every tweet on the `mandatoryPath`.
+6. Expand direct children from the active frontier:
+   - direct replies
+   - direct quote tweets
+7. Score children by:
+   - likes
+   - quotes
+   - replies
+   - author follower count
+   - substantive text length
+   - path-child bonus
+   - quote/reply relation bonus
+   - depth penalty
+8. Keep only substantive children above threshold.
+9. Recurse with hard caps:
+   - `maxDepth`
+   - `maxChildrenPerNode`
+   - `maxTotalTweets`
+   - `minSubstantiveChars`
+   - `minImportanceScore`
+10. Collect canonical references from:
+   - URLs in tweet text
+   - `external_urls` derived from X entities
+11. Build the final artifact:
+   - `mandatoryPath`
+   - `expansions`
+   - `selectedTweets`
+   - `references`
+
+This means Ariadex now follows:
+
+`ExploredTweet -> quoted parent if present -> otherwise reply parent -> continue structurally until root`
+
+This is generic. If the quoted parent is itself a reply, Ariadex keeps walking that reply chain.
+
+## Cache Semantics
+
+Snapshot cache key:
+- canonical root id
+- mode
+- pipeline version
+- following signature
+
+Snapshot persistence:
+- stored on disk in `.cache/graph_cache_store.json`
+- survives server restarts
+- known tweets are frozen once retrieved
+
+Cached snapshot behavior:
+- no full-root refresh on cache hits
+- no background “scan the whole conversation again” behavior
+- only missing path tweets may be hydrated:
+  - `clickedTweetId`
+  - `rootHintTweetId`
+  - any missing parents on that ancestor chain
+
+This is deliberate:
+- tweets are immutable enough for this product
+- repeated `Explore` on known tweets should be cheap
+- only unseen path nodes justify additional X API calls
+
+Path-anchored snapshot layer:
+- builds `mandatoryPath` from the clicked tweet to the root
+- expands only high-signal direct replies and quote tweets with strict depth/breadth caps
+- extracts canonical external references from both tweet text and entity-backed URLs
+- emits `snapshot.pathAnchored.artifact`, a JSON artifact intended as the stable LLM-facing conversation contract
 
 Following set note:
 - followed-account ranking/discovery depends on `followingSet` provided by extension config/runtime hints.
@@ -206,6 +286,7 @@ Data layer emits normalized tweets used by core:
   text,
   referenced_tweets,
   metrics,
+  external_urls,
   reply_to,
   quote_of,
   repost_of

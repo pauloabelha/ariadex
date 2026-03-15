@@ -76,6 +76,50 @@ test("buildSnapshotFromDataset ranks full tweet set even when contributionById m
   assert.ok(snapshot.nodes.length >= 3);
 });
 
+test("buildSnapshotFromDataset emits a path-anchored artifact when clicked tweet is provided", () => {
+  const dataset = {
+    canonicalRootId: "root",
+    rootTweet: {
+      id: "root",
+      text: "Root tweet",
+      author_id: "u1"
+    },
+    tweets: [
+      {
+        id: "root",
+        text: "Root tweet with https://example.com/doc.pdf",
+        author_id: "u1"
+      },
+      {
+        id: "seed",
+        text: "Explored tweet that quotes the root and cites https://youtu.be/demo123 with enough detail to matter in the path selection.",
+        author_id: "u2",
+        quote_of: "root",
+        likes: 10,
+        quote_count: 2,
+        author_profile: { public_metrics: { followers_count: 1000 } }
+      },
+      {
+        id: "reply",
+        text: "This reply adds enough detail to be substantive and should be selected because it contains a concrete critique of the methods and data release.",
+        author_id: "u3",
+        reply_to: "seed",
+        likes: 30,
+        quote_count: 4,
+        author_profile: { public_metrics: { followers_count: 2000 } }
+      }
+    ],
+    warnings: []
+  };
+
+  const snapshot = buildSnapshotFromDataset(dataset, new Set(), { clickedTweetId: "seed" });
+
+  assert.equal(snapshot.pathAnchored.artifact.exploredTweetId, "seed");
+  assert.equal(snapshot.pathAnchored.artifact.mandatoryPath.length, 2);
+  assert.equal(snapshot.pathAnchored.artifact.references.length, 2);
+  assert.equal(snapshot.pathAnchored.artifact.references[0].kind, "document");
+});
+
 test("createEntityCache persists tweet and user entities via cache store", () => {
   const store = {
     map: new Map(),
@@ -304,7 +348,7 @@ test("createGraphCacheService getArticle reuses cached snapshot without incremen
     }
   };
 
-  const snapshotCacheKey = hashCacheKey("root|fast|v1|rank:full_graph|following:none");
+  const snapshotCacheKey = hashCacheKey("root|fast|v2|rank:path_anchored_graph|following:none");
   cacheStore.set(snapshotCacheKey, {
     dataset: {
       canonicalRootId: "root",
@@ -362,6 +406,264 @@ test("createGraphCacheService getArticle reuses cached snapshot without incremen
     xApiClient.createClient = originalCreateClient;
     xApiClient.resolveCanonicalRootTweetId = originalResolveCanonicalRootTweetId;
     xApiClient.collectConnectedApiTweetsIncremental = originalCollectConnectedApiTweetsIncremental;
+  }
+});
+
+test("createGraphCacheService scopes article cache by explored tweet id", async () => {
+  const originalCreateClient = xApiClient.createClient;
+  const originalResolveCanonicalRootTweetId = xApiClient.resolveCanonicalRootTweetId;
+  const originalCollectConnectedApiTweetsIncremental = xApiClient.collectConnectedApiTweetsIncremental;
+
+  const cacheStore = {
+    map: new Map(),
+    get(key) {
+      return this.map.get(key) || null;
+    },
+    set(key, value, ttlMs) {
+      this.map.set(key, {
+        value,
+        expiresAtMs: Date.now() + ttlMs
+      });
+    }
+  };
+
+  const snapshotCacheKey = hashCacheKey("root|fast|v2|rank:path_anchored_graph|following:none");
+  cacheStore.set(snapshotCacheKey, {
+    dataset: {
+      canonicalRootId: "root",
+      rootTweet: { id: "root", text: "Root", author_id: "u1" },
+      tweets: [
+        { id: "root", text: "Root", author_id: "u1", conversation_id: "root" },
+        { id: "seed-a", text: "Seed A", author_id: "u2", conversation_id: "root", referenced_tweets: [{ type: "replied_to", id: "root" }] },
+        { id: "seed-b", text: "Seed B", author_id: "u3", conversation_id: "root", referenced_tweets: [{ type: "replied_to", id: "root" }] }
+      ],
+      users: [],
+      warnings: []
+    }
+  }, 60_000);
+
+  let articleCalls = 0;
+  xApiClient.createClient = async () => ({
+    request: async () => {
+      throw new Error("request should not be used on cached article path");
+    },
+    options: {}
+  });
+  xApiClient.resolveCanonicalRootTweetId = async () => "root";
+  xApiClient.collectConnectedApiTweetsIncremental = async () => ({ tweets: [], users: [] });
+
+  try {
+    const service = createGraphCacheService({
+      bearerToken: "test-token",
+      cacheStore,
+      articleGenerator: {
+        signature: "article:test",
+        async generateArticle({ clickedTweetId }) {
+          articleCalls += 1;
+          return {
+            title: `Digest ${clickedTweetId}`,
+            dek: "",
+            summary: `Summary ${clickedTweetId}`,
+            sections: []
+          };
+        }
+      },
+      logger: createLogger({ level: "silent" })
+    });
+
+    const first = await service.getArticle({
+      clickedTweetId: "seed-a",
+      mode: "fast",
+      requestId: "req-a"
+    });
+    const second = await service.getArticle({
+      clickedTweetId: "seed-b",
+      mode: "fast",
+      requestId: "req-b"
+    });
+
+    assert.equal(articleCalls, 2);
+    assert.equal(first.article.title, "Digest seed-a");
+    assert.equal(second.article.title, "Digest seed-b");
+    assert.notEqual(first.cache.key, second.cache.key);
+  } finally {
+    xApiClient.createClient = originalCreateClient;
+    xApiClient.resolveCanonicalRootTweetId = originalResolveCanonicalRootTweetId;
+    xApiClient.collectConnectedApiTweetsIncremental = originalCollectConnectedApiTweetsIncremental;
+  }
+});
+
+test("createGraphCacheService skips incremental refresh when snapshot cache is still fresh", async () => {
+  const originalCreateClient = xApiClient.createClient;
+  const originalResolveCanonicalRootTweetId = xApiClient.resolveCanonicalRootTweetId;
+  const originalCollectConnectedApiTweetsIncremental = xApiClient.collectConnectedApiTweetsIncremental;
+
+  const cacheStore = {
+    map: new Map(),
+    get(key) {
+      return this.map.get(key) || null;
+    },
+    set(key, value, ttlMs) {
+      this.map.set(key, {
+        value,
+        expiresAtMs: Date.now() + ttlMs
+      });
+    }
+  };
+
+  const snapshotCacheKey = hashCacheKey("root|deep|v2|rank:path_anchored_graph|following:none");
+  cacheStore.set(snapshotCacheKey, {
+    dataset: {
+      canonicalRootId: "root",
+      rootTweet: { id: "root", text: "Root", author_id: "u1" },
+      tweets: [
+        { id: "root", text: "Root", author_id: "u1", conversation_id: "root" },
+        { id: "clicked", text: "Clicked", author_id: "u2", conversation_id: "root", quote_of: "root", referenced_tweets: [{ type: "quoted", id: "root" }] }
+      ],
+      users: [],
+      warnings: []
+    },
+    cachedAtMs: Date.now()
+  }, 60_000);
+
+  let incrementalCalls = 0;
+  xApiClient.createClient = async () => ({
+    request: async () => {
+      throw new Error("request should not be used on fresh cached snapshot path");
+    },
+    options: {}
+  });
+  xApiClient.resolveCanonicalRootTweetId = async () => "root";
+  xApiClient.collectConnectedApiTweetsIncremental = async () => {
+    incrementalCalls += 1;
+    return { tweets: [], users: [] };
+  };
+
+  try {
+    const service = createGraphCacheService({
+      bearerToken: "test-token",
+      cacheStore,
+      logger: createLogger({ level: "silent" })
+    });
+
+    const result = await service.getSnapshot({
+      clickedTweetId: "clicked",
+      mode: "deep",
+      incremental: true,
+      requestId: "req-fresh"
+    });
+
+    assert.equal(incrementalCalls, 0);
+    assert.equal(result.cache.hit, true);
+  } finally {
+    xApiClient.createClient = originalCreateClient;
+    xApiClient.resolveCanonicalRootTweetId = originalResolveCanonicalRootTweetId;
+    xApiClient.collectConnectedApiTweetsIncremental = originalCollectConnectedApiTweetsIncremental;
+  }
+});
+
+test("createGraphCacheService hydrates only missing path tweets from cache", async () => {
+  const originalCreateClient = xApiClient.createClient;
+  const originalResolveCanonicalRootTweetId = xApiClient.resolveCanonicalRootTweetId;
+  const originalCollectConnectedApiTweetsIncremental = xApiClient.collectConnectedApiTweetsIncremental;
+  const originalFetchTweetById = xApiClient.fetchTweetById;
+
+  const cacheStore = {
+    map: new Map(),
+    get(key) {
+      return this.map.get(key) || null;
+    },
+    set(key, value, ttlMs) {
+      this.map.set(key, {
+        value,
+        expiresAtMs: Date.now() + ttlMs
+      });
+    }
+  };
+
+  const snapshotCacheKey = hashCacheKey("root|deep|v2|rank:path_anchored_graph|following:none");
+  cacheStore.set(snapshotCacheKey, {
+    dataset: {
+      canonicalRootId: "root",
+      rootTweet: { id: "root", text: "Root", author_id: "u1" },
+      tweets: [
+        { id: "root", text: "Root", author_id: "u1", conversation_id: "root" }
+      ],
+      users: [],
+      warnings: []
+    },
+    cachedAtMs: Date.now()
+  }, 60_000);
+
+  let incrementalCalls = 0;
+  const fetchedIds = [];
+  xApiClient.createClient = async () => ({
+    request: async () => {
+      throw new Error("request should not be used directly on missing path hydration test");
+    },
+    options: {},
+    entityCache: {
+      getTweet: () => null,
+      getUser: () => null
+    }
+  });
+  xApiClient.resolveCanonicalRootTweetId = async () => "root";
+  xApiClient.collectConnectedApiTweetsIncremental = async () => {
+    incrementalCalls += 1;
+    return { tweets: [], users: [] };
+  };
+  xApiClient.fetchTweetById = async (_client, tweetId) => {
+    fetchedIds.push(tweetId);
+    if (tweetId === "clicked") {
+      return {
+        tweet: {
+          id: "clicked",
+          author_id: "u2",
+          text: "Clicked quote",
+          referenced_tweets: [{ type: "quoted", id: "parent" }],
+          public_metrics: {}
+        },
+        users: [{ id: "u2", username: "clicked", name: "Clicked", public_metrics: {} }]
+      };
+    }
+    if (tweetId === "parent") {
+      return {
+        tweet: {
+          id: "parent",
+          author_id: "u3",
+          text: "Parent reply",
+          referenced_tweets: [{ type: "replied_to", id: "root" }],
+          public_metrics: {}
+        },
+        users: [{ id: "u3", username: "parent", name: "Parent", public_metrics: {} }]
+      };
+    }
+    return { tweet: null, users: [] };
+  };
+
+  try {
+    const service = createGraphCacheService({
+      bearerToken: "test-token",
+      cacheStore,
+      logger: createLogger({ level: "silent" })
+    });
+
+    const result = await service.getSnapshot({
+      clickedTweetId: "clicked",
+      mode: "deep",
+      incremental: true,
+      requestId: "req-path"
+    });
+
+    assert.equal(incrementalCalls, 0);
+    assert.deepEqual(fetchedIds, ["clicked", "parent"]);
+    assert.equal(result.cache.hit, true);
+    assert.deepEqual(result.pathAnchored.mandatoryPathIds, ["root", "parent", "clicked"]);
+  } finally {
+    xApiClient.createClient = originalCreateClient;
+    xApiClient.resolveCanonicalRootTweetId = originalResolveCanonicalRootTweetId;
+    xApiClient.collectConnectedApiTweetsIncremental = originalCollectConnectedApiTweetsIncremental;
+    xApiClient.fetchTweetById = originalFetchTweetById;
   }
 });
 
