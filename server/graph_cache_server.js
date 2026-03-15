@@ -12,7 +12,7 @@ const { createArticlePdfBuffer } = require("./article_pdf.js");
 const { buildPathAnchoredSelection } = require("./path_anchored_snapshot.js");
 const { buildConversationArtifact } = require("./conversation_artifact.js");
 
-const PIPELINE_VERSION = process.env.ARIADEX_PIPELINE_VERSION || "v2";
+const PIPELINE_VERSION = process.env.ARIADEX_PIPELINE_VERSION || "v3";
 const LOG_LEVELS = {
   debug: 10,
   info: 20,
@@ -257,6 +257,21 @@ function normalizeFollowingSet(input) {
 }
 
 function normalizeViewerHandles(input) {
+  const reserved = new Set([
+    "home",
+    "explore",
+    "notifications",
+    "messages",
+    "lists",
+    "bookmarks",
+    "communities",
+    "premium",
+    "verified",
+    "profile",
+    "more",
+    "jobs",
+    "grok"
+  ]);
   const handles = new Set();
   const source = Array.isArray(input) ? input : [];
   for (const value of source) {
@@ -266,6 +281,9 @@ function normalizeViewerHandles(input) {
     }
     const normalized = raw.startsWith("@") ? raw.slice(1) : raw;
     if (!/^[a-z0-9_]{1,15}$/.test(normalized)) {
+      continue;
+    }
+    if (reserved.has(normalized)) {
       continue;
     }
     handles.add(normalized);
@@ -443,6 +461,19 @@ function collectPathParentIds(tweet) {
   return ordered;
 }
 
+function isPathTweetHydrationIncomplete(tweet) {
+  if (!tweet || typeof tweet !== "object") {
+    return true;
+  }
+  if (!Array.isArray(tweet.external_urls)) {
+    return true;
+  }
+  if (!Array.isArray(tweet.referenced_tweets)) {
+    return true;
+  }
+  return false;
+}
+
 async function hydrateMissingPathTweets({
   dataset,
   client,
@@ -467,47 +498,53 @@ async function hydrateMissingPathTweets({
   }
 
   const queue = collectPathSeedIds({ clickedTweetId, rootHintTweetId });
-  const requested = new Set();
+  const processed = new Set();
   let hydratedTweetCount = 0;
 
   while (queue.length > 0 && hydratedTweetCount < 24) {
     const tweetId = String(queue.shift() || "").trim();
-    if (!tweetId || mergedTweetById.has(tweetId) || requested.has(tweetId)) {
+    if (!tweetId || processed.has(tweetId)) {
       continue;
     }
-    requested.add(tweetId);
+    processed.add(tweetId);
 
-    let lookup = null;
-    try {
-      lookup = await xApiClient.fetchTweetById(client, tweetId);
-    } catch (error) {
-      logger?.warn?.("snapshot_path_hydration_failed", {
-        requestId,
-        tweetId,
-        errorMessage: error?.message || "unknown_error"
-      });
-      continue;
-    }
+    let normalizedTweet = mergedTweetById.get(tweetId) || null;
+    const shouldFetch = !normalizedTweet || isPathTweetHydrationIncomplete(normalizedTweet);
 
-    if (!lookup?.tweet?.id) {
-      continue;
-    }
+    if (shouldFetch) {
+      let lookup = null;
+      try {
+        lookup = await xApiClient.fetchTweetById(client, tweetId);
+      } catch (error) {
+        logger?.warn?.("snapshot_path_hydration_failed", {
+          requestId,
+          tweetId,
+          errorMessage: error?.message || "unknown_error"
+        });
+        lookup = null;
+      }
 
-    for (const user of Array.isArray(lookup.users) ? lookup.users : []) {
-      if (user?.id) {
-        mergedUserById.set(String(user.id), user);
+      if (lookup?.tweet?.id) {
+        for (const user of Array.isArray(lookup.users) ? lookup.users : []) {
+          if (user?.id) {
+            mergedUserById.set(String(user.id), user);
+          }
+        }
+
+        normalizedTweet = xApiClient.normalizeApiTweet(lookup.tweet, mergedUserById);
+        if (normalizedTweet?.id) {
+          mergedTweetById.set(String(normalizedTweet.id), normalizedTweet);
+          hydratedTweetCount += 1;
+        }
       }
     }
 
-    const normalizedTweet = xApiClient.normalizeApiTweet(lookup.tweet, mergedUserById);
     if (!normalizedTweet?.id) {
       continue;
     }
-    mergedTweetById.set(String(normalizedTweet.id), normalizedTweet);
-    hydratedTweetCount += 1;
 
     for (const parentId of collectPathParentIds(normalizedTweet)) {
-      if (!mergedTweetById.has(parentId) && !requested.has(parentId)) {
+      if (!processed.has(parentId)) {
         queue.push(parentId);
       }
     }

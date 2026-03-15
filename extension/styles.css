@@ -247,6 +247,128 @@
   gap: 12px;
 }
 
+.ariadex-branch-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.ariadex-branch-graph-card {
+  padding: 14px 14px 10px;
+  overflow: hidden;
+}
+
+.ariadex-branch-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-bottom: 10px;
+  color: var(--ariadex-text-secondary);
+  font-size: 12px;
+}
+
+.ariadex-branch-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ariadex-branch-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.ariadex-branch-graph-svg {
+  width: 100%;
+  height: 336px;
+  display: block;
+  overflow: visible;
+}
+
+.ariadex-branch-edge {
+  fill: none;
+  stroke-width: 2.4;
+  opacity: 0.46;
+  transition: opacity 180ms ease, stroke-width 180ms ease;
+}
+
+.ariadex-branch-edge-path {
+  stroke: url(#ariadex-path-glow);
+  opacity: 0.78;
+}
+
+.ariadex-branch-edge-reply {
+  stroke: #c46f53;
+}
+
+.ariadex-branch-edge-quote {
+  stroke: #4c5bd4;
+}
+
+.ariadex-branch-edge-active {
+  opacity: 0.94;
+  stroke-width: 3;
+}
+
+.ariadex-branch-node-group {
+  cursor: pointer;
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.ariadex-branch-node-group:hover {
+  transform: scale(1.02);
+}
+
+.ariadex-branch-node-group-selected .ariadex-branch-node-label {
+  opacity: 1;
+  font-weight: 700;
+}
+
+.ariadex-branch-node-halo {
+  fill: rgba(76, 91, 212, 0.12);
+  transition: r 180ms ease;
+}
+
+.ariadex-branch-node {
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 2;
+  transition: transform 180ms ease, filter 180ms ease;
+}
+
+.ariadex-branch-node-root {
+  fill: #1e1b16;
+}
+
+.ariadex-branch-node-path {
+  fill: #8f877b;
+}
+
+.ariadex-branch-node-explored {
+  fill: #4c5bd4;
+}
+
+.ariadex-branch-node-reply {
+  fill: #d7805f;
+}
+
+.ariadex-branch-node-quote {
+  fill: #3f8dd8;
+}
+
+.ariadex-branch-node-label {
+  fill: var(--ariadex-text);
+  font-size: 12px;
+  letter-spacing: -0.01em;
+  opacity: 0.88;
+  user-select: none;
+}
+
+.ariadex-branch-detail-card {
+  display: grid;
+  gap: 10px;
+}
+
 .ariadex-avatar {
   width: 28px;
   height: 28px;
@@ -357,6 +479,10 @@
 }
 
 .ariadex-digest-body {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(191, 87, 0, 0.08);
+  border: 1px solid rgba(191, 87, 0, 0.16);
   color: var(--ariadex-text);
   font-size: 14px;
   line-height: 1.62;

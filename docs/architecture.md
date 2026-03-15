@@ -8,6 +8,7 @@ Ariadex now uses a layered design so the conversation logic is reusable outside 
 - `ui/` renders ranked output.
 - `extension/` wires X page events to the three layers.
 - `server/` now assembles a path-anchored snapshot artifact for caching, ranking, and digest generation.
+- persistent caches are intended to be first-class graph infrastructure, not just an optimization layer.
 
 This refactor is structural only. Behavior is preserved.
 
@@ -80,6 +81,7 @@ Responsibilities:
 - normalize to a unified tweet schema
 - resolve canonical root before retrieval
 - preserve entity-backed external URLs for later evidence extraction
+- support stable entity-level persistence so known tweets, users, and references can be checked before API calls
 
 Modules:
 - `data/dom_collector.js`: DOM discovery/extraction + schema normalization helpers
@@ -185,6 +187,39 @@ Receive normalized tweets
 
 No DOM is required for the standalone/server flow.
 
+## Persistent Cache Model
+
+The intended architecture is hash-first and persistent.
+
+Known entities should be checked in constant time before any network request.
+
+Persistent cache layers:
+
+- tweet entity cache
+- user entity cache
+- canonical reference cache
+- tweet-to-reference edge cache
+- ancestor-path cache
+- explored-artifact cache
+
+Keying strategy:
+
+- tweets:
+  - by stable tweet id
+- users:
+  - by stable user id
+- references:
+  - by canonical URL hash
+- explored artifacts:
+  - by explored tweet id plus algorithm-version signature
+
+Behavioral rule:
+
+- if a known tweet, user, reference, or explored artifact is cached, load it directly
+- if it is not cached, fetch it, normalize it, and persist it immediately
+
+This is what makes repeat exploration effectively constant-time on the cache decision path.
+
 Graph cache server observability:
 - emits structured JSON logs for each HTTP request, X API request, pipeline phase, warning, and completion summary
 - includes ranking diagnostics (`rankingCount`, `nonZeroScoreCount`, `emptyRankingReason`, top score preview) to debug empty panel outputs quickly
@@ -203,10 +238,13 @@ Given `clickedTweetId` and optional `rootHintTweetId`:
    - also consult `referenced_tweets` when normalized shortcut fields are missing
 4. Continue recursively on the parent tweet until no parent exists.
 5. Force-include every tweet on the `mandatoryPath`.
-6. Expand direct children from the active frontier:
+6. Collect canonical references across the whole kept set:
+   - ancestor-path tweets
+   - expanded tweets
+7. Expand direct children from the active frontier:
    - direct replies
    - direct quote tweets
-7. Score children by:
+8. Score children by:
    - likes
    - quotes
    - replies
@@ -215,8 +253,8 @@ Given `clickedTweetId` and optional `rootHintTweetId`:
    - path-child bonus
    - quote/reply relation bonus
    - depth penalty
-8. Keep only substantive children above threshold.
-9. Recurse with hard caps:
+9. Keep only substantive children above threshold.
+10. Recurse with hard caps:
    - `maxDepth`
    - `maxChildrenPerNode`
    - `maxTotalTweets`

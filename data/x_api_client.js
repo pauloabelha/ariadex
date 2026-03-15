@@ -754,6 +754,41 @@
     return currentTweet?.id || startId;
   }
 
+  async function collectAncestorSeedRootIds({ client, clickedTweetId, rootHintTweetId = null, canonicalRootId = null }) {
+    const seedIds = [];
+    const queue = [...new Set(
+      [clickedTweetId, rootHintTweetId, canonicalRootId]
+        .map((tweetId) => normalizeEntityId(tweetId))
+        .filter(Boolean)
+    )];
+    const visited = new Set();
+    const maxWalks = Math.max(4, client?.options?.maxConversationRoots || 8) * 4;
+    let walks = 0;
+
+    while (queue.length > 0 && walks < maxWalks) {
+      const currentId = queue.shift();
+      if (!currentId || visited.has(currentId)) {
+        continue;
+      }
+      visited.add(currentId);
+      seedIds.push(currentId);
+      walks += 1;
+
+      const lookup = await fetchTweetById(client, currentId);
+      const tweet = lookup?.tweet;
+      if (!tweet) {
+        continue;
+      }
+
+      const parentId = pickReferencedTweet(tweet, "quoted") || pickReferencedTweet(tweet, "replied_to");
+      if (parentId && !visited.has(parentId)) {
+        queue.push(parentId);
+      }
+    }
+
+    return seedIds;
+  }
+
   function collectMissingReferencedTweetIds(tweetById) {
     const missing = new Set();
 
@@ -854,11 +889,19 @@
     return repostTweets;
   }
 
-  async function collectConnectedApiTweets({ rootTweetId, client, followingSet = new Set(), onWarning, onProgress }) {
+  function collectSeedRootTweetIds(rootTweetId, seedRootTweetIds = []) {
+    return [...new Set(
+      [rootTweetId, ...ensureArray(seedRootTweetIds)]
+        .map((tweetId) => normalizeEntityId(tweetId))
+        .filter(Boolean)
+    )];
+  }
+
+  async function collectConnectedApiTweets({ rootTweetId, seedRootTweetIds = [], client, followingSet = new Set(), onWarning, onProgress }) {
     const tweetById = new Map();
     const userById = new Map();
 
-    const rootQueue = [rootTweetId];
+    const rootQueue = collectSeedRootTweetIds(rootTweetId, seedRootTweetIds);
     const processedRoots = new Set();
     let quoteRateLimited = false;
     let retweetRateLimited = false;
@@ -867,7 +910,8 @@
     if (typeof onProgress === "function") {
       onProgress({
         phase: "collection_started",
-        rootTweetId
+        rootTweetId,
+        seedRootTweetIds: rootQueue.slice()
       });
     }
 
@@ -1356,8 +1400,16 @@
       };
     }
 
+    const seedRootTweetIds = await collectAncestorSeedRootIds({
+      client,
+      clickedTweetId: options.clickedTweetId,
+      rootHintTweetId: options.rootHintTweetId,
+      canonicalRootId
+    });
+
     const collected = await collectConnectedApiTweets({
       rootTweetId: canonicalRootId,
+      seedRootTweetIds,
       client,
       followingSet: options.followingSet || options.followingIds || [],
       onWarning: (message) => warnings.push(message),

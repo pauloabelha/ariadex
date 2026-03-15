@@ -36,6 +36,7 @@
   const PANEL_MAIN_CLASS = "ariadex-main";
   const PANEL_FOOTER_CLASS = "ariadex-footer";
   const CARD_CLASS = "ariadex-card";
+  const SVG_NS = "http://www.w3.org/2000/svg";
 
   function applyFloatingPanelStyles(panel) {
     panel.style.position = "fixed";
@@ -699,10 +700,451 @@
     ];
   }
 
+  function inferParentTweetId(tweet) {
+    if (!tweet || typeof tweet !== "object") {
+      return null;
+    }
+    if (tweet.quoteOf || tweet.quote_of) {
+      return String(tweet.quoteOf || tweet.quote_of);
+    }
+    if (tweet.replyTo || tweet.reply_to) {
+      return String(tweet.replyTo || tweet.reply_to);
+    }
+    const refs = Array.isArray(tweet.referenced_tweets) ? tweet.referenced_tweets : [];
+    const quoted = refs.find((ref) => ref?.type === "quoted" && ref?.id);
+    if (quoted?.id) {
+      return String(quoted.id);
+    }
+    const replied = refs.find((ref) => ref?.type === "replied_to" && ref?.id);
+    if (replied?.id) {
+      return String(replied.id);
+    }
+    return null;
+  }
+
+  function inferRelationType(tweet, relationshipLabel = "") {
+    if (!tweet || typeof tweet !== "object") {
+      return "reply";
+    }
+    if (tweet.quoteOf || tweet.quote_of) {
+      return "quote";
+    }
+    if (tweet.replyTo || tweet.reply_to) {
+      return "reply";
+    }
+    const refs = Array.isArray(tweet.referenced_tweets) ? tweet.referenced_tweets : [];
+    if (refs.some((ref) => ref?.type === "quoted")) {
+      return "quote";
+    }
+    if (refs.some((ref) => ref?.type === "replied_to")) {
+      return "reply";
+    }
+    return String(relationshipLabel || "").toLowerCase() === "quote" ? "quote" : "reply";
+  }
+
+  function buildBranchGraphModel({ rankedEntries, snapshotMeta } = {}) {
+    const artifact = snapshotMeta?.pathAnchored?.artifact || null;
+    const mandatoryPath = Array.isArray(artifact?.mandatoryPath) ? artifact.mandatoryPath : [];
+    const expansions = Array.isArray(artifact?.expansions) ? artifact.expansions : [];
+    const exploredTweetId = String(artifact?.exploredTweetId || snapshotMeta?.clickedTweetId || "").trim();
+    const nodeById = new Map();
+    const mandatoryPathIds = mandatoryPath.map((tweet) => String(tweet?.id || "")).filter(Boolean);
+
+    const includeTweet = (tweet, metadata = {}) => {
+      const tweetId = String(tweet?.id || "").trim();
+      if (!tweetId) {
+        return;
+      }
+      const existing = nodeById.get(tweetId) || {};
+      const parentId = metadata.parentId || inferParentTweetId(tweet) || existing.parentId || null;
+      const relationType = metadata.relationType || inferRelationType(tweet, metadata.relationshipLabel || existing.relationshipLabel || "");
+      const pathIndex = Number.isFinite(metadata.pathIndex) ? metadata.pathIndex : existing.pathIndex;
+      const depth = Number.isFinite(metadata.depth) ? metadata.depth : existing.depth;
+      const kind = metadata.kind
+        || existing.kind
+        || (tweetId === exploredTweetId
+          ? "explored"
+          : (Number.isFinite(pathIndex)
+            ? (pathIndex === 0 ? "root" : "path")
+            : (relationType === "quote" ? "quote" : "reply")));
+      nodeById.set(tweetId, {
+        ...existing,
+        ...tweet,
+        id: tweetId,
+        parentId,
+        relationType,
+        relationshipLabel: metadata.relationshipLabel || existing.relationshipLabel || (relationType === "quote" ? "Quote" : "Reply"),
+        kind,
+        depth: Number.isFinite(depth) ? depth : 1,
+        pathIndex
+      });
+    };
+
+    for (let i = 0; i < mandatoryPath.length; i += 1) {
+      includeTweet(mandatoryPath[i], {
+        pathIndex: i,
+        kind: i === 0 ? "root" : (String(mandatoryPath[i]?.id || "") === exploredTweetId ? "explored" : "path"),
+        relationType: inferRelationType(mandatoryPath[i]),
+        parentId: i > 0 ? String(mandatoryPath[i - 1]?.id || "") : null,
+        depth: 0
+      });
+    }
+
+    for (let i = 0; i < expansions.length; i += 1) {
+      const level = expansions[i] || {};
+      const tweets = Array.isArray(level.tweets) ? level.tweets : [];
+      for (let j = 0; j < tweets.length; j += 1) {
+        includeTweet(tweets[j], {
+          depth: Number(level.depth) || 1,
+          relationType: String(level.relationType || tweets[j]?.relationType || inferRelationType(tweets[j])).toLowerCase() === "quote" ? "quote" : "reply",
+          kind: String(level.relationType || tweets[j]?.relationType || inferRelationType(tweets[j])).toLowerCase() === "quote" ? "quote" : "reply"
+        });
+      }
+    }
+
+    const safeRankedEntries = Array.isArray(rankedEntries) ? rankedEntries : [];
+    for (let i = 0; i < safeRankedEntries.length; i += 1) {
+      const entry = safeRankedEntries[i] || {};
+      includeTweet(entry.tweet || {}, {
+        relationshipLabel: entry.relationshipLabel,
+        relationType: inferRelationType(entry.tweet || {}, entry.relationshipLabel)
+      });
+    }
+
+    const nodes = [...nodeById.values()];
+    const positionedById = new Map();
+    const centerX = 212;
+    const topPadding = 44;
+    const rowGap = 92;
+    const branchGap = 74;
+    const branchOffsetBase = 126;
+    const branchDepthOffset = 58;
+
+    for (let i = 0; i < mandatoryPathIds.length; i += 1) {
+      const tweetId = mandatoryPathIds[i];
+      const node = nodeById.get(tweetId);
+      if (!node) {
+        continue;
+      }
+      positionedById.set(tweetId, {
+        ...node,
+        x: centerX,
+        y: topPadding + (i * rowGap),
+        pathIndex: i,
+        depth: 0
+      });
+    }
+
+    if (mandatoryPathIds.length === 0) {
+      const fallbackNodes = nodes.slice(0, 8);
+      for (let i = 0; i < fallbackNodes.length; i += 1) {
+        const node = fallbackNodes[i];
+        positionedById.set(node.id, {
+          ...node,
+          x: node.relationType === "quote" ? centerX + branchOffsetBase : centerX - branchOffsetBase,
+          y: topPadding + (i * branchGap),
+          depth: Math.max(1, Number(node.depth) || 1)
+        });
+      }
+      if (fallbackNodes.length > 0) {
+        const anchorId = fallbackNodes.find((node) => node.id === exploredTweetId)?.id || fallbackNodes[0].id;
+        const anchor = positionedById.get(anchorId);
+        if (anchor) {
+          positionedById.set(anchorId, {
+            ...anchor,
+            x: centerX,
+            kind: anchor.id === exploredTweetId ? "explored" : "root",
+            depth: 0
+          });
+        }
+      }
+    }
+
+    const childBuckets = new Map();
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      if (!node || mandatoryPathIds.includes(node.id)) {
+        continue;
+      }
+      let parentId = String(node.parentId || "").trim();
+      if (!parentId || !nodeById.has(parentId)) {
+        parentId = mandatoryPathIds[mandatoryPathIds.length - 1] || exploredTweetId || mandatoryPathIds[0] || "";
+      }
+      if (!childBuckets.has(parentId)) {
+        childBuckets.set(parentId, { reply: [], quote: [] });
+      }
+      const bucket = childBuckets.get(parentId);
+      const side = node.relationType === "quote" ? "quote" : "reply";
+      bucket[side].push(node);
+    }
+
+    const assignBranchSide = (parentId, side, direction) => {
+      const bucket = childBuckets.get(parentId);
+      const list = Array.isArray(bucket?.[side]) ? bucket[side] : [];
+      const parent = positionedById.get(parentId);
+      if (!parent) {
+        return;
+      }
+      for (let i = 0; i < list.length; i += 1) {
+        const node = list[i];
+        const relativeOffset = (i - ((list.length - 1) / 2)) * branchGap;
+        const depth = Math.max(1, Number(node.depth) || 1);
+        positionedById.set(node.id, {
+          ...node,
+          x: centerX + (direction * (branchOffsetBase + ((depth - 1) * branchDepthOffset))),
+          y: parent.y + relativeOffset,
+          parentId,
+          depth
+        });
+      }
+    };
+
+    for (const parentId of childBuckets.keys()) {
+      assignBranchSide(parentId, "reply", -1);
+      assignBranchSide(parentId, "quote", 1);
+    }
+
+    const positionedNodes = [...positionedById.values()].sort((a, b) => {
+      if (a.y !== b.y) {
+        return a.y - b.y;
+      }
+      return a.x - b.x;
+    });
+
+    const edges = [];
+    for (let i = 1; i < mandatoryPathIds.length; i += 1) {
+      const source = positionedById.get(mandatoryPathIds[i - 1]);
+      const target = positionedById.get(mandatoryPathIds[i]);
+      if (source && target) {
+        edges.push({
+          id: `path:${source.id}:${target.id}`,
+          sourceId: source.id,
+          targetId: target.id,
+          kind: "path"
+        });
+      }
+    }
+    for (let i = 0; i < positionedNodes.length; i += 1) {
+      const node = positionedNodes[i];
+      if (!node.parentId || mandatoryPathIds.includes(node.id) || !positionedById.has(node.parentId)) {
+        continue;
+      }
+      edges.push({
+        id: `${node.relationType}:${node.parentId}:${node.id}`,
+        sourceId: node.parentId,
+        targetId: node.id,
+        kind: node.relationType === "quote" ? "quote" : "reply"
+      });
+    }
+
+    const maxY = positionedNodes.reduce((max, node) => Math.max(max, node.y), topPadding);
+    const minY = positionedNodes.reduce((min, node) => Math.min(min, node.y), topPadding);
+
+    return {
+      nodes: positionedNodes,
+      edges,
+      exploredTweetId: exploredTweetId || mandatoryPathIds[mandatoryPathIds.length - 1] || "",
+      mandatoryPathIds,
+      viewBox: {
+        width: 424,
+        height: Math.max(280, (maxY - minY) + 120)
+      }
+    };
+  }
+
+  function createBranchGraphSection({ root, graphModel, selectedTweetId, onSelectTweet, onOpenTweet }) {
+    const wrapper = root.createElement("section");
+    wrapper.className = SECTION_CLASS;
+
+    const heading = root.createElement("h3");
+    heading.className = SECTION_TITLE_CLASS;
+    heading.textContent = "Conversation graph";
+    wrapper.appendChild(heading);
+
+    if (!graphModel || !Array.isArray(graphModel.nodes) || graphModel.nodes.length === 0) {
+      const empty = root.createElement("div");
+      empty.className = `${CARD_CLASS} ${EMPTY_CLASS}`;
+      empty.textContent = "No branch graph available.";
+      wrapper.appendChild(empty);
+      return wrapper;
+    }
+
+    const shell = root.createElement("div");
+    shell.className = "ariadex-branch-shell";
+
+    const graphCard = root.createElement("div");
+    graphCard.className = `${CARD_CLASS} ariadex-branch-graph-card`;
+
+    const legend = root.createElement("div");
+    legend.className = "ariadex-branch-legend";
+    const legendItems = [
+      ["Root", "root"],
+      ["Explored", "explored"],
+      ["Reply", "reply"],
+      ["Quote", "quote"]
+    ];
+    for (let i = 0; i < legendItems.length; i += 1) {
+      const item = root.createElement("div");
+      item.className = "ariadex-branch-legend-item";
+      const swatch = root.createElement("span");
+      swatch.className = `ariadex-branch-legend-swatch ariadex-branch-node-${legendItems[i][1]}`;
+      const label = root.createElement("span");
+      label.textContent = legendItems[i][0];
+      item.appendChild(swatch);
+      item.appendChild(label);
+      legend.appendChild(item);
+    }
+    graphCard.appendChild(legend);
+
+    const svg = root.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "ariadex-branch-graph-svg");
+    svg.setAttribute("viewBox", `0 0 ${graphModel.viewBox.width} ${graphModel.viewBox.height}`);
+    svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
+
+    const defs = root.createElementNS(SVG_NS, "defs");
+    const gradient = root.createElementNS(SVG_NS, "linearGradient");
+    gradient.setAttribute("id", "ariadex-path-glow");
+    gradient.setAttribute("x1", "0%");
+    gradient.setAttribute("x2", "0%");
+    gradient.setAttribute("y1", "0%");
+    gradient.setAttribute("y2", "100%");
+    const stopA = root.createElementNS(SVG_NS, "stop");
+    stopA.setAttribute("offset", "0%");
+    stopA.setAttribute("stop-color", "#4c5bd4");
+    const stopB = root.createElementNS(SVG_NS, "stop");
+    stopB.setAttribute("offset", "100%");
+    stopB.setAttribute("stop-color", "#e06b5f");
+    gradient.appendChild(stopA);
+    gradient.appendChild(stopB);
+    defs.appendChild(gradient);
+    svg.appendChild(defs);
+
+    const positionedById = new Map(graphModel.nodes.map((node) => [node.id, node]));
+    const selectedNode = positionedById.get(String(selectedTweetId || "")) || positionedById.get(graphModel.exploredTweetId) || graphModel.nodes[0];
+
+    for (let i = 0; i < graphModel.edges.length; i += 1) {
+      const edge = graphModel.edges[i];
+      const source = positionedById.get(edge.sourceId);
+      const target = positionedById.get(edge.targetId);
+      if (!source || !target) {
+        continue;
+      }
+      const path = root.createElementNS(SVG_NS, "path");
+      const controlX = (source.x + target.x) / 2;
+      const curve = edge.kind === "path"
+        ? `M ${source.x} ${source.y} C ${source.x} ${source.y + 24}, ${target.x} ${target.y - 24}, ${target.x} ${target.y}`
+        : `M ${source.x} ${source.y} C ${controlX} ${source.y}, ${controlX} ${target.y}, ${target.x} ${target.y}`;
+      path.setAttribute("d", curve);
+      path.setAttribute("class", `ariadex-branch-edge ariadex-branch-edge-${edge.kind}${selectedNode && (selectedNode.id === source.id || selectedNode.id === target.id) ? " ariadex-branch-edge-active" : ""}`);
+      svg.appendChild(path);
+    }
+
+    for (let i = 0; i < graphModel.nodes.length; i += 1) {
+      const node = graphModel.nodes[i];
+      const group = root.createElementNS(SVG_NS, "g");
+      const isSelected = selectedNode && selectedNode.id === node.id;
+      group.setAttribute("class", `ariadex-branch-node-group${isSelected ? " ariadex-branch-node-group-selected" : ""}`);
+      group.setAttribute("transform", `translate(${node.x}, ${node.y})`);
+      group.setAttribute("role", "button");
+      group.setAttribute("tabindex", "0");
+
+      const halo = root.createElementNS(SVG_NS, "circle");
+      halo.setAttribute("class", "ariadex-branch-node-halo");
+      halo.setAttribute("r", isSelected ? "19" : "0");
+      group.appendChild(halo);
+
+      const circle = root.createElementNS(SVG_NS, "circle");
+      circle.setAttribute("class", `ariadex-branch-node ariadex-branch-node-${node.kind}`);
+      circle.setAttribute("r", node.kind === "explored" ? "10" : "8");
+      group.appendChild(circle);
+
+      const label = root.createElementNS(SVG_NS, "text");
+      label.setAttribute("class", "ariadex-branch-node-label");
+      label.setAttribute("text-anchor", node.x >= 212 ? "start" : "end");
+      label.setAttribute("x", node.x >= 212 ? "16" : "-16");
+      label.setAttribute("y", "4");
+      label.textContent = String(node.author || "@unknown");
+      group.appendChild(label);
+
+      const activate = () => {
+        if (typeof onSelectTweet === "function") {
+          onSelectTweet(node.id);
+        }
+      };
+      group.addEventListener("click", activate);
+      group.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          activate();
+        }
+      });
+      svg.appendChild(group);
+    }
+
+    graphCard.appendChild(svg);
+    shell.appendChild(graphCard);
+
+    const detailCard = root.createElement("div");
+    detailCard.className = `${CARD_CLASS} ariadex-branch-detail-card`;
+    const relationLabel = selectedNode.kind === "root"
+      ? "Root tweet"
+      : (selectedNode.kind === "explored"
+        ? "Explored tweet"
+        : (selectedNode.relationType === "quote" ? "Quote branch" : "Reply branch"));
+    const relation = root.createElement("div");
+    relation.className = "ariadex-link-domain";
+    relation.textContent = relationLabel;
+    const authorHeader = root.createElement("div");
+    authorHeader.className = "ariadex-card-header";
+    const profile = extractAuthorProfile(selectedNode);
+    const profileImageUrl = typeof profile?.profile_image_url === "string"
+      ? profile.profile_image_url.trim()
+      : "";
+    if (profileImageUrl) {
+      const avatar = root.createElement("img");
+      avatar.src = profileImageUrl;
+      avatar.alt = `${String(selectedNode.author || "@unknown")} profile image`;
+      avatar.loading = "lazy";
+      avatar.width = 28;
+      avatar.height = 28;
+      avatar.className = "ariadex-avatar";
+      authorHeader.appendChild(avatar);
+    }
+    const author = root.createElement("div");
+    author.className = "ariadex-card-author";
+    author.textContent = String(selectedNode.author || "@unknown");
+    authorHeader.appendChild(author);
+    const text = root.createElement("div");
+    text.className = "ariadex-snippet";
+    text.textContent = truncateText(selectedNode.text || "", 280);
+    const meta = root.createElement("div");
+    meta.className = "ariadex-card-meta";
+    meta.textContent = selectedNode.parentId
+      ? `${selectedNode.relationType === "quote" ? "Quoted from" : "Replied to"} ${String(positionedById.get(selectedNode.parentId)?.author || "@unknown")}`
+      : "Anchor of the current graph";
+    detailCard.appendChild(relation);
+    detailCard.appendChild(authorHeader);
+    detailCard.appendChild(text);
+    detailCard.appendChild(meta);
+
+    if (typeof onOpenTweet === "function") {
+      const openButton = root.createElement("button");
+      openButton.type = "button";
+      openButton.className = "ariadex-action-button ariadex-action-button-primary";
+      openButton.textContent = "Open tweet";
+      openButton.addEventListener("click", () => onOpenTweet(selectedNode));
+      detailCard.appendChild(openButton);
+    }
+
+    shell.appendChild(detailCard);
+    wrapper.appendChild(shell);
+    return wrapper;
+  }
+
   function createDigestNarrative(root, text) {
     const body = root.createElement("div");
     body.className = "ariadex-digest-body";
-    body.textContent = String(text || "").trim();
+    body.textContent = `Ariadex: ${String(text || "").trim()}`;
     return body;
   }
 
@@ -742,20 +1184,32 @@
       || artifact.selectedTweets?.find?.((tweet) => String(tweet?.id || "") === exploredTweetId)
       || null;
     const rootTweet = artifact.rootTweet || (mandatoryPath.length > 0 ? mandatoryPath[0] : null);
+    const directParentTweet = mandatoryPath.length >= 2 ? mandatoryPath[mandatoryPath.length - 2] : null;
+    const relationNarrative = (childTweet, parentTweet) => {
+      if (!childTweet || !parentTweet) {
+        return "";
+      }
+      const childAuthor = String(childTweet.author || "@unknown");
+      const parentAuthor = String(parentTweet.author || "@unknown");
+      if (childTweet.quoteOf && String(childTweet.quoteOf) === String(parentTweet.id || "")) {
+        return `${childAuthor} quoted ${parentAuthor}.`;
+      }
+      if (childTweet.replyTo && String(childTweet.replyTo) === String(parentTweet.id || "")) {
+        return `${childAuthor} replied to ${parentAuthor}.`;
+      }
+      return `${childAuthor} referenced ${parentAuthor}.`;
+    };
     const relationshipText = (() => {
       if (!exploredTweet) {
         return "";
       }
-      if (exploredTweet.quoteOf && rootTweet?.id && String(exploredTweet.quoteOf) === String(rootTweet.id)) {
-        return "This came as a response to the quoted tweet below.";
-      }
-      if (exploredTweet.replyTo && rootTweet?.id && String(exploredTweet.replyTo) === String(rootTweet.id)) {
-        return "This came as a direct reply to the root tweet below.";
+      if (directParentTweet) {
+        return relationNarrative(exploredTweet, directParentTweet);
       }
       if (exploredTweet.quoteOf || exploredTweet.replyTo) {
-        return "This sits inside a larger ancestor path that gives the conversation its context.";
+        return "This sits inside a larger chain of tweets that frames the exchange.";
       }
-      return "This is the starting tweet for the digest.";
+      return "This is where the digest begins.";
     })();
 
     const appendSection = (headingText) => {
@@ -767,7 +1221,7 @@
 
     if (exploredTweet) {
       appendSection("Original tweet");
-      card.appendChild(createDigestNarrative(root, "The original tweet said:"));
+      card.appendChild(createDigestNarrative(root, "Here is the tweet that was explored."));
       card.appendChild(createDigestQuote(root, exploredTweet, "Explored tweet"));
     }
 
@@ -779,12 +1233,15 @@
 
     if (mandatoryPath.length > 1) {
       appendSection("Ancestor path");
-      card.appendChild(createDigestNarrative(root, "This is the path from the clicked tweet back through its parent context."));
+      card.appendChild(createDigestNarrative(root, "Read this chain in order to hear how the conversation builds toward the explored tweet."));
       for (let i = 0; i < mandatoryPath.length; i += 1) {
         const tweet = mandatoryPath[i];
         const label = i === 0
           ? "Root"
           : (String(tweet?.id || "") === exploredTweetId ? "Explored tweet" : `Ancestor ${i}`);
+        if (i > 0) {
+          card.appendChild(createDigestNarrative(root, relationNarrative(tweet, mandatoryPath[i - 1])));
+        }
         card.appendChild(createDigestQuote(root, tweet, label));
       }
     }
@@ -801,7 +1258,7 @@
 
     if (expansionTweets.length > 0) {
       appendSection("Important replies and branches");
-      card.appendChild(createDigestNarrative(root, "These are the substantive replies and quote branches selected from the conversation."));
+      card.appendChild(createDigestNarrative(root, "From there, these are the main replies and quote branches that add substance or shift the argument."));
       const topExpansionTweets = expansionTweets.slice(0, 8);
       for (let i = 0; i < topExpansionTweets.length; i += 1) {
         const tweet = topExpansionTweets[i];
@@ -814,7 +1271,7 @@
 
     if (Array.isArray(article.references) && article.references.length > 0) {
       appendSection("Evidence");
-      card.appendChild(createDigestNarrative(root, "These references were cited in the selected conversation branches."));
+      card.appendChild(createDigestNarrative(root, "These links and documents were cited along the path or in the selected branches."));
       for (const ref of article.references) {
         const refCard = root.createElement("div");
         refCard.className = "ariadex-card";
@@ -832,7 +1289,7 @@
 
     if (article.summary) {
       appendSection("Digest summary");
-      card.appendChild(createDigestNarrative(root, article.summary));
+      card.appendChild(createDigestNarrative(root, `Taken together, the thread reads like this:\n\n${article.summary}`));
     }
 
     return true;
@@ -1363,15 +1820,30 @@
           return;
         }
 
-        const networkEmptyText = normalizedFollowingSet.size === 0
-          ? "Following set is empty. Configure following IDs/handles to populate this section."
-          : "No ranked tweets from followed accounts.";
-        tabContent.appendChild(
-          createSection(root, "From your network", sections.fromNetwork, networkEmptyText, evidenceByTweetId)
-        );
-        tabContent.appendChild(
-          createSection(root, "Reading path", sections.topThinkers, "No ranked tweets available.", evidenceByTweetId)
-        );
+        const graphModel = buildBranchGraphModel({
+          rankedEntries: sections.rankedEntries,
+          snapshotMeta
+        });
+        if (!state.activeGraphTweetId) {
+          state.activeGraphTweetId = graphModel.exploredTweetId || graphModel.mandatoryPathIds?.[graphModel.mandatoryPathIds.length - 1] || "";
+        }
+        tabContent.appendChild(createBranchGraphSection({
+          root,
+          graphModel,
+          selectedTweetId: state.activeGraphTweetId,
+          onSelectTweet: (tweetId) => {
+            state.activeGraphTweetId = String(tweetId || "");
+            renderTabContent("thinkers");
+          },
+          onOpenTweet: (tweet) => {
+            const targetTweetId = String(tweet?.id || "");
+            const targetTweetUrl = String(tweet?.url || "").trim() || null;
+            const scrolled = targetTweetId
+              ? scrollToTweet(targetTweetId, { root })
+              : false;
+            navigateToTweet(root, targetTweetUrl, scrolled);
+          }
+        }));
       }
 
       for (let i = 0; i < tabs.length; i += 1) {

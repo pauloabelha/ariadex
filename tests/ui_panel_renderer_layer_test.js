@@ -46,9 +46,8 @@ test("panel renderer renders into document body", () => {
 
   const panel = dom.window.document.querySelector(".ariadex-panel");
   assert.ok(panel);
-  assert.match(panel.textContent, /From your network/);
-  assert.match(panel.textContent, /Reading path/);
-  assert.match(panel.textContent, /Quote/);
+  assert.match(panel.textContent, /Conversation graph/);
+  assert.ok(panel.querySelector(".ariadex-branch-graph-svg"));
   assert.equal(panel.querySelector(".ariadex-mode-toggle"), null);
 });
 
@@ -78,7 +77,7 @@ test("panel renderer shows profile image when available", () => {
     root: dom.window.document
   });
 
-  const avatar = dom.window.document.querySelector(".ariadex-thread img");
+  const avatar = dom.window.document.querySelector(".ariadex-branch-detail-card .ariadex-avatar");
   assert.ok(avatar);
   assert.match(avatar.src, /profile_images\/test_normal\.jpg/);
 });
@@ -165,7 +164,7 @@ test("panel renderer excludes canonical root and clicked tweet ids when requeste
   assert.deepEqual(sections.topThinkers.map((entry) => entry.id), ["A", "B"]);
 });
 
-test("panel renderer opens tweet in new tab when tweet is not present in DOM", () => {
+test("panel renderer opens selected graph tweet in new tab when tweet is not present in DOM", () => {
   const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
   global.window = dom.window;
   global.document = dom.window.document;
@@ -185,8 +184,10 @@ test("panel renderer opens tweet in new tab when tweet is not present in DOM", (
     root: dom.window.document
   });
 
-  const card = dom.window.document.querySelector(".ariadex-thread:not(.ariadex-empty)");
-  card.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  const openButton = [...dom.window.document.querySelectorAll("button")]
+    .find((button) => button.textContent === "Open tweet");
+  assert.ok(openButton);
+  openButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 
   assert.equal(openedUrl, "https://x.com/u1/status/1");
 });
@@ -389,13 +390,67 @@ test("panel renderer renders tabs and allows evidence tab switch", () => {
 
   const tabs = dom.window.document.querySelectorAll(".ariadex-tab-button");
   assert.equal(tabs.length, 6);
-  assert.match(dom.window.document.body.textContent, /From your network/);
+  assert.match(dom.window.document.body.textContent, /Conversation graph/);
 
   const evidenceTab = [...tabs].find((tab) => tab.textContent === "References");
   assert.ok(evidenceTab);
   evidenceTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 
   assert.match(dom.window.document.body.textContent, /example\.com\/doc/);
+});
+
+test("panel renderer renders branch graph with deterministic node kinds and selection", () => {
+  const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  panelRenderer.renderConversationPanel({
+    nodes: [
+      { id: "root", author_id: "u1", author: "@root", text: "Root", author_profile: { username: "root", name: "Root", description: "" } },
+      { id: "parent", author_id: "u2", author: "@parent", text: "Parent", reply_to: "root", author_profile: { username: "parent", name: "Parent", description: "" } },
+      { id: "explored", author_id: "u3", author: "@explored", text: "Explored", quote_of: "parent", url: "https://x.com/explored/status/1", author_profile: { username: "explored", name: "Explored", description: "" } },
+      { id: "reply-1", author_id: "u4", author: "@reply", text: "Reply branch", reply_to: "parent", author_profile: { username: "reply", name: "Reply", description: "" } },
+      { id: "quote-1", author_id: "u5", author: "@quote", text: "Quote branch", quote_of: "parent", author_profile: { username: "quote", name: "Quote", description: "" } }
+    ],
+    scoreById: new Map([["explored", 1], ["reply-1", 0.8], ["quote-1", 0.7], ["parent", 0.6]]),
+    relationshipById: new Map([["explored", "quote"], ["reply-1", "reply"], ["quote-1", "quote"], ["parent", "reply"]]),
+    followingSet: new Set(),
+    snapshotMeta: {
+      clickedTweetId: "explored",
+      pathAnchored: {
+        artifact: {
+          exploredTweetId: "explored",
+          mandatoryPath: [
+            { id: "root", author: "@root", text: "Root" },
+            { id: "parent", author: "@parent", text: "Parent", replyTo: "root" },
+            { id: "explored", author: "@explored", text: "Explored", quoteOf: "parent", url: "https://x.com/explored/status/1" }
+          ],
+          expansions: [
+            { depth: 1, relationType: "reply", tweets: [{ id: "reply-1", author: "@reply", text: "Reply branch", replyTo: "parent" }] },
+            { depth: 1, relationType: "quote", tweets: [{ id: "quote-1", author: "@quote", text: "Quote branch", quoteOf: "parent" }] }
+          ]
+        }
+      }
+    },
+    root: dom.window.document
+  });
+
+  const svg = dom.window.document.querySelector(".ariadex-branch-graph-svg");
+  assert.ok(svg);
+  assert.ok(svg.querySelector(".ariadex-branch-node-root"));
+  assert.ok(svg.querySelector(".ariadex-branch-node-explored"));
+  assert.ok(svg.querySelector(".ariadex-branch-node-reply"));
+  assert.ok(svg.querySelector(".ariadex-branch-node-quote"));
+  assert.match(dom.window.document.body.textContent, /Explored tweet/);
+
+  const quoteNode = [...svg.querySelectorAll(".ariadex-branch-node-group")]
+    .find((node) => /@quote/.test(node.textContent));
+  assert.ok(quoteNode);
+  quoteNode.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+
+  assert.match(dom.window.document.body.textContent, /Quote branch/);
+  assert.match(dom.window.document.body.textContent, /Quoted from @parent/);
 });
 
 test("panel renderer renders log tab with structured snapshot summary", () => {

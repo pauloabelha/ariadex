@@ -348,7 +348,7 @@ test("createGraphCacheService getArticle reuses cached snapshot without incremen
     }
   };
 
-  const snapshotCacheKey = hashCacheKey("root|fast|v2|rank:path_anchored_graph|following:none");
+  const snapshotCacheKey = hashCacheKey("root|fast|v3|rank:path_anchored_graph|following:none");
   cacheStore.set(snapshotCacheKey, {
     dataset: {
       canonicalRootId: "root",
@@ -427,7 +427,7 @@ test("createGraphCacheService scopes article cache by explored tweet id", async 
     }
   };
 
-  const snapshotCacheKey = hashCacheKey("root|fast|v2|rank:path_anchored_graph|following:none");
+  const snapshotCacheKey = hashCacheKey("root|fast|v3|rank:path_anchored_graph|following:none");
   cacheStore.set(snapshotCacheKey, {
     dataset: {
       canonicalRootId: "root",
@@ -511,7 +511,7 @@ test("createGraphCacheService skips incremental refresh when snapshot cache is s
     }
   };
 
-  const snapshotCacheKey = hashCacheKey("root|deep|v2|rank:path_anchored_graph|following:none");
+  const snapshotCacheKey = hashCacheKey("root|deep|v3|rank:path_anchored_graph|following:none");
   cacheStore.set(snapshotCacheKey, {
     dataset: {
       canonicalRootId: "root",
@@ -581,7 +581,7 @@ test("createGraphCacheService hydrates only missing path tweets from cache", asy
     }
   };
 
-  const snapshotCacheKey = hashCacheKey("root|deep|v2|rank:path_anchored_graph|following:none");
+  const snapshotCacheKey = hashCacheKey("root|deep|v3|rank:path_anchored_graph|following:none");
   cacheStore.set(snapshotCacheKey, {
     dataset: {
       canonicalRootId: "root",
@@ -656,9 +656,127 @@ test("createGraphCacheService hydrates only missing path tweets from cache", asy
     });
 
     assert.equal(incrementalCalls, 0);
-    assert.deepEqual(fetchedIds, ["clicked", "parent"]);
+    assert.deepEqual(fetchedIds, ["clicked", "parent", "root"]);
     assert.equal(result.cache.hit, true);
     assert.deepEqual(result.pathAnchored.mandatoryPathIds, ["root", "parent", "clicked"]);
+  } finally {
+    xApiClient.createClient = originalCreateClient;
+    xApiClient.resolveCanonicalRootTweetId = originalResolveCanonicalRootTweetId;
+    xApiClient.collectConnectedApiTweetsIncremental = originalCollectConnectedApiTweetsIncremental;
+    xApiClient.fetchTweetById = originalFetchTweetById;
+  }
+});
+
+test("createGraphCacheService rehydrates incomplete cached path tweets and recovers ancestor references", async () => {
+  const originalCreateClient = xApiClient.createClient;
+  const originalResolveCanonicalRootTweetId = xApiClient.resolveCanonicalRootTweetId;
+  const originalCollectConnectedApiTweetsIncremental = xApiClient.collectConnectedApiTweetsIncremental;
+  const originalFetchTweetById = xApiClient.fetchTweetById;
+
+  const cacheStore = {
+    map: new Map(),
+    get(key) {
+      return this.map.get(key) || null;
+    },
+    set(key, value, ttlMs) {
+      this.map.set(key, {
+        value,
+        expiresAtMs: Date.now() + ttlMs
+      });
+    }
+  };
+
+  const snapshotCacheKey = hashCacheKey("root|deep|v3|rank:path_anchored_graph|following:none");
+  cacheStore.set(snapshotCacheKey, {
+    dataset: {
+      canonicalRootId: "root",
+      rootTweet: { id: "root", text: "Old root", author_id: "u1" },
+      tweets: [
+        { id: "root", text: "Old root", author_id: "u1" },
+        { id: "clicked", text: "Clicked", author_id: "u2", quote_of: "parent", referenced_tweets: [{ type: "quoted", id: "parent" }] }
+      ],
+      users: [],
+      warnings: []
+    },
+    cachedAtMs: Date.now()
+  }, 60_000);
+
+  const fetchedIds = [];
+  xApiClient.createClient = async () => ({
+    request: async () => {
+      throw new Error("request should not be used directly");
+    },
+    options: {},
+    entityCache: {
+      getTweet: () => null,
+      getUser: () => null
+    }
+  });
+  xApiClient.resolveCanonicalRootTweetId = async () => "root";
+  xApiClient.collectConnectedApiTweetsIncremental = async () => ({ tweets: [], users: [] });
+  xApiClient.fetchTweetById = async (_client, tweetId) => {
+    fetchedIds.push(tweetId);
+    if (tweetId === "clicked") {
+      return {
+        tweet: {
+          id: "clicked",
+          author_id: "u2",
+          text: "Clicked",
+          referenced_tweets: [{ type: "quoted", id: "parent" }],
+          public_metrics: {},
+          entities: { urls: [] }
+        },
+        users: [{ id: "u2", username: "clicked", name: "Clicked", public_metrics: {} }]
+      };
+    }
+    if (tweetId === "parent") {
+      return {
+        tweet: {
+          id: "parent",
+          author_id: "u3",
+          text: "Parent reply",
+          referenced_tweets: [{ type: "replied_to", id: "root" }],
+          public_metrics: {},
+          entities: { urls: [] }
+        },
+        users: [{ id: "u3", username: "parent", name: "Parent", public_metrics: {} }]
+      };
+    }
+    if (tweetId === "root") {
+      return {
+        tweet: {
+          id: "root",
+          author_id: "u1",
+          text: "Root with article",
+          referenced_tweets: [],
+          public_metrics: {},
+          entities: {
+            urls: [{ expanded_url: "https://example.com/root-article" }]
+          }
+        },
+        users: [{ id: "u1", username: "root", name: "Root", public_metrics: {} }]
+      };
+    }
+    return { tweet: null, users: [] };
+  };
+
+  try {
+    const service = createGraphCacheService({
+      bearerToken: "test-token",
+      cacheStore,
+      logger: createLogger({ level: "silent" })
+    });
+
+    const result = await service.getSnapshot({
+      clickedTweetId: "clicked",
+      mode: "deep",
+      incremental: true,
+      requestId: "req-rehydrate"
+    });
+
+    assert.deepEqual(fetchedIds, ["clicked", "parent", "root"]);
+    assert.deepEqual(result.pathAnchored.mandatoryPathIds, ["root", "parent", "clicked"]);
+    assert.equal(result.pathAnchored.references.some((ref) => ref.canonicalUrl === "https://example.com/root-article"), true);
   } finally {
     xApiClient.createClient = originalCreateClient;
     xApiClient.resolveCanonicalRootTweetId = originalResolveCanonicalRootTweetId;
@@ -670,6 +788,11 @@ test("createGraphCacheService hydrates only missing path tweets from cache", asy
 test("normalizeViewerHandles keeps valid unique handles", () => {
   const handles = normalizeViewerHandles(["@PauloAbelha", "pauloabelha", "bad handle", "@Another_One"]);
   assert.deepEqual(handles, ["pauloabelha", "another_one"]);
+});
+
+test("normalizeViewerHandles rejects reserved nav tokens like more", () => {
+  const handles = normalizeViewerHandles(["@more", "more", "@pauloabelha"]);
+  assert.deepEqual(handles, ["pauloabelha"]);
 });
 
 test("enrichFollowingSetFromViewerHandles resolves following ids from first valid viewer handle", async () => {

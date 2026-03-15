@@ -98,3 +98,28 @@ test("collectViewerHandleHints extracts logged-in handle from header account swi
   assert.equal(hints.has("@pauloabelha"), true);
   assert.equal(hints.has("pauloabelha"), true);
 });
+
+test("collectViewerHandleHints ignores generic nav labels like More", () => {
+  const dom = new JSDOM("<main id='scope'></main>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  const scope = document.getElementById("scope");
+  scope.innerHTML = `
+    <header>
+      <nav>
+        <button aria-label="More menu"><span>More</span></button>
+        <button data-testid="SideNav_AccountSwitcher_Button">
+          <span>@pauloabelha</span>
+        </button>
+      </nav>
+    </header>
+  `;
+
+  const hints = domCollector.collectViewerHandleHints(scope);
+  assert.equal(hints.has("@pauloabelha"), true);
+  assert.equal(hints.has("pauloabelha"), true);
+  assert.equal(hints.has("@more"), false);
+  assert.equal(hints.has("more"), false);
+});

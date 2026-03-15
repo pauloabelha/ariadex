@@ -494,15 +494,31 @@ function buildStandardDigestSections(articleInput, article = {}) {
   const exploredTweetId = String(artifact.exploredTweetId || articleInput?.clickedTweetId || "");
   const mandatoryPath = artifact.mandatoryPath || [];
   const rootTweet = artifact.rootTweet || mandatoryPath[0] || null;
+  const directParentTweet = mandatoryPath.length >= 2 ? mandatoryPath[mandatoryPath.length - 2] : null;
   const exploredTweet = mandatoryPath.find((tweet) => String(tweet?.id || "") === exploredTweetId)
     || (Array.isArray(artifact.selectedTweets) ? artifact.selectedTweets.find((tweet) => String(tweet?.id || "") === exploredTweetId) : null)
     || articleInput?.seedTweet
     || null;
 
+  function relationNarrative(childTweet, parentTweet) {
+    if (!childTweet || !parentTweet) {
+      return "";
+    }
+    const childAuthor = String(childTweet.author || "@unknown");
+    const parentAuthor = String(parentTweet.author || "@unknown");
+    if (childTweet.quoteOf && String(childTweet.quoteOf) === String(parentTweet.id || "")) {
+      return `${childAuthor} quoted ${parentAuthor}.`;
+    }
+    if (childTweet.replyTo && String(childTweet.replyTo) === String(parentTweet.id || "")) {
+      return `${childAuthor} replied to ${parentAuthor}.`;
+    }
+    return `${childAuthor} referenced ${parentAuthor}.`;
+  }
+
   if (exploredTweet?.text) {
     sections.push({
       heading: "Original tweet",
-      body: `The original tweet said:\n\n${buildQuoteBlock(exploredTweet.author, exploredTweet.text)}`
+      body: `Here is the tweet that was explored.\n\n${buildQuoteBlock(exploredTweet.author, exploredTweet.text)}`
     });
   }
 
@@ -510,16 +526,13 @@ function buildStandardDigestSections(articleInput, article = {}) {
     if (!exploredTweet) {
       return String(article?.summary || article?.tldr || "").trim();
     }
-    if (exploredTweet.quoteOf && rootTweet?.id && String(exploredTweet.quoteOf) === String(rootTweet.id)) {
-      return "This came as a response to the quoted tweet below.";
-    }
-    if (exploredTweet.replyTo && rootTweet?.id && String(exploredTweet.replyTo) === String(rootTweet.id)) {
-      return "This came as a direct reply to the root tweet below.";
+    if (directParentTweet) {
+      return relationNarrative(exploredTweet, directParentTweet);
     }
     if (exploredTweet.quoteOf || exploredTweet.replyTo) {
-      return "This sits inside a larger ancestor path that gives the conversation its context.";
+      return "This sits inside a larger chain of tweets that frames the exchange.";
     }
-    return "This is the starting tweet for the digest.";
+    return "This is where the digest begins.";
   })();
 
   const whyBlocks = [relationshipNarrative];
@@ -533,14 +546,16 @@ function buildStandardDigestSections(articleInput, article = {}) {
 
   if (mandatoryPath.length > 1) {
     const pathBody = mandatoryPath.map((tweet, index) => {
-      const label = index === 0
-        ? "Root"
-        : (String(tweet?.id || "") === exploredTweetId ? "Explored tweet" : `Ancestor ${index}`);
-      return `${label}:\n\n${buildQuoteBlock(tweet?.author, tweet?.text)}`;
+      if (index === 0) {
+        return `Root:\n\n${buildQuoteBlock(tweet?.author, tweet?.text)}`;
+      }
+      const parentTweet = mandatoryPath[index - 1];
+      const label = String(tweet?.id || "") === exploredTweetId ? "Explored tweet" : `Ancestor ${index}`;
+      return `${label}:\n${relationNarrative(tweet, parentTweet)}\n\n${buildQuoteBlock(tweet?.author, tweet?.text)}`;
     }).join("\n\n");
     sections.push({
       heading: "Ancestor path",
-      body: `This is the path from the clicked tweet back through its parent context.\n\n${pathBody}`
+      body: `Read this chain in order to hear how the conversation builds toward the explored tweet.\n\n${pathBody}`
     });
   }
 
@@ -562,7 +577,7 @@ function buildStandardDigestSections(articleInput, article = {}) {
     }).join("\n\n");
     sections.push({
       heading: "Important replies and branches",
-      body: `These are the substantive replies and quote branches selected from the conversation.\n\n${branchBody}`
+      body: `From there, these are the main replies and quote branches that add substance or shift the argument.\n\n${branchBody}`
     });
   }
 
@@ -580,7 +595,7 @@ function buildStandardDigestSections(articleInput, article = {}) {
   if (summary) {
     sections.push({
       heading: "Digest summary",
-      body: summary
+      body: `Taken together, the thread reads like this:\n\n${summary}`
     });
   }
 

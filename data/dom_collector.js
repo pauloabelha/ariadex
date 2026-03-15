@@ -42,6 +42,21 @@
     /^@?[a-zA-Z0-9_]{1,15}$/,
     /^@?[a-zA-Z0-9_]{1,15}\s*·/
   ];
+  const RESERVED_NON_HANDLE_TOKENS = new Set([
+    "home",
+    "explore",
+    "notifications",
+    "messages",
+    "lists",
+    "bookmarks",
+    "communities",
+    "premium",
+    "verified",
+    "profile",
+    "more",
+    "jobs",
+    "grok"
+  ]);
 
   function isElement(node) {
     return typeof Element !== "undefined" && node instanceof Element;
@@ -425,6 +440,10 @@
     const direct = text.split(/\s+/)[0];
     if (VIEWER_HANDLE_PATTERNS.some((pattern) => pattern.test(direct))) {
       const normalized = direct.startsWith("@") ? direct : `@${direct}`;
+      const bare = normalized.slice(1).toLowerCase();
+      if (RESERVED_NON_HANDLE_TOKENS.has(bare)) {
+        return null;
+      }
       return normalized.toLowerCase();
     }
 
@@ -444,9 +463,11 @@
 
     const selectors = [
       // Account switcher / profile button in X header.
-      "header button span",
       "[data-testid='SideNav_AccountSwitcher_Button'] span",
-      "a[href^='/'][role='link'] span"
+      "header [data-testid='SideNav_AccountSwitcher_Button'] span",
+      "header button[aria-label*='Account' i] span",
+      "header button[aria-haspopup='menu'] span",
+      "header button span"
     ];
 
     for (const selector of selectors) {
