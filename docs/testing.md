@@ -2,12 +2,44 @@
 
 ## Test Stack
 - Node built-in test runner (`node:test`)
-- `jsdom` for DOM/UI tests only
+- `jsdom` for DOM-coupled tests only
+
+## Quick Start
+
+Fresh checkout:
+
+```bash
+npm install
+```
+
+Run everything:
+
+```bash
+npm test
+```
+
+Run only the pure non-DOM suite:
+
+```bash
+npm run test:core
+```
+
+Run only the DOM-heavy suite:
+
+```bash
+npm run test:dom
+```
+
+CI also runs a benchmark smoke check:
+
+```bash
+npm run benchmark:snapshot
+```
 
 ## Run
 
 ```bash
-node --test tests/*.js
+npm test
 ```
 
 ## Core (No Browser APIs)
@@ -18,8 +50,6 @@ These tests run pure engine/data logic:
 - `tests/core_conversation_engine_test.js`
 - `tests/core_layer_boundary_test.js`
 - `tests/core_root_resolution_test.js`
-- `tests/reply_inference_test.js`
-- `tests/root_resolution_test.js`
 - `tests/thread_collapse_test.js`
 - `tests/typed_conversation_graph_test.js`
 - `tests/x_api_conversation_test.js`
@@ -27,6 +57,8 @@ These tests run pure engine/data logic:
 ## Data Layer
 - `tests/conversation_collection_test.js`
 - `tests/data_dom_collector_test.js`
+- `tests/reply_inference_test.js`
+- `tests/root_resolution_test.js`
 - `tests/tweet_extraction_test.js`
 - `tests/x_api_client_network_discovery_test.js`
 - `tests/x_api_client_cache_test.js`
@@ -42,6 +74,11 @@ These tests run pure engine/data logic:
 - `tests/dom_injection_test.js`
 - `tests/selector_test.js`
 - `tests/content_graph_api_bridge_test.js`
+
+Heuristic split:
+- `test:core` covers the pure Node tests with no `jsdom` dependency
+- `test:dom` covers DOM extraction/rendering tests that require `jsdom`
+- some extension bridge tests stay in `test:core` because they stub browser APIs without creating a DOM
 
 ## Required Scenario Coverage
 - graph construction correctness: `conversation_graph_test.js`, `typed_conversation_graph_test.js`
@@ -72,12 +109,39 @@ This benchmark is deterministic (synthetic in-memory X API) and reports cold vs 
 - viewer-handle normalization and server-side following enrichment fallback: `graph_cache_server_test.js`
 
 ## Manual Extension Smoke Test
-1. Run `node scripts/sync_env_to_generated_config.js`
-2. Reload unpacked extension (`ariadex/extension`) in Chrome
-3. Open `https://x.com`
-4. Click `◇ Explore` on a tweet
-5. Verify panel renders and clicking cards scrolls/highlights tweets
-6. Open `Digest`, click `Generate Article`, and verify `Download PDF` appears
+1. Run `npm install`
+2. Run `node scripts/sync_env_to_generated_config.js`
+3. Reload unpacked extension (`ariadex/extension`) in Chrome
+4. Open `https://x.com`
+5. Click `◇ Explore` on a tweet
+6. Verify panel renders and clicking cards scrolls/highlights tweets
+7. Open `Digest`, click `Generate Article`, and verify `Download PDF` appears
+
+## Failure Triage
+- `Cannot find module 'jsdom'`: run `npm install`
+- only `test:dom` fails: likely DOM selector/rendering regression
+- only `test:core` fails: likely graph, ranking, caching, or server regression
+- benchmark drift with green tests: inspect `npm run benchmark:snapshot`
+
+## Continuous Integration
+
+GitHub Actions workflow:
+- [ci.yml](/home/pauloabelha/ariadex/.github/workflows/ci.yml)
+
+What CI enforces:
+- `npm run test:core`
+- `npm run test:dom`
+- `npm test`
+- `npm run benchmark:snapshot` smoke execution
+
+When it runs:
+- on every pull request
+- on every push to `main`
+
+Runtime matrix:
+- Node `18`
+- Node `20`
+- Node `22`
 
 ## Observability Smoke Test
 1. Run `ARIADEX_LOG_COLOR=true ARIADEX_LOG_LEVEL=debug npm run dev:cache`

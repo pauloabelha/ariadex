@@ -4,13 +4,14 @@
 The panel is now a tabbed "Dex" view over one conversation snapshot.
 
 Tabs:
-- `Thinkers`
-- `Evidence`
-- `People`
 - `Context`
+- `Branches`
+- `References`
+- `People`
+- `Log`
 - `Digest`
 
-`Thinkers` remains the default tab for backward compatibility.
+`Branches` is the default tab. Inside it, Ariadex still renders the legacy ranking sections `⭐ From Your Network` and `🔥 Top Thinkers`.
 
 ## Digest Tab
 `Digest` is an on-demand article view backed by the graph-cache server.
@@ -49,7 +50,8 @@ This keeps the feature useful now without blocking on the future branch-first di
     replies,
     quotes,
     cousins
-  }
+  },
+  log: LogEntry[]
 }
 ```
 
@@ -74,5 +76,5 @@ Evidence cards link out to the canonical URL.
 
 ## Stability Guarantees
 - deterministic sorting and tie-breaks
-- no duplicates across Thinkers sections
-- feature parity with existing Thinkers output preserved
+- no duplicates across Branches sections
+- legacy Thinkers ranking semantics preserved inside `Branches`

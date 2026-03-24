@@ -84,6 +84,18 @@ function buildConversationArtifact({ dataset, selection, clickedTweetId = null, 
       citedByTweetIds: Array.isArray(ref?.citedByTweetIds) ? ref.citedByTweetIds.map((id) => String(id)) : []
     }))
     : [];
+  const tweetReferences = Array.isArray(selection?.tweetReferences)
+    ? selection.tweetReferences.map((ref) => ({
+      canonicalUrl: String(ref?.canonicalUrl || ""),
+      displayUrl: String(ref?.displayUrl || ref?.canonicalUrl || ""),
+      tweetId: String(ref?.tweetId || ""),
+      handle: ref?.handle ? String(ref.handle) : null,
+      citationCount: Number(ref?.citationCount || 0),
+      weightedCitationScore: Number(ref?.weightedCitationScore || 0),
+      citedByTweetIds: Array.isArray(ref?.citedByTweetIds) ? ref.citedByTweetIds.map((id) => String(id)) : [],
+      isInDataset: Boolean(ref?.isInDataset)
+    }))
+    : [];
 
   return {
     version: "path-anchored/v1",
@@ -94,12 +106,14 @@ function buildConversationArtifact({ dataset, selection, clickedTweetId = null, 
     expansions,
     selectedTweets,
     references,
+    tweetReferences,
     diagnostics: {
       totalCollectedTweetCount: Array.isArray(dataset?.tweets) ? dataset.tweets.length : 0,
       selectedTweetCount: selectedTweets.length,
       mandatoryPathLength: mandatoryPath.length,
       expansionDepthCount: expansions.length,
-      referenceCount: references.length
+      referenceCount: references.length,
+      tweetReferenceCount: tweetReferences.length
     }
   };
 }

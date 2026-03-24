@@ -1002,18 +1002,23 @@
       }
 
       if (client.options.includeQuoteReplies) {
+        const enqueuedQuoteRootIds = [];
         for (const quoteTweet of quoteTweets.tweets) {
           const quoteId = quoteTweet?.id;
           if (!quoteId || processedRoots.has(quoteId)) {
             continue;
           }
           rootQueue.push(quoteId);
+          enqueuedQuoteRootIds.push(String(quoteId));
         }
         if (typeof onProgress === "function") {
           onProgress({
             phase: "quote_reply_expanded",
             rootId,
-            queuedRoots: rootQueue.length
+            queuedRoots: rootQueue.length,
+            enqueuedRoots: enqueuedQuoteRootIds,
+            enqueuedCount: enqueuedQuoteRootIds.length,
+            queuePreview: rootQueue.slice(0, 5)
           });
         }
       }

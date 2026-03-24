@@ -265,6 +265,45 @@ function classifyReference(url) {
   }
 }
 
+function classifyTweetReference(url) {
+  const canonical = canonicalizeUrl(url);
+  if (!canonical) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(canonical);
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (
+      !(host === "x.com" || host === "twitter.com" || host.endsWith(".x.com") || host.endsWith(".twitter.com"))
+    ) {
+      return null;
+    }
+
+    const pathname = String(parsed.pathname || "");
+    const internalMatch = pathname.match(/^\/i\/status\/(\d+)/);
+    const statusMatch = internalMatch ? null : pathname.match(/^\/([^/]+)\/status\/(\d+)/);
+    if (!statusMatch && !internalMatch) {
+      return null;
+    }
+
+    const handle = statusMatch ? String(statusMatch[1] || "").trim().toLowerCase() : "i";
+    const tweetId = statusMatch ? String(statusMatch[2] || "").trim() : String(internalMatch[1] || "").trim();
+    if (!tweetId) {
+      return null;
+    }
+
+    return {
+      canonicalUrl: statusMatch ? `https://x.com/${handle}/status/${tweetId}` : `https://x.com/i/status/${tweetId}`,
+      displayUrl: statusMatch ? `https://x.com/${handle}/status/${tweetId}` : `https://x.com/i/status/${tweetId}`,
+      tweetId,
+      handle: statusMatch ? handle : null
+    };
+  } catch {
+    return null;
+  }
+}
+
 function collectCanonicalReferences(selectedTweets, scoreById) {
   const byUrl = new Map();
 
@@ -314,6 +353,61 @@ function collectCanonicalReferences(selectedTweets, scoreById) {
         return b.citationCount - a.citationCount;
       }
       return String(a.canonicalUrl).localeCompare(String(b.canonicalUrl));
+    });
+}
+
+function collectCanonicalTweetReferences(selectedTweets, scoreById, tweetById) {
+  const byTweetId = new Map();
+
+  for (const tweet of Array.isArray(selectedTweets) ? selectedTweets : []) {
+    if (!tweet?.id) {
+      continue;
+    }
+
+    const textUrls = tweet?.text ? extractUrlsFromText(tweet.text) : [];
+    const entityUrls = Array.isArray(tweet?.external_urls) ? tweet.external_urls : [];
+    const canonicalRefs = [...new Map(
+      [...textUrls, ...entityUrls]
+        .map(classifyTweetReference)
+        .filter(Boolean)
+        .map((ref) => [ref.tweetId, ref])
+    ).values()];
+
+    for (const classified of canonicalRefs) {
+      const linkedTweetId = String(classified.tweetId || "");
+      if (!classified) {
+        continue;
+      }
+      if (!byTweetId.has(linkedTweetId)) {
+        byTweetId.set(linkedTweetId, {
+          ...classified,
+          citationCount: 0,
+          weightedCitationScore: 0,
+          citedByTweetIds: [],
+          isInDataset: tweetById.has(String(linkedTweetId))
+        });
+      }
+      const entry = byTweetId.get(linkedTweetId);
+      entry.citationCount += 1;
+      entry.weightedCitationScore += Number(scoreById.get(String(tweet.id)) || 0);
+      entry.citedByTweetIds.push(String(tweet.id));
+      entry.isInDataset = entry.isInDataset || tweetById.has(String(linkedTweetId));
+    }
+  }
+
+  return [...byTweetId.values()]
+    .map((entry) => ({
+      ...entry,
+      citedByTweetIds: [...new Set(entry.citedByTweetIds)]
+    }))
+    .sort((a, b) => {
+      if (b.weightedCitationScore !== a.weightedCitationScore) {
+        return b.weightedCitationScore - a.weightedCitationScore;
+      }
+      if (b.citationCount !== a.citationCount) {
+        return b.citationCount - a.citationCount;
+      }
+      return String(a.tweetId).localeCompare(String(b.tweetId));
     });
 }
 
@@ -436,6 +530,7 @@ function buildPathAnchoredSelection(dataset, options = {}) {
     }
   }
   const references = collectCanonicalReferences(selectedTweets, scoreById);
+  const tweetReferences = collectCanonicalTweetReferences(selectedTweets, scoreById, tweetById);
 
   return {
     tweets: selectedTweets,
@@ -444,11 +539,13 @@ function buildPathAnchoredSelection(dataset, options = {}) {
     scoreById,
     expansions: selectedByDepth,
     references,
+    tweetReferences,
     diagnostics: {
       totalSourceTweetCount: sourceTweets.length,
       selectedTweetCount: selectedTweets.length,
       mandatoryPathLength: mandatoryPath.length,
-      referenceCount: references.length
+      referenceCount: references.length,
+      tweetReferenceCount: tweetReferences.length
     }
   };
 }
@@ -457,5 +554,6 @@ module.exports = {
   DEFAULT_OPTIONS,
   buildPathAnchoredSelection,
   collectCanonicalReferences,
-  classifyReference
+  classifyReference,
+  classifyTweetReference
 };

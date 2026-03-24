@@ -6,6 +6,7 @@ const http = require("node:http");
 const path = require("node:path");
 
 const xApiClient = require("../data/x_api_client.js");
+const conversationDatasetSource = require("../data/conversation_dataset_source.js");
 const conversationEngine = require("../core/conversation_engine.js");
 const { createOpenAiArticleGenerator } = require("./openai_article_generator.js");
 const { createArticlePdfBuffer } = require("./article_pdf.js");
@@ -911,28 +912,13 @@ async function resolveCanonicalRoot({ client, clickedTweetId, rootHintTweetId })
 }
 
 async function collectDatasetForCanonicalRoot({ canonicalRootId, client, followingSet = new Set(), onWarning, onProgress }) {
-  const warnings = [];
-  const collected = await xApiClient.collectConnectedApiTweets({
-    rootTweetId: canonicalRootId,
+  return conversationDatasetSource.collectConversationDatasetForCanonicalRoot({
+    canonicalRootId,
     client,
     followingSet,
-    onWarning: (message) => {
-      warnings.push(message);
-      if (typeof onWarning === "function") {
-        onWarning(message);
-      }
-    },
+    onWarning,
     onProgress
   });
-
-  const rootTweet = collected.tweets.find((tweet) => tweet.id === canonicalRootId) || null;
-  return {
-    canonicalRootId,
-    tweets: collected.tweets,
-    users: collected.users,
-    rootTweet,
-    warnings
-  };
 }
 
 function buildSnapshotFromDataset(dataset, followingSet, options = {}) {
@@ -978,6 +964,7 @@ function buildSnapshotFromDataset(dataset, followingSet, options = {}) {
       selectedTweetIds: Array.isArray(pathAnchored?.selectedTweetIds) ? pathAnchored.selectedTweetIds : [],
       expansions: Array.isArray(pathAnchored?.expansions) ? pathAnchored.expansions : [],
       references: Array.isArray(pathAnchored?.references) ? pathAnchored.references : [],
+      tweetReferences: Array.isArray(pathAnchored?.tweetReferences) ? pathAnchored.tweetReferences : [],
       diagnostics: pathAnchored?.diagnostics || null,
       artifact: conversationArtifact
     }

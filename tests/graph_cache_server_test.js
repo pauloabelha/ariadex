@@ -87,7 +87,7 @@ test("buildSnapshotFromDataset emits a path-anchored artifact when clicked tweet
     tweets: [
       {
         id: "root",
-        text: "Root tweet with https://example.com/doc.pdf",
+        text: "Root tweet with https://example.com/doc.pdf and https://x.com/alice/status/42?s=20",
         author_id: "u1"
       },
       {
@@ -118,6 +118,10 @@ test("buildSnapshotFromDataset emits a path-anchored artifact when clicked tweet
   assert.equal(snapshot.pathAnchored.artifact.mandatoryPath.length, 2);
   assert.equal(snapshot.pathAnchored.artifact.references.length, 2);
   assert.equal(snapshot.pathAnchored.artifact.references[0].kind, "document");
+  assert.equal(snapshot.pathAnchored.tweetReferences.length, 1);
+  assert.equal(snapshot.pathAnchored.tweetReferences[0].tweetId, "42");
+  assert.equal(snapshot.pathAnchored.artifact.tweetReferences.length, 1);
+  assert.equal(snapshot.pathAnchored.artifact.tweetReferences[0].canonicalUrl, "https://x.com/alice/status/42");
 });
 
 test("createEntityCache persists tweet and user entities via cache store", () => {

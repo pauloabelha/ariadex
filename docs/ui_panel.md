@@ -21,10 +21,11 @@ Implementation:
 
 ## Dex View Model
 `buildDexViewModel(...)` derives tab data from the same ranked graph:
-- `sections` (legacy thinkers sections)
+- `sections` (legacy ranking sections rendered inside `Branches`)
 - `evidence` (canonicalized URL entities with weighted citation score)
 - `people` (followed/other author aggregates)
 - `context` (graph/ranking summary counters)
+- `log` (snapshot/debug diagnostics)
 
 `scoreById` supports both:
 - `Map` (in-memory engine output)
@@ -54,11 +55,13 @@ This prevents unstable card ordering between renders.
 - ensures a single panel attached to `document.body`
 - clears/rebuilds panel body per render
 - renders tabbed UI:
-  - `Thinkers`
-  - `Evidence`
-  - `People`
   - `Context`
-- keeps `Thinkers` as default tab for backward compatibility
+  - `Branches`
+  - `References`
+  - `People`
+  - `Log`
+  - `Digest`
+- keeps the older `From Your Network` / `Top Thinkers` sections inside `Branches`
 - binds click handlers for scroll/highlight
 - renders author avatar when available (`author_profile.profile_image_url`)
 

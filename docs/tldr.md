@@ -14,10 +14,10 @@ When you click `◇ Explore` on X:
    - canonical reference extraction
 4. It runs ThinkerRank on the selected subgraph.
 5. It renders Ariadex Dex tabs:
+   - Context
    - Branches
    - References
    - People
-   - Context
    - Log
    - Digest
 

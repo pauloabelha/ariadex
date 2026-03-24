@@ -11,11 +11,12 @@ Ariadex explores conversations on X by turning connected tweets into a typed gra
   - per-root replies/quotes are fetched concurrently, then merged deterministically
 - builds a conversation graph
 - runs ThinkerRank
-- renders a two-tier panel:
-  - `Thinkers` (`⭐ From Your Network`, `🔥 Top Thinkers`)
-  - `Evidence`
-  - `People`
+- renders a Dex panel with tabs:
   - `Context`
+  - `Branches` (`⭐ From Your Network`, `🔥 Top Thinkers`)
+  - `References`
+  - `People`
+  - `Log`
   - `Digest` (generate article + download PDF)
 
 ## Architecture
@@ -87,6 +88,12 @@ Environment flags:
 - `ARIADEX_OPENAI_ARTICLE_TIMEOUT_MS` (default: `30000`)
 
 ## Run extension
+Install dependencies first:
+
+```bash
+npm install
+```
+
 1. Open `chrome://extensions`
 2. Enable Developer mode
 3. Load unpacked extension from `ariadex/extension`
@@ -95,9 +102,57 @@ Environment flags:
 
 ## Run tests
 
+Install dependencies first if this is a fresh checkout:
+
 ```bash
-node --test tests/*.js
+npm install
 ```
+
+Then run the full suite:
+
+```bash
+npm test
+```
+
+Useful subsets:
+
+```bash
+npm run test:core
+npm run test:dom
+```
+
+CI now enforces:
+- `npm run test:core`
+- `npm run test:dom`
+- `npm test`
+- `npm run benchmark:snapshot` smoke run
+
+GitHub Actions runs those checks on pull requests and on pushes to `main` across Node `18`, `20`, and `22`.
+
+## Optional Python tooling environment
+Ariadex does not require Python for runtime or JS tests, but a local virtual environment is a good place for one-off research scripts, notebook work, data cleanup, and evaluation helpers.
+
+Recommended setup:
+- put the virtual environment at `ariadex/.venv/`
+- keep it local-only and git-ignored
+- keep Python tooling separate from Node runtime concerns
+
+Create it:
+
+```bash
+cd /home/pauloabelha/ariadex
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+```
+
+When to add Python dependencies:
+- if a script is truly repo-supported, add a dedicated manifest such as `requirements-dev.txt` or move to a `pyproject.toml`
+- if it is just your local research tooling, install into `.venv` without changing tracked dependency files yet
+
+Current policy:
+- `requirements.txt` is intentionally informational and not a source of truth for Ariadex runtime
+- Node dependencies remain managed by `package.json` and `package-lock.json`
 
 ## Benchmark (snapshot pipeline)
 Run deterministic cold-vs-warm benchmark without hitting live X API:
@@ -116,6 +171,27 @@ Output includes:
 - cold/warm duration
 - per-endpoint request counts (`tweet_lookup`, `search_recent_conversation`, `quote_tweets`, etc.)
 - total request reduction and duration ratio
+
+## Expensive full-graph capture
+For offline research fixtures, you can run an intentionally expensive capture against the live X API:
+
+```bash
+npm run capture:full-graph -- --tweet 2035047540588945579
+```
+
+Behavior:
+- reads `X_BEARER_TOKEN` / `X_API_BEARER_TOKEN` from `.env`
+- writes final fixtures under `research/fixtures/full_graphs/`
+- persists tweet/user entity cache under `.cache/capture_full_graph/entity_store.json`
+- writes resumable progress checkpoints under `.cache/capture_full_graph/checkpoints/`
+- reuses an existing final fixture by default unless `--force` is passed
+
+Useful flags:
+- `--output <path>`
+- `--checkpoint-dir <dir>`
+- `--entity-cache-file <path>`
+- `--no-resume`
+- `--force`
 
 ## Persistent graph cache (recommended)
 To avoid repeated X API costs, run the local graph cache server and point the extension to it.
