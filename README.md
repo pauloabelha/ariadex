@@ -193,6 +193,54 @@ Useful flags:
 - `--no-resume`
 - `--force`
 
+## Selector Experiments
+Ariadex now has a selector registry for comparing multiple subgraph-selection algorithms against the same fixture and explored tweet.
+
+Current selector ids:
+- `path_anchored_v1`
+- `expand_all_v0`
+- `quota_per_parent_v0`
+
+Run one selector on a saved fixture:
+
+```bash
+npm run selector:run -- --fixture research/fixtures/full_graphs/2035047540588945579__root-2034285590921740363.json --tweet 2035047540588945579 --algo path_anchored_v1
+```
+
+Generate a side-by-side comparison report:
+
+```bash
+npm run selector:compare -- --fixture research/fixtures/full_graphs/2035047540588945579__root-2034285590921740363.json --tweet 2035047540588945579 --algo-a path_anchored_v1 --algo-b quota_per_parent_v0
+```
+
+That produces:
+- a JSON comparison artifact under `research/runs/selector_comparisons/`
+- a standalone HTML report under `research/runs/selector_comparisons/`
+
+Live selection path:
+- graph-cache server now accepts selector ids internally and defaults to `path_anchored_v1`
+- override with `ARIADEX_SELECTOR_ID=<selector_id>` to test a different live selector in the server path
+
+### Live local selector lab
+To choose an algorithm interactively for a fixtured explored tweet, start the local selector lab:
+
+```bash
+npm run selector:lab
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8791
+```
+
+The lab:
+- reads the local fixture catalog database from `research/db/fixture_catalog.json`
+- auto-syncs that catalog from `research/fixtures/full_graphs/`
+- lets you pick a fixtured explored tweet
+- lets you pick a selector algorithm and JSON params
+- runs the selector locally against the saved fixture and renders the result live
+
 ## Persistent graph cache (recommended)
 To avoid repeated X API costs, run the local graph cache server and point the extension to it.
 

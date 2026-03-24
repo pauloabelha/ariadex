@@ -39,6 +39,54 @@ function toArtifactTweet(tweet, importanceScore = null) {
   };
 }
 
+function resolvePathRelation(parentTweet, childTweet) {
+  const parentId = String(parentTweet?.id || "").trim();
+  if (!parentId || !childTweet) {
+    return null;
+  }
+
+  if (String(childTweet?.quote_of || "").trim() === parentId) {
+    return "quote";
+  }
+  if (String(childTweet?.reply_to || "").trim() === parentId) {
+    return "reply";
+  }
+
+  const refs = Array.isArray(childTweet?.referenced_tweets) ? childTweet.referenced_tweets : [];
+  if (refs.some((ref) => String(ref?.type || "").trim().toLowerCase() === "quoted" && String(ref?.id || "").trim() === parentId)) {
+    return "quote";
+  }
+  if (refs.some((ref) => String(ref?.type || "").trim().toLowerCase() === "replied_to" && String(ref?.id || "").trim() === parentId)) {
+    return "reply";
+  }
+
+  return null;
+}
+
+function annotateMandatoryPath(tweetById, mandatoryPathIds, scoreById, clickedTweetId, canonicalRootId) {
+  const ids = Array.isArray(mandatoryPathIds) ? mandatoryPathIds.map((id) => String(id || "")).filter(Boolean) : [];
+  return ids.map((id, index) => {
+    const tweet = tweetById.get(id);
+    if (!tweet) {
+      return null;
+    }
+    const previousTweet = index > 0 ? tweetById.get(ids[index - 1]) : null;
+    const nextTweet = index + 1 < ids.length ? tweetById.get(ids[index + 1]) : null;
+    const isExplored = clickedTweetId && String(clickedTweetId) === id;
+    const isRoot = index === 0 || (canonicalRootId && String(canonicalRootId) === id);
+
+    return {
+      ...toArtifactTweet(tweet, scoreById.get(String(tweet.id))),
+      pathRole: isRoot
+        ? "canonical_root"
+        : (isExplored ? "explored_tweet" : "ancestor_context"),
+      inboundPathRelation: previousTweet ? resolvePathRelation(previousTweet, tweet) : null,
+      outboundPathRelation: nextTweet ? resolvePathRelation(tweet, nextTweet) : null,
+      pathIndex: index
+    };
+  }).filter(Boolean);
+}
+
 function buildConversationArtifact({ dataset, selection, clickedTweetId = null, canonicalRootId = null } = {}) {
   const tweets = Array.isArray(selection?.tweets) ? selection.tweets : [];
   const tweetById = buildTweetById(tweets);
@@ -47,10 +95,13 @@ function buildConversationArtifact({ dataset, selection, clickedTweetId = null, 
   const rootTweet = deriveRootTweet(tweetById, mandatoryPathIds, canonicalRootId);
   const scoreById = selection?.scoreById instanceof Map ? selection.scoreById : new Map();
 
-  const mandatoryPath = mandatoryPathIds
-    .map((id) => tweetById.get(String(id)))
-    .filter(Boolean)
-    .map((tweet) => toArtifactTweet(tweet, scoreById.get(String(tweet.id))));
+  const mandatoryPath = annotateMandatoryPath(
+    tweetById,
+    mandatoryPathIds,
+    scoreById,
+    clickedTweetId,
+    canonicalRootId
+  );
 
   const expansions = Array.isArray(selection?.expansions)
     ? selection.expansions.map((level) => ({

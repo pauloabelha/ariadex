@@ -10,7 +10,7 @@ const conversationDatasetSource = require("../data/conversation_dataset_source.j
 const conversationEngine = require("../core/conversation_engine.js");
 const { createOpenAiArticleGenerator } = require("./openai_article_generator.js");
 const { createArticlePdfBuffer } = require("./article_pdf.js");
-const { buildPathAnchoredSelection } = require("./path_anchored_snapshot.js");
+const { DEFAULT_SELECTOR_ID, runRegisteredSelector } = require("../research/selectors/registry.js");
 const { buildConversationArtifact } = require("./conversation_artifact.js");
 
 const PIPELINE_VERSION = process.env.ARIADEX_PIPELINE_VERSION || "v3";
@@ -923,8 +923,11 @@ async function collectDatasetForCanonicalRoot({ canonicalRootId, client, followi
 
 function buildSnapshotFromDataset(dataset, followingSet, options = {}) {
   const usePathAnchoredSelection = Boolean(String(options.clickedTweetId || dataset?.clickedTweetId || "").trim());
+  const selectorId = String(options.selectorId || process.env.ARIADEX_SELECTOR_ID || DEFAULT_SELECTOR_ID).trim() || DEFAULT_SELECTOR_ID;
   const pathAnchored = usePathAnchoredSelection
-    ? buildPathAnchoredSelection(dataset, {
+    ? runRegisteredSelector({
+      algorithmId: selectorId,
+      dataset,
       clickedTweetId: options.clickedTweetId || dataset?.clickedTweetId || null,
       rootHintTweetId: options.rootHintTweetId || dataset?.rootHintTweetId || null
     })
@@ -960,6 +963,7 @@ function buildSnapshotFromDataset(dataset, followingSet, options = {}) {
     rankingMeta: engineResult.rankingMeta || { scoreById: new Map() },
     warnings: Array.isArray(dataset.warnings) ? dataset.warnings : [],
     pathAnchored: {
+      algorithmId: pathAnchored?.algorithmId || null,
       mandatoryPathIds: Array.isArray(pathAnchored?.mandatoryPathIds) ? pathAnchored.mandatoryPathIds : [],
       selectedTweetIds: Array.isArray(pathAnchored?.selectedTweetIds) ? pathAnchored.selectedTweetIds : [],
       expansions: Array.isArray(pathAnchored?.expansions) ? pathAnchored.expansions : [],

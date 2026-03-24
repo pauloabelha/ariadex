@@ -5,6 +5,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 
 const { loadConversationDataset } = require("../data/conversation_dataset_source.js");
+const { upsertFixtureRecord } = require("../research/fixture_catalog.js");
 const { buildEnvObject } = require("./sync_env_to_generated_config.js");
 const {
   PersistentFileCacheStore,
@@ -594,6 +595,10 @@ async function runCapture(rawArgs = process.argv.slice(2), deps = {}) {
     await checkpointWriteChain;
     await fs.mkdir(path.dirname(resolvedOutputPath), { recursive: true });
     await fs.writeFile(resolvedOutputPath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+    await upsertFixtureRecord({
+      fixtureDocument: document,
+      fixturePath: resolvedOutputPath
+    });
     await writeCheckpoint({
       checkpointPath,
       status: "completed",

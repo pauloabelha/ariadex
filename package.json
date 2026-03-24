@@ -19,7 +19,10 @@
     "start:graph-cache": "node server/graph_cache_server.js",
     "dev:cache": "node scripts/dev_with_graph_cache.js",
     "benchmark:snapshot": "node scripts/benchmark_snapshot_pipeline.js",
-    "capture:full-graph": "node scripts/capture_full_graph.js"
+    "capture:full-graph": "node scripts/capture_full_graph.js",
+    "selector:run": "node scripts/run_selector.js",
+    "selector:compare": "node scripts/compare_selectors.js",
+    "selector:lab": "node scripts/selector_lab_server.js"
   },
   "devDependencies": {
     "jsdom": "26.0.0"

@@ -553,7 +553,17 @@ function buildPathAnchoredSelection(dataset, options = {}) {
 module.exports = {
   DEFAULT_OPTIONS,
   buildPathAnchoredSelection,
+  buildChildrenIndex,
+  buildMandatoryPath,
+  buildTweetIndex,
   collectCanonicalReferences,
+  collectCanonicalTweetReferences,
   classifyReference,
-  classifyTweetReference
+  classifyTweetReference,
+  computeImportanceScore,
+  getSubstantiveTextMetrics,
+  isHumanTweet,
+  isLowSignalTweet,
+  normalizeOptions,
+  resolveParentId
 };

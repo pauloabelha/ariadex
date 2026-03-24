@@ -116,12 +116,56 @@ test("buildSnapshotFromDataset emits a path-anchored artifact when clicked tweet
 
   assert.equal(snapshot.pathAnchored.artifact.exploredTweetId, "seed");
   assert.equal(snapshot.pathAnchored.artifact.mandatoryPath.length, 2);
+  assert.equal(snapshot.pathAnchored.artifact.mandatoryPath[0].pathRole, "canonical_root");
+  assert.equal(snapshot.pathAnchored.artifact.mandatoryPath[0].outboundPathRelation, "quote");
+  assert.equal(snapshot.pathAnchored.artifact.mandatoryPath[1].pathRole, "explored_tweet");
+  assert.equal(snapshot.pathAnchored.artifact.mandatoryPath[1].inboundPathRelation, "quote");
   assert.equal(snapshot.pathAnchored.artifact.references.length, 2);
   assert.equal(snapshot.pathAnchored.artifact.references[0].kind, "document");
   assert.equal(snapshot.pathAnchored.tweetReferences.length, 1);
   assert.equal(snapshot.pathAnchored.tweetReferences[0].tweetId, "42");
   assert.equal(snapshot.pathAnchored.artifact.tweetReferences.length, 1);
   assert.equal(snapshot.pathAnchored.artifact.tweetReferences[0].canonicalUrl, "https://x.com/alice/status/42");
+});
+
+test("buildSnapshotFromDataset accepts selector ids for live selection", () => {
+  const dataset = {
+    canonicalRootId: "root",
+    tweets: [
+      {
+        id: "root",
+        text: "Root tweet with enough substance.",
+        author_id: "u1",
+        author_profile: { public_metrics: { followers_count: 10 } }
+      },
+      {
+        id: "seed",
+        text: "Explored quote tweet with enough substance.",
+        author_id: "u2",
+        quote_of: "root",
+        likes: 20,
+        quote_count: 5,
+        author_profile: { public_metrics: { followers_count: 100 } }
+      },
+      {
+        id: "child",
+        text: "Child reply with enough substance to survive selector filtering.",
+        author_id: "u3",
+        reply_to: "seed",
+        likes: 3,
+        author_profile: { public_metrics: { followers_count: 5 } }
+      }
+    ],
+    warnings: []
+  };
+
+  const snapshot = buildSnapshotFromDataset(dataset, new Set(), {
+    clickedTweetId: "seed",
+    selectorId: "expand_all_v0"
+  });
+
+  assert.equal(snapshot.pathAnchored.algorithmId, "expand_all_v0");
+  assert.equal(snapshot.pathAnchored.artifact.exploredTweetId, "seed");
 });
 
 test("createEntityCache persists tweet and user entities via cache store", () => {
