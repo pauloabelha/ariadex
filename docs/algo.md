@@ -12,6 +12,13 @@ The current implementation is spread across:
 - `core/thread_collapse.js`
 - `core/conversation_rank.js`
 
+There is also a research selector layer used for fixture-backed offline comparison:
+- `research/selectors/registry.js`
+- `research/selectors/path_anchored_v1.js`
+- `research/selectors/expand_all_v0.js`
+- `research/selectors/quota_per_parent_v0.js`
+- `research/selectors/thread_context_v0.js`
+
 ## Plain Language
 
 ### What problem Ariadex is solving
@@ -119,6 +126,7 @@ but also:
 The result is a focused conversation artifact:
 - the mandatory path from root to clicked tweet
 - a bounded set of important reply and quote branches
+- optional bounded local thread completion around selected anchors, depending on selector
 - a typed graph over those tweets
 - a ThinkerRank score for each kept tweet
 - canonical references extracted from the kept set
@@ -127,6 +135,14 @@ The result is a focused conversation artifact:
 In short:
 
 Ariadex is trying to turn a messy conversation into a readable map of influence, context, and evidence.
+
+The deeper product direction is not "bag of tweets."
+
+It is closer to a topic-discussion primitive:
+- preserve the explanatory spine
+- preserve meaningful branches
+- preserve key participants and references
+- complete enough local thread context that selected tweets read as coherent discourse units
 
 ## Detailed
 
@@ -266,6 +282,11 @@ This makes the snapshot:
 - selective
 - deterministic
 - bounded in size
+
+The research selector layer builds on this base contract and lets Ariadex compare alternative selection policies on the same saved fixture and explored tweet. The current most discussion-oriented variant is `thread_context_v0`, which:
+- starts from the same path-anchored selection
+- then adds a bounded amount of same-author reply-thread continuation around selected anchors
+- aims to reduce fragmentary outputs without turning the selector into an unbounded full-thread fetch
 
 #### 3.6 Reference extraction
 
@@ -514,4 +535,3 @@ Because the snapshot step is intentionally bounded, Ariadex is designed to stay 
 If you want one sentence to remember the whole algorithm, it is this:
 
 > Ariadex finds the path to the clicked tweet, expands only the most meaningful nearby branches, then ranks the kept tweets by recursive conversational influence.
-

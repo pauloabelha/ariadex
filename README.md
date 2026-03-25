@@ -200,6 +200,7 @@ Current selector ids:
 - `path_anchored_v1`
 - `expand_all_v0`
 - `quota_per_parent_v0`
+- `thread_context_v0`
 
 Run one selector on a saved fixture:
 
@@ -240,6 +241,13 @@ The lab:
 - lets you pick a fixtured explored tweet
 - lets you pick a selector algorithm and JSON params
 - runs the selector locally against the saved fixture and renders the result live
+- shows mandatory-path roles and relations, selected tweets, references, tweet references, and people summaries
+- surfaces likes, follower counts, and selector scores directly on tweet cards
+
+`thread_context_v0` is the current lowest-slop discussion-oriented selector:
+- start with the existing path-anchored selection
+- then complete a bounded amount of same-author reply-thread context around the kept anchors
+- preserve structural explainability while reducing “isolated tweet fragment” output
 
 ## Persistent graph cache (recommended)
 To avoid repeated X API costs, run the local graph cache server and point the extension to it.
