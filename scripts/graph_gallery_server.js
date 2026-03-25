@@ -10,6 +10,17 @@ const { buildGraphPayload, buildHtmlReport } = require("./render_conversation_gr
 
 const DEFAULT_PORT = 8792;
 
+const ANSI = {
+  reset: "\x1b[0m",
+  dim: "\x1b[2m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  blue: "\x1b[34m",
+  magenta: "\x1b[35m",
+  cyan: "\x1b[36m"
+};
+
 function sendJson(res, statusCode, value) {
   const body = `${JSON.stringify(value, null, 2)}\n`;
   res.writeHead(statusCode, {
@@ -25,6 +36,54 @@ function sendHtml(res, statusCode, html) {
     "cache-control": "no-store"
   });
   res.end(html);
+}
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 1_000_000) {
+        reject(new Error("Request body too large"));
+      }
+    });
+    req.on("end", () => resolve(raw));
+    req.on("error", reject);
+  });
+}
+
+function colorForLevel(level) {
+  switch (String(level || "").toLowerCase()) {
+    case "tweet":
+      return ANSI.blue;
+    case "author":
+      return ANSI.magenta;
+    case "reference":
+      return ANSI.green;
+    case "error":
+      return ANSI.red;
+    case "system":
+    default:
+      return ANSI.cyan;
+  }
+}
+
+function logToTerminal(level, message, extra = {}) {
+  const color = colorForLevel(level);
+  const now = new Date().toISOString();
+  const parts = [];
+  if (extra.author) {
+    parts.push(`author=${extra.author}`);
+  }
+  if (extra.tweetId) {
+    parts.push(`tweet=${extra.tweetId}`);
+  }
+  if (extra.url) {
+    parts.push(`url=${extra.url}`);
+  }
+  const meta = parts.length > 0 ? ` ${ANSI.dim}${parts.join(" ")}${ANSI.reset}` : "";
+  process.stdout.write(`${ANSI.dim}${now}${ANSI.reset} ${color}[graph:${String(level || "system")}]${ANSI.reset} ${String(message || "")}${meta}\n`);
 }
 
 function sendText(res, statusCode, text) {
@@ -90,7 +149,7 @@ function galleryHtml() {
     .sidebar {
       padding: 18px;
       display: grid;
-      grid-template-rows: auto auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto auto minmax(0, 1fr);
       gap: 14px;
     }
     h1 {
@@ -213,6 +272,42 @@ function galleryHtml() {
       font-size: 13px;
       color: var(--muted);
     }
+    .log-panel {
+      display: grid;
+      gap: 8px;
+      min-height: 180px;
+      max-height: 260px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .log-entry {
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.82);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .log-entry-system {
+      border-left: 4px solid #64748b;
+    }
+    .log-entry-tweet {
+      border-left: 4px solid #1473e6;
+    }
+    .log-entry-author {
+      border-left: 4px solid #8b5cf6;
+    }
+    .log-entry-reference {
+      border-left: 4px solid #16a34a;
+    }
+    .log-entry-error {
+      border-left: 4px solid #ef4444;
+    }
+    .log-entry-time {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
     .empty {
       padding: 24px;
       color: var(--muted);
@@ -248,6 +343,10 @@ function galleryHtml() {
       <section>
         <div id="status" class="status"></div>
       </section>
+      <section>
+        <h2>Log</h2>
+        <div id="log-panel" class="log-panel"></div>
+      </section>
       <section id="fixture-list" class="list"></section>
     </aside>
     <section class="panel viewer">
@@ -277,12 +376,50 @@ function galleryHtml() {
     const openGraphEl = document.getElementById("open-graph");
     const openJsonEl = document.getElementById("open-json");
     const emptyEl = document.getElementById("empty");
+    const logPanelEl = document.getElementById("log-panel");
 
     let fixtures = [];
     let selectedFixturePath = "";
+    const logs = [];
 
     function setStatus(text) {
       statusEl.textContent = text || "";
+    }
+
+    function addLog(level, message, extra = {}) {
+      const entry = {
+        level: String(level || "system"),
+        message: String(message || ""),
+        extra,
+        timestamp: new Date().toLocaleTimeString()
+      };
+      logs.unshift(entry);
+      if (logs.length > 60) {
+        logs.length = 60;
+      }
+      renderLogs();
+    }
+
+    function renderLogs() {
+      logPanelEl.innerHTML = logs.map((entry) => {
+        const meta = [];
+        if (entry.extra?.author) {
+          meta.push("author=" + entry.extra.author);
+        }
+        if (entry.extra?.tweetId) {
+          meta.push("tweet=" + entry.extra.tweetId);
+        }
+        if (entry.extra?.url) {
+          meta.push("url=" + entry.extra.url);
+        }
+        return "<div class='log-entry log-entry-" + entry.level + "'>"
+          + "<div class='log-entry-time'>" + entry.timestamp + "</div>"
+          + "<div><strong>" + entry.message.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char])) + "</strong></div>"
+          + (meta.length > 0
+            ? "<div class='fixture-meta'>" + meta.map((item) => item.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]))).join(" · ") + "</div>"
+            : "")
+          + "</div>";
+      }).join("") || "<p class='fixture-meta'>No logs yet.</p>";
     }
 
     function truncate(text, limit = 150) {
@@ -325,6 +462,11 @@ function galleryHtml() {
       viewerSubtitleEl.innerHTML = "captured " + escapeInline(fixture.capturedAt || "unknown") + " · <code>" + escapeInline(fixture.fixturePath) + "</code>";
       openGraphEl.href = graphUrl;
       openJsonEl.href = "/fixture?fixturePath=" + encodeURIComponent(fixture.fixturePath);
+      addLog("system", "Loaded fixture into viewer", {
+        tweetId: fixture.exploredTweetId || "",
+        author: "",
+        url: fixture.fixturePath
+      });
     }
 
     function renderFixtureList() {
@@ -356,6 +498,11 @@ function galleryHtml() {
           selectedFixturePath = element.getAttribute("data-fixture-path") || "";
           renderFixtureList();
           updateViewer();
+          const fixture = selectedFixture();
+          addLog("system", "Selected persisted fixture", {
+            tweetId: fixture?.exploredTweetId || "",
+            url: fixture?.fixturePath || ""
+          });
         });
       });
     }
@@ -371,6 +518,9 @@ function galleryHtml() {
       renderFixtureList();
       updateViewer();
       setStatus(fixtures.length > 0 ? "Ready." : "No persisted fixtures found.");
+      addLog("system", fixtures.length > 0 ? "Catalog loaded" : "No persisted fixtures found", {
+        url: "/api/catalog"
+      });
     }
 
     refreshEl.addEventListener("click", async () => {
@@ -378,19 +528,39 @@ function galleryHtml() {
       const response = await fetch("/api/catalog/sync", { method: "POST" });
       if (!response.ok) {
         setStatus("Failed to refresh fixture catalog.");
+        addLog("error", "Failed to refresh fixture catalog");
         return;
       }
       await loadCatalog();
+      addLog("system", "Fixture catalog refreshed");
     });
 
     reloadEl.addEventListener("click", () => {
       updateViewer();
+      addLog("system", "Reloaded graph viewer");
     });
 
     searchEl.addEventListener("input", renderFixtureList);
 
+    window.addEventListener("message", (event) => {
+      const data = event.data;
+      if (!data || data.source !== "ariadex-graph-report" || data.type !== "ariadex-log") {
+        return;
+      }
+      const payload = data.payload || {};
+      addLog(payload.level || "system", payload.message || "Graph event", payload);
+      fetch("/api/log", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+    });
+
     loadCatalog().catch((error) => {
       setStatus(error.message || String(error));
+      addLog("error", error.message || String(error));
     });
   </script>
 </body>
@@ -442,6 +612,14 @@ function createGraphGalleryServer({ catalogPath = DEFAULT_CATALOG_PATH } = {}) {
         }
         const html = await buildGraphHtmlForFixture(fixturePath);
         sendHtml(res, 200, html);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/log") {
+        const raw = await readRequestBody(req);
+        const payload = raw ? JSON.parse(raw) : {};
+        logToTerminal(payload.level || "system", payload.message || "Graph event", payload);
+        sendJson(res, 200, { ok: true });
         return;
       }
 

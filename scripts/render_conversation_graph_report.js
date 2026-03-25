@@ -952,6 +952,22 @@ function buildHtmlReport(payload) {
       simulation.byId.set(node.id, node);
     }
 
+    function emitLog(type, message, extra = {}) {
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({
+            source: "ariadex-graph-report",
+            type: "ariadex-log",
+            payload: {
+              level: String(type || "info"),
+              message: String(message || ""),
+              ...extra
+            }
+          }, "*");
+        }
+      } catch {}
+    }
+
     function formatNumber(value) {
       const number = Number(value || 0);
       if (!Number.isFinite(number)) {
@@ -1224,11 +1240,31 @@ function buildHtmlReport(payload) {
       }
     }
 
-    function settleLayout(iterations = 220) {
-      for (let index = 0; index < iterations; index += 1) {
-        stepSimulation();
+    function settleLayout(iterations = 60) {
+      state.layoutFrozen = false;
+      let remaining = Math.max(0, Number(iterations) || 0);
+
+      function runChunk() {
+        const chunkSize = Math.min(10, remaining);
+        for (let index = 0; index < chunkSize; index += 1) {
+          stepSimulation();
+        }
+        remaining -= chunkSize;
+        draw();
+        if (remaining > 0) {
+          window.requestAnimationFrame(runChunk);
+          return;
+        }
+        state.layoutFrozen = true;
       }
-      state.layoutFrozen = true;
+
+      if (remaining <= 0) {
+        state.layoutFrozen = true;
+        draw();
+        return;
+      }
+
+      window.requestAnimationFrame(runChunk);
     }
 
     function isHighlightedEdge(edge) {
@@ -1466,6 +1502,10 @@ function buildHtmlReport(payload) {
           state.focusedReferenceUrl = "";
           recenterSimulation(state.selectedId);
           renderInspector();
+          emitLog("tweet", "Selected tweet from local trunk", {
+            tweetId: state.selectedId,
+            author: selectedNode?.author || ""
+          });
         });
       });
     }
@@ -1508,6 +1548,10 @@ function buildHtmlReport(payload) {
           state.focusedReferenceUrl = "";
           recenterSimulation(state.selectedId);
           renderInspector();
+          emitLog("tweet", "Selected tweet from side panel", {
+            tweetId: state.selectedId,
+            author: selectedNode?.author || ""
+          });
         });
       });
 
@@ -1525,6 +1569,10 @@ function buildHtmlReport(payload) {
           state.focusedReferenceUrl = "";
           recenterSimulation(state.selectedId);
           renderInspector();
+          emitLog("author", "Focused author", {
+            author,
+            tweetId: candidate.id
+          });
         });
       });
 
@@ -1546,6 +1594,11 @@ function buildHtmlReport(payload) {
             recenterSimulation(state.selectedId);
           }
           renderInspector();
+          emitLog("reference", "Focused reference", {
+            url,
+            tweetId: candidate?.id || "",
+            author: candidate?.author || ""
+          });
         });
       });
     }
@@ -1579,6 +1632,10 @@ function buildHtmlReport(payload) {
       state.focusedAuthor = nodesById.get(pickedId)?.author || "";
       state.focusedReferenceUrl = "";
       renderInspector();
+      emitLog("tweet", "Selected tweet node", {
+        tweetId: pickedId,
+        author: nodesById.get(pickedId)?.author || ""
+      });
       scheduleRender();
     });
 
@@ -1620,6 +1677,10 @@ function buildHtmlReport(payload) {
       state.focusedAuthor = nodesById.get(pickedId)?.author || "";
       state.focusedReferenceUrl = "";
       renderInspector();
+      emitLog("tweet", "Dragging tweet node", {
+        tweetId: pickedId,
+        author: nodesById.get(pickedId)?.author || ""
+      });
       scheduleRender();
     });
 
@@ -1714,9 +1775,14 @@ function buildHtmlReport(payload) {
 
     resizeCanvas();
     recenterSimulation(state.selectedId);
-    settleLayout();
     renderSideLists();
     renderInspector();
+    emitLog("system", "Graph loaded", {
+      tweetId: state.selectedId,
+      author: nodesById.get(state.selectedId)?.author || ""
+    });
+    draw();
+    settleLayout();
     scheduleRender();
   </script>
 </body>
