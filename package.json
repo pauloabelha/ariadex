@@ -22,7 +22,10 @@
     "capture:full-graph": "node scripts/capture_full_graph.js",
     "selector:run": "node scripts/run_selector.js",
     "selector:compare": "node scripts/compare_selectors.js",
-    "selector:lab": "node scripts/selector_lab_server.js"
+    "selector:lab": "node scripts/selector_lab_server.js",
+    "graph:report": "node scripts/render_conversation_graph_report.js",
+    "graph:gallery": "node scripts/render_conversation_graph_gallery.js",
+    "graph:live": "node scripts/graph_gallery_server.js"
   },
   "devDependencies": {
     "jsdom": "26.0.0"
