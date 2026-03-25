@@ -108,318 +108,85 @@ function galleryHtml() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ariadex Live Graph Gallery</title>
+  <title>Ariadex Live Graphs</title>
   <style>
     :root {
-      --bg: #f3f2ee;
-      --panel: rgba(255, 255, 252, 0.94);
-      --ink: #111111;
-      --muted: #68707c;
-      --line: #d8dde6;
-      --accent: #ff5a36;
-      --reply: #1473e6;
-      --shadow: 0 18px 52px rgba(17, 17, 17, 0.08);
+      --ink: #2f241a;
+      --muted: #7b6957;
+      --line: #d7c6b2;
+      --accent: #b85c38;
+      --paper: rgba(251, 245, 235, 0.92);
     }
     * { box-sizing: border-box; }
-    body {
+    html, body {
       margin: 0;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at top right, rgba(255, 90, 54, 0.08), transparent 24%),
-        radial-gradient(circle at left 18%, rgba(20, 115, 230, 0.06), transparent 18%),
-        linear-gradient(180deg, #f8f8f5 0%, #eceff3 100%);
-      font-family: "SF Pro Display", "Avenir Next", "Helvetica Neue", Arial, sans-serif;
-    }
-    .shell {
-      max-width: 1600px;
-      margin: 0 auto;
-      padding: 18px;
-      display: grid;
-      grid-template-columns: 360px minmax(0, 1fr);
-      gap: 16px;
-      min-height: 100vh;
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
-    .sidebar {
-      padding: 18px;
-      display: grid;
-      grid-template-rows: auto auto auto auto minmax(0, 1fr);
-      gap: 14px;
-    }
-    h1 {
-      margin: 0 0 8px;
-      font-size: 34px;
-      line-height: 1;
-      letter-spacing: -0.03em;
-    }
-    h2 {
-      margin: 0;
-      font-size: 16px;
-    }
-    p {
-      margin: 0;
-      color: var(--muted);
-      line-height: 1.45;
-    }
-    .search, .button {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 12px 14px;
-      font: inherit;
-      background: rgba(255,255,255,0.88);
-      color: var(--ink);
-    }
-    .button {
-      cursor: pointer;
-      font-weight: 600;
-    }
-    .button.primary {
-      background: var(--accent);
-      border-color: transparent;
-      color: white;
-    }
-    .button-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }
-    .list {
-      display: grid;
-      gap: 10px;
-      overflow: auto;
-      padding-right: 4px;
-    }
-    .fixture-card {
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: rgba(255,255,255,0.78);
-      padding: 14px;
-      cursor: pointer;
-    }
-    .fixture-card.active {
-      border-color: #f1a48e;
-      box-shadow: 0 10px 24px rgba(17, 17, 17, 0.08);
-      background: rgba(255,248,244,0.92);
-    }
-    .fixture-title {
-      font-size: 14px;
-      font-weight: 700;
-      line-height: 1.25;
-    }
-    .fixture-meta {
-      margin-top: 8px;
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .fixture-preview {
-      margin-top: 8px;
-      font-size: 13px;
-      color: var(--muted);
-      line-height: 1.35;
-    }
-    .viewer {
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      min-height: 84vh;
-    }
-    .viewer-header {
-      padding: 16px 18px;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    .viewer-title {
-      font-size: 18px;
-      font-weight: 700;
-    }
-    .viewer-actions {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    .viewer-actions a {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 10px 12px;
-      background: rgba(255,255,255,0.86);
-      color: var(--ink);
-      text-decoration: none;
-      font-size: 13px;
-      font-weight: 600;
-    }
-    iframe {
-      width: 100%;
       height: 100%;
-      min-height: 920px;
-      border: 0;
-      background: white;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 12% 14%, rgba(196, 138, 58, 0.12), transparent 20%),
+        radial-gradient(circle at 82% 22%, rgba(184, 92, 56, 0.1), transparent 18%),
+        linear-gradient(180deg, #f7f1e7 0%, #efe4d4 100%);
+      color: var(--ink);
+      font-family: "Avenir Next", "Futura", "Helvetica Neue", Arial, sans-serif;
     }
-    .status {
-      min-height: 20px;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .log-panel {
+    .app { height: 100%; display: grid; grid-template-rows: 56px minmax(0,1fr); }
+    .topbar {
       display: grid;
-      gap: 8px;
-      min-height: 180px;
-      max-height: 260px;
-      overflow: auto;
-      padding-right: 4px;
+      grid-template-columns: 220px minmax(220px, 420px) minmax(180px, 1fr) auto auto auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 14px;
+      background: var(--paper);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(10px);
     }
-    .log-entry {
-      border-radius: 14px;
+    .brand { font-size: 14px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    select, input, button {
+      width: 100%;
       border: 1px solid var(--line);
-      padding: 10px 12px;
-      background: rgba(255,255,255,0.82);
-      font-size: 13px;
-      line-height: 1.35;
+      border-radius: 10px;
+      padding: 9px 12px;
+      background: #fffaf2;
+      color: var(--ink);
+      font: inherit;
     }
-    .log-entry-system {
-      border-left: 4px solid #64748b;
-    }
-    .log-entry-tweet {
-      border-left: 4px solid #1473e6;
-    }
-    .log-entry-author {
-      border-left: 4px solid #8b5cf6;
-    }
-    .log-entry-reference {
-      border-left: 4px solid #16a34a;
-    }
-    .log-entry-error {
-      border-left: 4px solid #ef4444;
-    }
-    .log-entry-time {
-      color: var(--muted);
-      font-size: 11px;
-      margin-bottom: 4px;
-    }
-    .empty {
-      padding: 24px;
-      color: var(--muted);
-    }
-    code {
-      font-family: ui-monospace, SFMono-Regular, monospace;
-      font-size: 12px;
-    }
-    @media (max-width: 1080px) {
-      .shell {
-        grid-template-columns: 1fr;
-      }
-      iframe {
-        min-height: 680px;
-      }
+    button { cursor: pointer; }
+    .primary { background: var(--accent); color: white; border-color: transparent; }
+    .status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .viewer { position: relative; min-height: 0; }
+    iframe { width: 100%; height: 100%; border: 0; background: white; }
+    @media (max-width: 1100px) {
+      .topbar { grid-template-columns: 1fr 1fr; grid-auto-rows: minmax(0,auto); }
     }
   </style>
 </head>
 <body>
-  <main class="shell">
-    <aside class="panel sidebar">
-      <section>
-        <h1>Live Graphs</h1>
-        <p>Pick any persisted fixture and load the interactive graph live. No manual file opening needed.</p>
-      </section>
-      <section>
-        <input id="search" class="search" type="search" placeholder="search root id, explored id, text, or path">
-      </section>
-      <section class="button-row">
-        <button id="refresh" class="button">Refresh Catalog</button>
-        <button id="reload" class="button primary">Reload Graph</button>
-      </section>
-      <section>
-        <div id="status" class="status"></div>
-      </section>
-      <section>
-        <h2>Log</h2>
-        <div id="log-panel" class="log-panel"></div>
-      </section>
-      <section id="fixture-list" class="list"></section>
-    </aside>
-    <section class="panel viewer">
-      <div class="viewer-header">
-        <div>
-          <div id="viewer-title" class="viewer-title">Select a persisted fixture</div>
-          <p id="viewer-subtitle"></p>
-        </div>
-        <div class="viewer-actions">
-          <a id="open-graph" href="#" target="_blank" rel="noreferrer">Open Graph</a>
-          <a id="open-json" href="#" target="_blank" rel="noreferrer">Open Fixture JSON</a>
-        </div>
-      </div>
+  <main class="app">
+    <div class="topbar">
+      <div class="brand">Ariadex Live Graphs</div>
+      <select id="fixtureSelect"></select>
+      <input id="search" type="search" placeholder="search fixtures">
+      <button id="refresh">Refresh Catalog</button>
+      <button id="reload" class="primary">Reload Graph</button>
+      <div id="status" class="status"></div>
+    </div>
+    <section class="viewer">
       <iframe id="viewer-frame" title="Ariadex live graph viewer"></iframe>
-      <div id="empty" class="empty" hidden>No persisted fixture selected.</div>
     </section>
   </main>
   <script>
+    const fixtureSelect = document.getElementById("fixtureSelect");
     const searchEl = document.getElementById("search");
     const refreshEl = document.getElementById("refresh");
     const reloadEl = document.getElementById("reload");
     const statusEl = document.getElementById("status");
-    const fixtureListEl = document.getElementById("fixture-list");
     const viewerFrameEl = document.getElementById("viewer-frame");
-    const viewerTitleEl = document.getElementById("viewer-title");
-    const viewerSubtitleEl = document.getElementById("viewer-subtitle");
-    const openGraphEl = document.getElementById("open-graph");
-    const openJsonEl = document.getElementById("open-json");
-    const emptyEl = document.getElementById("empty");
-    const logPanelEl = document.getElementById("log-panel");
 
     let fixtures = [];
     let selectedFixturePath = "";
-    const logs = [];
 
     function setStatus(text) {
       statusEl.textContent = text || "";
-    }
-
-    function addLog(level, message, extra = {}) {
-      const entry = {
-        level: String(level || "system"),
-        message: String(message || ""),
-        extra,
-        timestamp: new Date().toLocaleTimeString()
-      };
-      logs.unshift(entry);
-      if (logs.length > 60) {
-        logs.length = 60;
-      }
-      renderLogs();
-    }
-
-    function renderLogs() {
-      logPanelEl.innerHTML = logs.map((entry) => {
-        const meta = [];
-        if (entry.extra?.author) {
-          meta.push("author=" + entry.extra.author);
-        }
-        if (entry.extra?.tweetId) {
-          meta.push("tweet=" + entry.extra.tweetId);
-        }
-        if (entry.extra?.url) {
-          meta.push("url=" + entry.extra.url);
-        }
-        return "<div class='log-entry log-entry-" + entry.level + "'>"
-          + "<div class='log-entry-time'>" + entry.timestamp + "</div>"
-          + "<div><strong>" + entry.message.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char])) + "</strong></div>"
-          + (meta.length > 0
-            ? "<div class='fixture-meta'>" + meta.map((item) => item.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]))).join(" · ") + "</div>"
-            : "")
-          + "</div>";
-      }).join("") || "<p class='fixture-meta'>No logs yet.</p>";
     }
 
     function truncate(text, limit = 150) {
@@ -442,39 +209,10 @@ function galleryHtml() {
     function selectedFixture() {
       return fixtures.find((entry) => entry.fixturePath === selectedFixturePath) || null;
     }
-
-    function updateViewer() {
-      const fixture = selectedFixture();
-      if (!fixture) {
-        viewerFrameEl.hidden = true;
-        emptyEl.hidden = false;
-        viewerTitleEl.textContent = "Select a persisted fixture";
-        viewerSubtitleEl.textContent = "";
-        openGraphEl.href = "#";
-        openJsonEl.href = "#";
-        return;
-      }
-      const graphUrl = graphUrlForFixturePath(fixture.fixturePath);
-      viewerFrameEl.hidden = false;
-      emptyEl.hidden = true;
-      viewerFrameEl.src = graphUrl;
-      viewerTitleEl.textContent = (fixture.canonicalRootId || "unknown-root") + " · explored " + (fixture.exploredTweetId || "unknown");
-      viewerSubtitleEl.innerHTML = "captured " + escapeInline(fixture.capturedAt || "unknown") + " · <code>" + escapeInline(fixture.fixturePath) + "</code>";
-      openGraphEl.href = graphUrl;
-      openJsonEl.href = "/fixture?fixturePath=" + encodeURIComponent(fixture.fixturePath);
-      addLog("system", "Loaded fixture into viewer", {
-        tweetId: fixture.exploredTweetId || "",
-        author: "",
-        url: fixture.fixturePath
-      });
-    }
-
-    function renderFixtureList() {
+    function renderFixtureOptions() {
       const query = searchEl.value.trim().toLowerCase();
       const filtered = fixtures.filter((fixture) => {
-        if (!query) {
-          return true;
-        }
+        if (!query) return true;
         const haystack = [
           fixture.fixturePath,
           fixture.canonicalRootId,
@@ -484,27 +222,23 @@ function galleryHtml() {
         ].join(" ").toLowerCase();
         return haystack.includes(query);
       });
+      fixtureSelect.innerHTML = filtered.map((fixture) => {
+        const label = (fixture.canonicalRootId || "unknown-root") + " · explored " + (fixture.exploredTweetId || "unknown") + " · " + (fixture.tweetCount || 0) + " tweets";
+        return '<option value="' + fixture.fixturePath + '">' + escapeInline(label) + '</option>';
+      }).join("");
+      if (filtered.length > 0) {
+        if (!filtered.some((fixture) => fixture.fixturePath === selectedFixturePath)) {
+          selectedFixturePath = filtered[0].fixturePath;
+        }
+        fixtureSelect.value = selectedFixturePath;
+      }
+    }
 
-      fixtureListEl.innerHTML = filtered.map((fixture) => \`
-        <article class="fixture-card \${fixture.fixturePath === selectedFixturePath ? "active" : ""}" data-fixture-path="\${fixture.fixturePath}">
-          <div class="fixture-title">\${escapeInline((fixture.canonicalRootId || "unknown-root") + " · explored " + (fixture.exploredTweetId || "unknown"))}</div>
-          <div class="fixture-meta">captured \${escapeInline(fixture.capturedAt || "unknown")} · \${escapeInline(String(fixture.tweetCount || 0))} tweets</div>
-          <div class="fixture-preview">\${escapeInline(truncate(fixture.exploredTextPreview || fixture.rootTextPreview || fixture.fixturePath))}</div>
-        </article>
-      \`).join("") || "<p>No fixtures matched your search.</p>";
-
-      fixtureListEl.querySelectorAll("[data-fixture-path]").forEach((element) => {
-        element.addEventListener("click", () => {
-          selectedFixturePath = element.getAttribute("data-fixture-path") || "";
-          renderFixtureList();
-          updateViewer();
-          const fixture = selectedFixture();
-          addLog("system", "Selected persisted fixture", {
-            tweetId: fixture?.exploredTweetId || "",
-            url: fixture?.fixturePath || ""
-          });
-        });
-      });
+    function updateViewer() {
+      const fixture = selectedFixture();
+      if (!fixture) return;
+      viewerFrameEl.src = graphUrlForFixturePath(fixture.fixturePath);
+      setStatus("captured " + (fixture.capturedAt || "unknown") + " · " + fixture.fixturePath);
     }
 
     async function loadCatalog() {
@@ -515,12 +249,8 @@ function galleryHtml() {
       if (!selectedFixturePath && fixtures.length > 0) {
         selectedFixturePath = fixtures[0].fixturePath;
       }
-      renderFixtureList();
+      renderFixtureOptions();
       updateViewer();
-      setStatus(fixtures.length > 0 ? "Ready." : "No persisted fixtures found.");
-      addLog("system", fixtures.length > 0 ? "Catalog loaded" : "No persisted fixtures found", {
-        url: "/api/catalog"
-      });
     }
 
     refreshEl.addEventListener("click", async () => {
@@ -528,19 +258,21 @@ function galleryHtml() {
       const response = await fetch("/api/catalog/sync", { method: "POST" });
       if (!response.ok) {
         setStatus("Failed to refresh fixture catalog.");
-        addLog("error", "Failed to refresh fixture catalog");
         return;
       }
       await loadCatalog();
-      addLog("system", "Fixture catalog refreshed");
     });
 
     reloadEl.addEventListener("click", () => {
       updateViewer();
-      addLog("system", "Reloaded graph viewer");
     });
 
-    searchEl.addEventListener("input", renderFixtureList);
+    fixtureSelect.addEventListener("change", () => {
+      selectedFixturePath = fixtureSelect.value;
+      updateViewer();
+    });
+
+    searchEl.addEventListener("input", renderFixtureOptions);
 
     window.addEventListener("message", (event) => {
       const data = event.data;
@@ -548,7 +280,6 @@ function galleryHtml() {
         return;
       }
       const payload = data.payload || {};
-      addLog(payload.level || "system", payload.message || "Graph event", payload);
       fetch("/api/log", {
         method: "POST",
         headers: {
@@ -560,7 +291,6 @@ function galleryHtml() {
 
     loadCatalog().catch((error) => {
       setStatus(error.message || String(error));
-      addLog("error", error.message || String(error));
     });
   </script>
 </body>

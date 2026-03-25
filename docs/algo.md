@@ -94,6 +94,7 @@ Ariadex combines several signals:
 - edge type: quotes are treated as slightly stronger than replies
 - reach: tweets with more likes, reposts, replies, and quotes start with more weight
 - author audience: tweets from larger accounts get some prior weight
+- discourse intent: authors explicitly tagged by the root get a modest prior boost if they appear in the graph
 - network affinity: followed authors can be boosted into `From Your Network`
 
 So a tweet can rank well because:
@@ -101,6 +102,7 @@ So a tweet can rank well because:
 - one very important quote points to it
 - it already has strong reach
 - the author is influential
+- the author was explicitly summoned by the root tweet
 - or some combination of the above
 
 ### Why Ariadex uses references too
@@ -441,6 +443,8 @@ base_unnorm(i) =
   author_base(i)
   * (1 + reachWeight * reach_signal(i))
   * (1 + followerWeight * follower_signal(i))
+  * (1 + rootMentionWeight * root_mention_signal(i))
+  * (1 + rootMentionDirectWeight * root_mention_direct_signal(i))
 ```
 
 Finally, priors are normalized so:
@@ -448,6 +452,20 @@ Finally, priors are normalized so:
 ```text
 Σ base(i) = 1
 ```
+
+Where:
+
+```text
+root_mention_signal(i) =
+  1  if author(i) is explicitly tagged by the root tweet
+  0  otherwise
+
+root_mention_direct_signal(i) =
+  1  if author(i) is root-tagged and tweet(i) directly replies to or quotes the root
+  0  otherwise
+```
+
+This prior is intentionally bounded. It is meant to capture discourse intent, not celebrity status. A root-tagged participant gets a modest relevance boost if they actually appear in the graph, while recursive structure, reach, and follower priors still dominate the final ordering.
 
 #### 7.5 Edge-adjusted recursive propagation
 

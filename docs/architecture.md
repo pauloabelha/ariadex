@@ -133,6 +133,7 @@ ThinkerRank scoring combines:
 - author prior (`followingSet` boost)
 - reach prior and transfer boost from engagement metrics (`likes`, `reposts`, `replies`, `quotes`)
 - follower-count prior from `author_profile.public_metrics.followers_count`
+- bounded root-mention prior for authors explicitly tagged by the root tweet
 
 Adjacency index:
 

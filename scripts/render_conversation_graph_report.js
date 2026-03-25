@@ -151,31 +151,8 @@ function buildGraphPayload(dataset, fixturePath) {
   const graph = buildConversationGraph(tweets);
   const ranking = rankConversationGraph(graph);
   const scoreById = ranking?.scoreById instanceof Map ? ranking.scoreById : new Map();
-  const incomingCounts = new Map();
-  const outgoingCounts = new Map();
-  const degreeCounts = new Map();
-  const edgeKindsByNode = new Map();
 
-  for (const edge of Array.isArray(graph?.edges) ? graph.edges : []) {
-    const source = String(edge?.source || "");
-    const target = String(edge?.target || "");
-    if (!source || !target) {
-      continue;
-    }
-    incomingCounts.set(target, (incomingCounts.get(target) || 0) + 1);
-    outgoingCounts.set(source, (outgoingCounts.get(source) || 0) + 1);
-    degreeCounts.set(source, (degreeCounts.get(source) || 0) + 1);
-    degreeCounts.set(target, (degreeCounts.get(target) || 0) + 1);
-    if (!edgeKindsByNode.has(source)) {
-      edgeKindsByNode.set(source, new Set());
-    }
-    if (!edgeKindsByNode.has(target)) {
-      edgeKindsByNode.set(target, new Set());
-    }
-    edgeKindsByNode.get(source).add(String(edge?.type || "unknown"));
-    edgeKindsByNode.get(target).add(String(edge?.type || "unknown"));
-  }
-
+  const authorAggregate = new Map();
   const nodes = tweets.map((tweet) => {
     const id = String(tweet.id);
     const author = String(tweet.author || "@unknown");
@@ -185,33 +162,34 @@ function buildGraphPayload(dataset, fixturePath) {
     const kind = tweet.repost_of
       ? "repost"
       : (tweet.quote_of ? "quote" : (tweet.reply_to ? "reply" : "rootish"));
-    const reach = computeReach(tweet);
-    return {
+    const node = {
       id,
       author,
       authorName: String(tweet?.author_profile?.name || author),
-      text: String(tweet.text || "").trim(),
-      url: String(tweet.url || "").trim(),
-      external_urls: Array.isArray(tweet.external_urls) ? tweet.external_urls.map((value) => String(value || "").trim()).filter(Boolean) : [],
+      text: String(tweet?.text || "").trim(),
+      url: String(tweet?.url || "").trim(),
+      external_urls: Array.isArray(tweet?.external_urls) ? tweet.external_urls.map((value) => String(value || "").trim()).filter(Boolean) : [],
       parentId,
-      quoteOf: tweet.quote_of ? String(tweet.quote_of) : null,
-      replyTo: tweet.reply_to ? String(tweet.reply_to) : null,
-      repostOf: tweet.repost_of ? String(tweet.repost_of) : null,
       kind,
       isRoot,
       isClicked,
       score: Number(scoreById.get(id) || 0),
-      reach,
+      reach: computeReach(tweet),
       followers: followerCount(tweet),
       likes: readMetric(tweet, "like_count", "likes"),
-      reposts: readMetric(tweet, "retweet_count", "reposts"),
       replies: readMetric(tweet, "reply_count", "replies"),
       quotes: readMetric(tweet, "quote_count", "quote_count"),
-      incoming: incomingCounts.get(id) || 0,
-      outgoing: outgoingCounts.get(id) || 0,
-      degree: degreeCounts.get(id) || 0,
-      edgeKinds: [...(edgeKindsByNode.get(id) || [])]
+      reposts: readMetric(tweet, "retweet_count", "reposts")
     };
+    if (kind !== "repost") {
+      if (!authorAggregate.has(author)) {
+        authorAggregate.set(author, { author, totalScore: 0, tweetCount: 0 });
+      }
+      const entry = authorAggregate.get(author);
+      entry.totalScore += node.score;
+      entry.tweetCount += 1;
+    }
+    return node;
   });
 
   const edges = (Array.isArray(graph?.edges) ? graph.edges : []).map((edge, index) => ({
@@ -222,72 +200,26 @@ function buildGraphPayload(dataset, fixturePath) {
   }));
 
   const clickedPath = buildPathToRoot(tweetById, dataset?.clickedTweetId);
-  const clickedPathSet = new Set(clickedPath);
-  const authorAggregate = new Map();
-  for (const node of nodes) {
-    if (node.kind === "repost") {
-      continue;
-    }
-    const author = String(node.author || "").trim();
-    if (!author) {
-      continue;
-    }
-    if (!authorAggregate.has(author)) {
-      authorAggregate.set(author, {
-        author,
-        totalScore: 0,
-        tweetCount: 0
-      });
-    }
-    const entry = authorAggregate.get(author);
-    entry.totalScore += Number(node.score || 0);
-    entry.tweetCount += 1;
-  }
-  const authorPalette = [
-    "#1473e6",
-    "#ff5a36",
-    "#16a34a",
-    "#8b5cf6",
-    "#ffcc00",
-    "#ef4444",
-    "#06b6d4",
-    "#f97316"
-  ];
+  const authorPalette = ["#1473e6", "#ff5a36", "#16a34a", "#8b5cf6", "#ffcc00", "#ef4444", "#06b6d4", "#f97316"];
   const topAuthors = [...authorAggregate.values()]
     .sort((a, b) => b.totalScore - a.totalScore || b.tweetCount - a.tweetCount || String(a.author).localeCompare(String(b.author)))
     .slice(0, authorPalette.length)
-    .map((entry, index) => ({
-      ...entry,
-      color: authorPalette[index]
-    }));
+    .map((entry, index) => ({ ...entry, color: authorPalette[index] }));
   const authorColorByAuthor = Object.fromEntries(topAuthors.map((entry) => [entry.author, entry.color]));
+
   const referenceMap = new Map();
-  const normalizeReferenceUrl = (rawUrl) => {
-    const trimmed = String(rawUrl || "").trim();
-    if (!trimmed) {
-      return "";
-    }
-    try {
-      const parsed = new URL(trimmed);
-      const host = parsed.hostname.toLowerCase();
-      if (host === "x.com" || host === "twitter.com" || host === "www.x.com" || host === "www.twitter.com" || host === "t.co") {
-        return "";
-      }
-      parsed.hash = "";
-      return parsed.toString();
-    } catch {
-      return "";
-    }
-  };
-  for (const tweet of tweets) {
-    const tweetId = String(tweet?.id || "").trim();
-    if (!tweetId) {
-      continue;
-    }
-    const urls = Array.isArray(tweet?.external_urls) ? tweet.external_urls : [];
-    for (const rawUrl of urls) {
-      const normalized = normalizeReferenceUrl(rawUrl);
-      if (!normalized) {
+  for (const node of nodes) {
+    for (const rawUrl of node.external_urls) {
+      let normalized = "";
+      try {
+        const parsed = new URL(rawUrl);
+        const host = parsed.hostname.toLowerCase();
+        if (["x.com", "twitter.com", "www.x.com", "www.twitter.com", "t.co"].includes(host)) {
+          continue;
+        }
+        parsed.hash = "";
+        normalized = parsed.toString();
+      } catch {
         continue;
       }
       if (!referenceMap.has(normalized)) {
@@ -295,27 +227,15 @@ function buildGraphPayload(dataset, fixturePath) {
         try {
           domain = new URL(normalized).hostname.replace(/^www\./, "");
         } catch {}
-        referenceMap.set(normalized, {
-          url: normalized,
-          domain,
-          count: 0,
-          tweetIds: []
-        });
+        referenceMap.set(normalized, { url: normalized, domain, count: 0, tweetIds: [] });
       }
       const entry = referenceMap.get(normalized);
       entry.count += 1;
-      if (!entry.tweetIds.includes(tweetId)) {
-        entry.tweetIds.push(tweetId);
+      if (!entry.tweetIds.includes(node.id)) {
+        entry.tweetIds.push(node.id);
       }
     }
   }
-  const topReferences = [...referenceMap.values()]
-    .sort((a, b) => b.count - a.count || b.tweetIds.length - a.tweetIds.length || String(a.url).localeCompare(String(b.url)))
-    .slice(0, 16);
-  const topByScore = [...nodes]
-    .filter((node) => node.kind !== "repost")
-    .sort((a, b) => b.score - a.score || b.reach - a.reach || String(a.id).localeCompare(String(b.id)))
-    .slice(0, 12);
 
   return {
     fixturePath,
@@ -327,1463 +247,1070 @@ function buildGraphPayload(dataset, fixturePath) {
       edgeCount: edges.length,
       repostCount: nodes.filter((node) => node.kind === "repost").length,
       quoteCount: nodes.filter((node) => node.kind === "quote").length,
-      replyCount: nodes.filter((node) => node.kind === "reply").length,
-      rootishCount: nodes.filter((node) => node.kind === "rootish").length
+      replyCount: nodes.filter((node) => node.kind === "reply").length
     },
     clickedPath,
-    clickedPathSet: [...clickedPathSet],
     topAuthors,
     authorColorByAuthor,
-    topReferences,
-    topByScore,
+    topReferences: [...referenceMap.values()].sort((a, b) => b.count - a.count || String(a.url).localeCompare(String(b.url))).slice(0, 16),
+    topByScore: [...nodes].filter((node) => node.kind !== "repost").sort((a, b) => b.score - a.score || b.reach - a.reach).slice(0, 12),
     nodes,
     edges
   };
 }
 
 function buildHtmlReport(payload) {
-  const summaryPills = [
-    `tweets ${payload.stats.nodeCount}`,
-    `edges ${payload.stats.edgeCount}`,
-    `replies ${payload.stats.replyCount}`,
-    `quotes ${payload.stats.quoteCount}`,
-    `reposts ${payload.stats.repostCount}`
-  ].map((label) => `<span class="pill">${escapeHtml(label)}</span>`).join("");
-
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ariadex Conversation Graph</title>
+  <title>Ariadex Flat Graph</title>
   <style>
     :root {
-      --bg: #f3f2ee;
-      --panel: rgba(255, 255, 252, 0.92);
-      --panel-strong: #ffffff;
-      --ink: #111111;
-      --muted: #68707c;
-      --line: #d8dde6;
-      --accent: #ff5a36;
-      --accent-soft: #ffe0d8;
-      --reply: #1473e6;
-      --quote: #ff5a36;
-      --repost: #b9bec7;
-      --root: #16a34a;
-      --clicked: #111111;
-      --path: #ffcc00;
-      --glow: rgba(255, 90, 54, 0.16);
-      --shadow: 0 18px 52px rgba(17, 17, 17, 0.08);
+      --bg: #f3ede3;
+      --paper: rgba(252, 248, 241, 0.96);
+      --paper-strong: #fffaf2;
+      --ink: #2f241a;
+      --muted: #7b6957;
+      --line: #d7c6b2;
+      --root: #6a7b4f;
+      --reply: #b85c38;
+      --quote: #c48a3a;
+      --repost: #b9ab99;
+      --path: #d6b04d;
+      --selected: #2f241a;
+      --shadow: 0 18px 44px rgba(88, 58, 29, 0.14);
     }
     * { box-sizing: border-box; }
-    body {
+    html, body {
       margin: 0;
-      color: var(--ink);
+      height: 100%;
+      overflow: hidden;
       background:
-        radial-gradient(circle at top right, rgba(255, 90, 54, 0.08), transparent 22%),
-        radial-gradient(circle at left 20%, rgba(20, 115, 230, 0.06), transparent 20%),
-        linear-gradient(180deg, #f8f8f5 0%, #eceff3 100%);
-      font-family: "SF Pro Display", "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+        radial-gradient(circle at 12% 14%, rgba(196, 138, 58, 0.12), transparent 20%),
+        radial-gradient(circle at 82% 22%, rgba(184, 92, 56, 0.1), transparent 18%),
+        linear-gradient(180deg, #f7f1e7 0%, #efe4d4 100%);
+      color: var(--ink);
+      font-family: "Avenir Next", "Futura", "Helvetica Neue", Arial, sans-serif;
     }
-    .shell {
-      display: grid;
-      grid-template-columns: 250px minmax(0, 1.6fr) 300px;
-      gap: 16px;
-      min-height: 100vh;
-      padding: 16px;
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      box-shadow: var(--shadow);
+    .app { height: 100%; display: grid; grid-template-rows: 56px minmax(0,1fr); }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      background: rgba(251, 245, 235, 0.92);
+      border-bottom: 1px solid var(--line);
       backdrop-filter: blur(8px);
     }
-    .sidebar, .inspector {
-      padding: 18px;
-      overflow: auto;
-    }
-    .main {
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      gap: 16px;
-      min-height: 0;
-    }
-    .hero {
-      padding: 22px;
-    }
-    .hero h1 {
-      margin: 0 0 10px;
-      font-size: 32px;
-      line-height: 1;
-      letter-spacing: -0.02em;
-    }
-    .hero p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 15px;
-      line-height: 1.45;
-    }
-    .pill-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 14px;
-    }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border-radius: 999px;
-      background: #f3ece1;
+    .title { font-size: 14px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+    .meta { color: var(--muted); font-size: 12px; }
+    .controls { display: flex; align-items: center; gap: 10px; }
+    .controls input, .controls button {
       border: 1px solid var(--line);
-      padding: 7px 10px;
-      color: var(--ink);
-      font-size: 13px;
-    }
-    .graph-card {
-      position: relative;
-      overflow: hidden;
-      min-height: calc(100vh - 170px);
-      background:
-        radial-gradient(circle at top, rgba(255,255,255,0.6), transparent 30%),
-        radial-gradient(circle at 50% 120%, rgba(20,115,230,0.08), transparent 34%),
-        linear-gradient(180deg, rgba(255,255,252,0.96), rgba(243,246,250,0.94));
-    }
-    .graph-toolbar {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(255, 252, 247, 0.92);
-    }
-    .control {
-      display: grid;
-      gap: 6px;
-    }
-    .control label {
-      font-size: 12px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    select, input[type="search"] {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 10px 12px;
-      background: var(--panel-strong);
+      border-radius: 10px;
+      padding: 9px 12px;
+      background: var(--paper-strong);
       color: var(--ink);
       font: inherit;
     }
-    .toggle-row {
+    .controls button { cursor: pointer; }
+    .controls button:hover { background: #f3e6d7; }
+    .score-control {
       display: flex;
-      gap: 12px;
       align-items: center;
-      flex-wrap: wrap;
-    }
-    .toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .canvas-shell {
-      position: relative;
-      height: 100%;
-      min-height: calc(100vh - 250px);
-      background:
-        linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0)),
-        radial-gradient(circle at center, rgba(255, 90, 54, 0.07), transparent 42%),
-        radial-gradient(circle at 50% 88%, rgba(17,17,17,0.08), transparent 38%);
-    }
-    canvas {
-      display: block;
-      width: 100%;
-      height: calc(100% - 0px);
-    }
-    .depth-wash {
-      position: absolute;
-      inset: 0;
-      background:
-        radial-gradient(circle at 50% 35%, rgba(255,255,255,0.26), transparent 26%),
-        radial-gradient(circle at 50% 86%, rgba(17,17,17,0.06), transparent 34%);
-      pointer-events: none;
-      mix-blend-mode: screen;
-    }
-    .hint {
-      position: absolute;
-      left: 16px;
-      bottom: 16px;
-      padding: 10px 12px;
-      background: rgba(255, 252, 247, 0.9);
-      background: rgba(255, 255, 252, 0.92);
+      gap: 10px;
+      min-width: 250px;
+      padding: 8px 12px;
       border: 1px solid var(--line);
-      border-radius: 14px;
-      color: var(--muted);
-      font-size: 12px;
-      pointer-events: none;
+      border-radius: 10px;
+      background: var(--paper-strong);
     }
-    .tooltip {
+    .score-control label {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .score-control input[type="range"] {
+      width: 100%;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      accent-color: #b85c38;
+    }
+    .score-value {
+      font-size: 12px;
+      color: var(--muted);
+      min-width: 48px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .viewport { position: relative; overflow: hidden; }
+    .stage { position: absolute; inset: 0; transform-origin: 0 0; }
+    .edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+    .nodes { position: absolute; inset: 0; }
+    .node {
       position: absolute;
-      z-index: 4;
-      min-width: 220px;
-      max-width: 320px;
+      width: 280px;
+      min-height: 120px;
       padding: 12px 14px;
       border-radius: 16px;
-      border: 1px solid var(--line);
-      background: rgba(255, 252, 247, 0.96);
-      background: rgba(255, 255, 252, 0.96);
-      box-shadow: 0 16px 36px rgba(71, 48, 18, 0.16);
-      backdrop-filter: blur(8px);
+      border: 3px solid var(--reply);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      user-select: none;
+      isolation: isolate;
+      transform-origin: top left;
+      transition:
+        width 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        min-height 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        box-shadow 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        background 220ms ease,
+        opacity 180ms ease;
+    }
+    .node.expanded {
+      width: 420px;
+      min-height: 220px;
+      z-index: 5;
+    }
+    .node.expanded.expanding {
+      width: 280px;
+      min-height: 120px;
+      transform: translateY(6px) scale(0.985);
+      opacity: 0.96;
+    }
+    .node.expanded.collapsing {
+      width: 280px;
+      min-height: 120px;
+      transform: translateY(4px) scale(0.985);
+      opacity: 0.92;
+    }
+    .node.reply { border-color: var(--reply); }
+    .node.quote { border-color: var(--quote); }
+    .node.repost { border-color: var(--repost); opacity: 0.75; }
+    .node.rootish { border-color: var(--root); }
+    .node.path { box-shadow: 0 0 0 3px rgba(214,176,77,0.34), var(--shadow); }
+    .node.selected { box-shadow: 0 0 0 4px rgba(47,36,26,0.16), 0 24px 56px rgba(88,58,29,0.18); transform: translateY(-2px); }
+    .node.author-match { background: #fff9f0; }
+    .node.reference-match {
+      outline: 3px solid rgba(184,92,56,0.42);
+      outline-offset: 5px;
+      box-shadow:
+        0 0 0 10px rgba(184,92,56,0.10),
+        0 24px 48px rgba(120, 86, 57, 0.22);
+      z-index: 16;
+    }
+    .node-stack {
+      position: absolute;
+      inset: 0;
       pointer-events: none;
+      z-index: 0;
+      transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
+    }
+    .node-stack-card {
+      position: absolute;
+      inset: 0;
+      border-radius: 16px;
+      border: 2px solid rgba(123, 105, 87, 0.18);
+      background: rgba(246, 237, 225, 0.88);
+      box-shadow: 0 10px 24px rgba(88, 58, 29, 0.08);
+      transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
+    }
+    .node-stack-card.layer-1 { transform: translate(8px, 8px) rotate(0.8deg); }
+    .node-stack-card.layer-2 { transform: translate(14px, 14px) rotate(-1.2deg); }
+    .node-stack-card.layer-3 { transform: translate(20px, 20px) rotate(0.9deg); }
+    .node-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .node-header-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .node-body { position: relative; z-index: 1; }
+    .node.expanded .node-stack-card.layer-1 { transform: translate(12px, 12px) rotate(1.2deg); }
+    .node.expanded .node-stack-card.layer-2 { transform: translate(22px, 18px) rotate(-1.8deg); }
+    .node.expanded .node-stack-card.layer-3 { transform: translate(30px, 26px) rotate(1.2deg); }
+    .node-fold {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 22px;
+      height: 22px;
+      border-radius: 0 10px 0 10px;
+      background: rgba(47, 36, 26, 0.08);
+      border: 1px solid rgba(47, 36, 26, 0.12);
+      cursor: pointer;
       opacity: 0;
-      transform: translateY(4px);
-      transition: opacity 120ms ease, transform 120ms ease;
+      transform: scale(0.88);
+      transition: opacity 180ms ease, transform 180ms ease, background 180ms ease;
     }
-    .tooltip.visible {
-      opacity: 1;
-      transform: translateY(0);
+    .node.expanded .node-fold { opacity: 1; transform: scale(1); }
+    .node-fold::after {
+      content: "";
+      position: absolute;
+      right: 4px;
+      top: 4px;
+      width: 8px;
+      height: 8px;
+      border-top: 2px solid rgba(47, 36, 26, 0.45);
+      border-right: 2px solid rgba(47, 36, 26, 0.45);
+      transform: rotate(0deg);
     }
-    .tooltip-title {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
+    .node-author {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      color: white;
+      font-size: 11px;
       font-weight: 700;
-      font-size: 14px;
+      max-width: 170px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .tooltip-subtle {
-      margin-top: 2px;
-      color: var(--muted);
+    .node-author-name {
+      display: block;
       font-size: 12px;
+      font-weight: 800;
+      line-height: 1.1;
+      max-width: 170px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .tooltip-metrics {
+    .node-author-handle {
+      display: block;
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1.1;
+      opacity: 0.9;
+      max-width: 170px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .attach-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      border: 1px solid rgba(123, 105, 87, 0.25);
+      background: rgba(255, 250, 242, 0.9);
+      color: #8c6a2c;
+      font-size: 12px;
+      font-weight: 700;
+      flex: 0 0 auto;
+      cursor: pointer;
+    }
+    .node-score {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 5px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(123, 105, 87, 0.24);
+      background: rgba(239, 228, 212, 0.92);
+      color: #5a4633;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      flex: 0 0 auto;
+    }
+    .node-kind { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .node-text { margin-top: 10px; font-size: 13px; line-height: 1.35; color: var(--ink); }
+    .node-text.expanded {
+      white-space: pre-wrap;
+      max-height: none;
+    }
+    .deck-list {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
       margin-top: 10px;
     }
-    .tooltip-metric {
-      padding: 8px 10px;
+    .deck-card {
+      border: 1px solid var(--line);
       border-radius: 12px;
-      background: rgba(243, 236, 225, 0.8);
-      border: 1px solid rgba(216, 207, 194, 0.9);
+      background: rgba(255, 250, 242, 0.9);
+      padding: 9px 10px;
     }
-    .tooltip-metric-label {
-      display: block;
+    .deck-card-title {
+      font-size: 11px;
       color: var(--muted);
-      font-size: 10px;
+      margin-bottom: 4px;
       text-transform: uppercase;
       letter-spacing: 0.06em;
     }
-    .tooltip-metric-value {
-      display: block;
-      margin-top: 2px;
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .section-title {
-      margin: 0 0 10px;
-      font-size: 13px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-    }
-    .meta-grid {
-      display: grid;
-      gap: 10px;
-      margin-bottom: 18px;
-    }
-    .meta-card {
-      padding: 12px 14px;
+    .node-body .node-text { transition: opacity 180ms ease; }
+    .node-footer { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+    .metric { padding: 4px 7px; border-radius: 999px; background: #efe4d4; }
+    .overlay {
+      position: absolute;
+      right: 16px;
+      top: 16px;
+      width: 320px;
+      max-height: calc(100% - 32px);
+      overflow: auto;
+      background: rgba(251, 245, 235, 0.94);
+      border: 1px solid var(--line);
       border-radius: 18px;
-      border: 1px solid var(--line);
-      background: rgba(255, 253, 248, 0.78);
-    }
-    .meta-card strong {
-      display: block;
-      font-size: 18px;
-      margin-top: 2px;
-    }
-    .top-list, .path-list {
-      display: grid;
-      gap: 10px;
-    }
-    .author-legend {
-      display: grid;
-      gap: 10px;
-      margin-top: 18px;
-    }
-    .reference-list {
-      display: grid;
-      gap: 10px;
-      margin-top: 18px;
-    }
-    .reference-chip {
-      padding: 10px 12px;
-      border-radius: 16px;
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,0.82);
-      cursor: pointer;
-    }
-    .reference-chip-url {
-      font-size: 12px;
-      color: var(--muted);
-      word-break: break-word;
-    }
-    .author-chip {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 10px 12px;
-      border-radius: 16px;
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,0.82);
-      cursor: pointer;
-    }
-    .author-chip-swatch {
-      width: 14px;
-      height: 14px;
-      border-radius: 999px;
-      flex: 0 0 auto;
-      border: 2px solid rgba(17,17,17,0.08);
-    }
-    .author-chip-meta {
-      color: var(--muted);
-      font-size: 12px;
-    }
-    .tweet-chip {
-      padding: 12px 14px;
-      border: 1px solid var(--line);
-      background: rgba(255, 253, 248, 0.82);
-      border-radius: 18px;
-      cursor: pointer;
-    }
-    .tweet-chip:hover {
-      border-color: #bda892;
-      box-shadow: 0 8px 24px rgba(71, 48, 18, 0.08);
-    }
-    .tweet-chip-title {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      font-size: 14px;
-      font-weight: 600;
-    }
-    .tweet-chip p {
-      margin: 8px 0 0;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.35;
-    }
-    .inspector h2 {
-      margin: 0 0 8px;
-      font-size: 24px;
-      line-height: 1.08;
-    }
-    .inspector .subtle {
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.45;
-    }
-    .metric-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-      margin: 16px 0 18px;
-    }
-    .metric {
-      padding: 12px;
-      border-radius: 18px;
-      border: 1px solid var(--line);
-      background: rgba(255, 253, 248, 0.78);
-    }
-    .metric-label {
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .metric-value {
-      display: block;
-      margin-top: 6px;
-      font-size: 18px;
-      font-weight: 700;
-    }
-    .tweet-text {
-      margin: 16px 0;
+      box-shadow: var(--shadow);
       padding: 14px;
-      border-radius: 18px;
+      backdrop-filter: blur(8px);
+    }
+    .reference-rail {
+      position: absolute;
+      left: 16px;
+      top: 16px;
+      width: 250px;
+      max-height: calc(100% - 88px);
+      overflow: auto;
+      background: rgba(251, 245, 235, 0.94);
       border: 1px solid var(--line);
-      background: rgba(255, 253, 248, 0.82);
-      line-height: 1.45;
-      white-space: pre-wrap;
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: 14px;
+      backdrop-filter: blur(8px);
     }
-    .legend {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-top: 12px;
+    .reference-rail h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+    .overlay h2, .overlay h3 { margin: 0 0 10px; }
+    .section { margin-top: 16px; }
+    .chip-list { display: grid; gap: 8px; }
+    .chip {
+      border: 1px solid var(--line);
+      background: rgba(255,250,242,0.86);
+      border-radius: 12px;
+      padding: 10px 12px;
+      cursor: pointer;
     }
-    .legend-item {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
+    .chip:hover { background: #f2e6d8; }
+    .chip strong { display: block; margin-bottom: 4px; }
+    .chip small { color: var(--muted); display: block; }
+    .reference-chip.active {
+      background: #f2e0c8;
+      box-shadow: inset 0 0 0 2px rgba(196, 138, 58, 0.35);
+    }
+    .help {
+      position: absolute;
+      left: 282px;
+      bottom: 16px;
+      padding: 10px 12px;
+      background: rgba(251,245,235,0.92);
+      border: 1px solid var(--line);
+      border-radius: 12px;
       color: var(--muted);
       font-size: 12px;
-    }
-    .legend-swatch {
-      width: 12px;
-      height: 12px;
-      border-radius: 999px;
-    }
-    .footer-link {
-      display: inline-flex;
-      align-items: center;
-      margin-top: 10px;
-      color: var(--accent);
-      text-decoration: none;
-      font-weight: 600;
-    }
-    .empty-note {
-      color: var(--muted);
-      font-style: italic;
-      margin: 0;
-    }
-    @media (max-width: 1280px) {
-      .shell {
-        grid-template-columns: 280px minmax(0, 1fr);
-      }
-      .inspector {
-        grid-column: 1 / -1;
-      }
-    }
-    @media (max-width: 920px) {
-      .shell {
-        grid-template-columns: 1fr;
-      }
-      .graph-toolbar {
-        grid-template-columns: 1fr;
-      }
-      .graph-card {
-        min-height: 560px;
-      }
     }
   </style>
 </head>
 <body>
-  <main class="shell">
-    <aside class="panel sidebar">
-      <section>
-        <h2 class="section-title">Signal Lens</h2>
-        <div class="meta-grid">
-          <div class="meta-card">
-            Captured
-            <strong>${escapeHtml(payload.capturedAt || "unknown")}</strong>
-          </div>
-          <div class="meta-card">
-            Root
-            <strong>${escapeHtml(payload.canonicalRootId || "unknown")}</strong>
-          </div>
-          <div class="meta-card">
-            Explored
-            <strong>${escapeHtml(payload.clickedTweetId || "unknown")}</strong>
-          </div>
+  <main class="app">
+    <div class="topbar">
+      <div>
+        <div class="title">Ariadex Flat Graph</div>
+        <div class="meta">root ${escapeHtml(payload.canonicalRootId || "unknown")} · explored ${escapeHtml(payload.clickedTweetId || "unknown")} · tweets ${payload.stats.nodeCount}</div>
+      </div>
+      <div class="controls">
+        <input id="search" type="search" placeholder="search tweet, author, id">
+        <div class="score-control">
+          <label for="scoreThreshold">Score</label>
+          <input id="scoreThreshold" type="range" min="0" max="100" value="0">
+          <span id="scoreValue" class="score-value">0.000</span>
         </div>
-      </section>
-      <section>
-        <h2 class="section-title">Top By ThinkerRank</h2>
-        <div class="top-list" id="top-list"></div>
-      </section>
-      <section>
-        <h2 class="section-title">Top Authors</h2>
-        <div class="author-legend" id="author-legend"></div>
-      </section>
-      <section>
-        <h2 class="section-title">References</h2>
-        <div class="reference-list" id="reference-list"></div>
-      </section>
-      <section style="margin-top:18px;">
-        <h2 class="section-title">Clicked Path To Root</h2>
-        <div class="path-list" id="path-list"></div>
-      </section>
-    </aside>
-    <section class="main">
-      <article class="panel hero">
-        <h1>Conversation Graph</h1>
-        <p>This view is tuned for separating structure from amplification noise. Reposts are hidden by default, node size starts on ThinkerRank, and the inspector lets us test whether a branch is genuinely central or merely loud.</p>
-        <div class="pill-row">${summaryPills}</div>
-        <div class="legend">
-          <span class="legend-item"><span class="legend-swatch" style="background:var(--root)"></span>Root / path anchor</span>
-          <span class="legend-item"><span class="legend-swatch" style="background:var(--clicked)"></span>Explored tweet</span>
-          <span class="legend-item"><span class="legend-swatch" style="background:var(--path)"></span>Path context</span>
-          <span class="legend-item"><span class="legend-swatch" style="background:var(--reply)"></span>Reply</span>
-          <span class="legend-item"><span class="legend-swatch" style="background:var(--quote)"></span>Quote</span>
-          <span class="legend-item"><span class="legend-swatch" style="background:var(--repost)"></span>Repost</span>
+        <button id="resetView">Reset View</button>
+        <button id="toggleReposts">Hide Reposts</button>
+      </div>
+    </div>
+    <div class="viewport" id="viewport">
+      <div class="stage" id="stage">
+        <svg class="edges" id="edges"></svg>
+        <div class="nodes" id="nodes"></div>
+      </div>
+      <aside class="reference-rail">
+        <h3>Canonical References</h3>
+        <div class="chip-list" id="referenceRail"></div>
+      </aside>
+      <aside class="overlay">
+        <h2 id="inspectorTitle">Tweet</h2>
+        <div id="inspectorMeta" class="meta"></div>
+        <div id="inspectorText" class="section"></div>
+        <div class="section">
+          <h3>Top Authors</h3>
+          <div class="chip-list" id="authors"></div>
         </div>
-      </article>
-      <article class="panel graph-card">
-        <div class="graph-toolbar">
-          <div class="control">
-            <label for="size-metric">Node Size</label>
-            <select id="size-metric">
-              <option value="score">ThinkerRank</option>
-              <option value="reach">Weighted reach</option>
-              <option value="followers">Followers</option>
-              <option value="degree">Degree</option>
-              <option value="incoming">Incoming edges</option>
-            </select>
-          </div>
-          <div class="control">
-            <label for="search-box">Find Tweet / Author</label>
-            <input id="search-box" type="search" placeholder="search text, @handle, or tweet id">
-          </div>
-          <div class="control">
-            <label>Noise Controls</label>
-            <div class="toggle-row">
-              <label class="toggle"><input id="toggle-reposts" type="checkbox"> show reposts</label>
-              <label class="toggle"><input id="toggle-labels" type="checkbox" checked> labels</label>
-            </div>
-          </div>
-          <div class="control">
-            <label>Selection</label>
-            <div class="toggle-row">
-              <label class="toggle"><input id="toggle-neighborhood" type="checkbox"> isolate local neighborhood</label>
-              <label class="toggle"><input id="toggle-auto-rotate" type="checkbox"> auto orbit</label>
-              <button id="recenter-button" type="button" style="border:1px solid var(--line);border-radius:14px;padding:10px 12px;background:var(--panel-strong);font:inherit;cursor:pointer;">recenter on explored</button>
-            </div>
-          </div>
+        <div class="section">
+          <h3>References</h3>
+          <div class="chip-list" id="references"></div>
         </div>
-        <div class="canvas-shell">
-          <canvas id="graph-canvas"></canvas>
-          <div class="depth-wash"></div>
-          <div id="graph-tooltip" class="tooltip"></div>
-          <div class="hint">Drag nodes. Click a node to inspect its local trunk and relation cues.</div>
-        </div>
-      </article>
-    </section>
-    <aside class="panel inspector">
-      <div id="inspector-root"></div>
-    </aside>
+      </aside>
+      <div class="help">Drag to pan. Mouse wheel to zoom. Click a tweet to focus it. Click an author or reference chip to highlight related tweets.</div>
+    </div>
   </main>
   <script>
-    const GRAPH_DATA = ${safeJson(payload)};
+    const GRAPH = ${safeJson(payload)};
+    const viewport = document.getElementById("viewport");
+    const stage = document.getElementById("stage");
+    const edgesSvg = document.getElementById("edges");
+    const nodesRoot = document.getElementById("nodes");
+    const authorsRoot = document.getElementById("authors");
+    const referencesRoot = document.getElementById("references");
+    const referenceRailRoot = document.getElementById("referenceRail");
+    const inspectorTitle = document.getElementById("inspectorTitle");
+    const inspectorMeta = document.getElementById("inspectorMeta");
+    const inspectorText = document.getElementById("inspectorText");
+    const searchInput = document.getElementById("search");
+    const scoreThresholdInput = document.getElementById("scoreThreshold");
+    const scoreValue = document.getElementById("scoreValue");
+    const resetViewButton = document.getElementById("resetView");
+    const toggleRepostsButton = document.getElementById("toggleReposts");
 
-    const sizeMetricEl = document.getElementById("size-metric");
-    const searchBoxEl = document.getElementById("search-box");
-    const toggleRepostsEl = document.getElementById("toggle-reposts");
-    const toggleLabelsEl = document.getElementById("toggle-labels");
-    const toggleNeighborhoodEl = document.getElementById("toggle-neighborhood");
-    const toggleAutoRotateEl = document.getElementById("toggle-auto-rotate");
-    const recenterButtonEl = document.getElementById("recenter-button");
-    const canvas = document.getElementById("graph-canvas");
-    const tooltipEl = document.getElementById("graph-tooltip");
-    const inspectorRoot = document.getElementById("inspector-root");
-    const topList = document.getElementById("top-list");
-    const authorLegend = document.getElementById("author-legend");
-    const referenceList = document.getElementById("reference-list");
-    const pathList = document.getElementById("path-list");
-    const context = canvas.getContext("2d");
-    const clickedPathSet = new Set(Array.isArray(GRAPH_DATA.clickedPathSet) ? GRAPH_DATA.clickedPathSet : []);
-    const authorColorByAuthor = GRAPH_DATA.authorColorByAuthor && typeof GRAPH_DATA.authorColorByAuthor === "object"
-      ? GRAPH_DATA.authorColorByAuthor
-      : {};
-
-    const nodesById = new Map(GRAPH_DATA.nodes.map((node) => [node.id, { ...node }]));
-    const edges = GRAPH_DATA.edges.slice();
-    const adjacency = new Map();
-    for (const edge of edges) {
-      if (!adjacency.has(edge.source)) adjacency.set(edge.source, new Set());
-      if (!adjacency.has(edge.target)) adjacency.set(edge.target, new Set());
-      adjacency.get(edge.source).add(edge.target);
-      adjacency.get(edge.target).add(edge.source);
+    const authorColorByAuthor = GRAPH.authorColorByAuthor || {};
+    const clickedPathSet = new Set(Array.isArray(GRAPH.clickedPath) ? GRAPH.clickedPath : []);
+    const nodeById = new Map(GRAPH.nodes.map((node) => [node.id, node]));
+    const maxScore = GRAPH.nodes.reduce((max, node) => Math.max(max, Number(node.score || 0)), 0);
+    const childrenByParent = new Map();
+    for (const node of GRAPH.nodes) {
+      const parentId = String(node.parentId || "").trim();
+      if (!parentId) continue;
+      if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+      childrenByParent.get(parentId).push(node);
+    }
+    for (const list of childrenByParent.values()) {
+      list.sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id)));
     }
 
     const state = {
-      selectedId: GRAPH_DATA.clickedTweetId || GRAPH_DATA.canonicalRootId || GRAPH_DATA.nodes[0]?.id || null,
+      selectedId: GRAPH.clickedTweetId || GRAPH.canonicalRootId || GRAPH.nodes[0]?.id || "",
+      expandedCardId: "",
+      animateExpandId: "",
       focusedAuthor: "",
-      focusedReferenceUrl: "",
-      hoverId: null,
-      hoverX: 0,
-      hoverY: 0,
-      sizeMetric: "score",
-      showReposts: false,
-      showLabels: true,
-      neighborhoodOnly: false,
-      autoRotate: false,
+      focusedReference: "",
+      hideReposts: true,
       search: "",
-      width: 0,
-      height: 0,
-      scale: 1,
-      animationHandle: null,
-      yaw: -0.32,
-      targetYaw: -0.32,
-      pitch: 0.16,
-      targetPitch: 0.16,
-      perspective: 680,
-      lastTimestamp: 0,
-      pointerDown: false,
-      dragMode: null,
-      dragOriginX: 0,
-      dragOriginY: 0,
-      layoutFrozen: false
+      scoreThreshold: Math.min(0.01, maxScore),
+      scale: 0.85,
+      tx: 80,
+      ty: 60,
+      dragging: false,
+      dragX: 0,
+      dragY: 0
     };
-    state.focusedAuthor = nodesById.get(state.selectedId)?.author || "";
+    state.focusedAuthor = nodeById.get(state.selectedId)?.author || "";
+    state.expandedCardId = state.selectedId;
 
-    const simulation = {
-      nodes: GRAPH_DATA.nodes.map((node, index) => ({
-        id: node.id,
-        x: 160 + ((index % 14) * 52),
-        y: 120 + (Math.floor(index / 14) * 42),
-        z: ((index % 9) - 4) * 24,
-        vx: 0,
-        vy: 0,
-        vz: 0,
-        fx: null,
-        fy: null,
-        fz: null
-      })),
-      byId: new Map(),
-      draggingId: null
-    };
-    for (const node of simulation.nodes) {
-      simulation.byId.set(node.id, node);
+    function updateScoreUi() {
+      scoreThresholdInput.value = maxScore > 0 ? String(Math.round((state.scoreThreshold / maxScore) * 100)) : "0";
+      scoreValue.textContent = state.scoreThreshold.toFixed(3);
     }
 
-    function emitLog(type, message, extra = {}) {
+    function emitLog(level, message, extra = {}) {
       try {
         if (window.parent && window.parent !== window) {
           window.parent.postMessage({
             source: "ariadex-graph-report",
             type: "ariadex-log",
-            payload: {
-              level: String(type || "info"),
-              message: String(message || ""),
-              ...extra
-            }
+            payload: { level, message, ...extra }
           }, "*");
         }
       } catch {}
     }
 
-    function formatNumber(value) {
-      const number = Number(value || 0);
-      if (!Number.isFinite(number)) {
-        return "0";
-      }
-      if (Math.abs(number) >= 1000) {
-        return number.toLocaleString("en-US");
-      }
-      if (Math.abs(number) >= 10) {
-        return number.toFixed(1);
-      }
-      if (Math.abs(number) >= 1) {
-        return number.toFixed(2);
-      }
-      return number.toFixed(4);
-    }
-
-    function truncate(text, limit = 140) {
-      const value = String(text || "").trim();
-      if (value.length <= limit) {
-        return value;
-      }
-      return value.slice(0, Math.max(0, limit - 1)).trimEnd() + "…";
-    }
-
-    function normalizedMetric(node, metric) {
-      const visibleNodes = getVisibleNodes();
-      let max = 0;
-      for (const entry of visibleNodes) {
-        const value = Number(entry[metric] || 0);
-        if (value > max) {
-          max = value;
-        }
-      }
-      const own = Number(node?.[metric] || 0);
-      if (max <= 0) {
-        return 0;
-      }
-      return own / max;
-    }
-
-    function radiusForNode(node) {
-      const base = normalizedMetric(node, state.sizeMetric);
-      const emphasis = node.id === state.selectedId ? 1.5 : 1;
-      const rootBonus = node.isRoot || node.isClicked ? 2 : 0;
-      return (5 + (18 * Math.sqrt(Math.max(0, base)))) * emphasis + rootBonus;
-    }
-
-    function strokeColorForNode(node) {
-      if (node.id === state.selectedId || node.isClicked) {
-        return getComputedStyle(document.documentElement).getPropertyValue("--clicked").trim();
-      }
-      if (node.isRoot) {
-        return getComputedStyle(document.documentElement).getPropertyValue("--root").trim();
-      }
-      if (clickedPathSet.has(node.id)) {
-        return getComputedStyle(document.documentElement).getPropertyValue("--path").trim();
-      }
-      if (node.kind === "quote") {
-        return getComputedStyle(document.documentElement).getPropertyValue("--quote").trim();
-      }
-      if (node.kind === "repost") {
-        return getComputedStyle(document.documentElement).getPropertyValue("--repost").trim();
-      }
-      return getComputedStyle(document.documentElement).getPropertyValue("--reply").trim();
-    }
-
-    function colorForNode(node) {
-      return strokeColorForNode(node);
-    }
-
-    function authorTagColor(node) {
-      return authorColorByAuthor[String(node?.author || "").trim()] || "#9aa3af";
-    }
-
-    function nodeMatchesFocusedReference(node) {
-      const focused = String(state.focusedReferenceUrl || "").trim();
-      if (!focused) {
-        return false;
-      }
-      const urls = Array.isArray(node?.external_urls) ? node.external_urls : [];
-      return urls.includes(focused);
-    }
-
-    function projectPoint(position) {
-      const cosYaw = Math.cos(state.yaw);
-      const sinYaw = Math.sin(state.yaw);
-      const cosPitch = Math.cos(state.pitch);
-      const sinPitch = Math.sin(state.pitch);
-
-      const centeredX = position.x - (state.width * 0.52);
-      const centeredY = position.y - (state.height * 0.5);
-      const centeredZ = position.z;
-
-      const yawX = (centeredX * cosYaw) - (centeredZ * sinYaw);
-      const yawZ = (centeredX * sinYaw) + (centeredZ * cosYaw);
-      const pitchY = (centeredY * cosPitch) - (yawZ * sinPitch);
-      const pitchZ = (centeredY * sinPitch) + (yawZ * cosPitch);
-
-      const depth = state.perspective / Math.max(180, state.perspective + pitchZ);
-      return {
-        x: (state.width * 0.52) + (yawX * depth),
-        y: (state.height * 0.5) + (pitchY * depth),
-        z: pitchZ,
-        depth
-      };
-    }
-
-    function getVisibleNodeIds() {
-      const ids = new Set();
-      const search = state.search.trim().toLowerCase();
-      const selectedNeighbors = adjacency.get(state.selectedId) || new Set();
-      for (const node of GRAPH_DATA.nodes) {
-        if (!state.showReposts && node.kind === "repost") {
-          continue;
-        }
-        if (state.neighborhoodOnly) {
-          const keep = node.id === state.selectedId
-            || node.parentId === state.selectedId
-            || selectedNeighbors.has(node.id)
-            || node.id === node.parentId;
-          if (!keep) {
-            continue;
-          }
-        }
-        if (search) {
-          const haystack = [node.id, node.author, node.authorName, node.text].join(" ").toLowerCase();
-          if (!haystack.includes(search)) {
-            continue;
-          }
-        }
-        ids.add(node.id);
-      }
-      if (state.selectedId && nodesById.has(state.selectedId)) {
-        ids.add(state.selectedId);
-      }
-      return ids;
-    }
-
-    function getVisibleNodes() {
-      const visibleIds = getVisibleNodeIds();
-      return GRAPH_DATA.nodes.filter((node) => visibleIds.has(node.id));
-    }
-
-    function getVisibleEdges() {
-      const visibleIds = getVisibleNodeIds();
-      return edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
-    }
-
-    function resizeCanvas() {
-      const rect = canvas.getBoundingClientRect();
-      const pixelRatio = window.devicePixelRatio || 1;
-      state.width = Math.max(320, rect.width);
-      state.height = Math.max(480, rect.height);
-      canvas.width = Math.floor(state.width * pixelRatio);
-      canvas.height = Math.floor(state.height * pixelRatio);
-      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-    }
-
-    function recenterSimulation(anchorId) {
-      const anchor = simulation.byId.get(anchorId);
-      if (!anchor) {
-        return;
-      }
-      const centerX = state.width * 0.52;
-      const centerY = state.height * 0.48;
-      const dx = centerX - anchor.x;
-      const dy = centerY - anchor.y;
-      for (const node of simulation.nodes) {
-        node.x += dx;
-        node.y += dy;
-      }
-      anchor.z = 120;
-    }
-
-    function stepSimulation() {
-      const visibleIds = getVisibleNodeIds();
-      const visibleEdges = getVisibleEdges();
-      const centerX = state.width * 0.52;
-      const centerY = state.height * 0.5;
-
-      for (const node of simulation.nodes) {
-        if (!visibleIds.has(node.id)) {
-          continue;
-        }
-        const meta = nodesById.get(node.id);
-        const targetX = centerX + ((meta.kind === "quote" ? 120 : (meta.kind === "reply" ? -120 : 0)) * (meta.isRoot ? 0.2 : 1));
-        const targetY = centerY + ((meta.isRoot ? -140 : 0) + (meta.isClicked ? 0 : 0));
-        const targetZ = meta.isClicked
-          ? 120
-          : (meta.isRoot
-            ? 48
-            : (meta.kind === "quote" ? 22 : (meta.kind === "repost" ? -100 : -14)));
-        node.vx += (targetX - node.x) * 0.0008;
-        node.vy += (targetY - node.y) * 0.0008;
-        node.vz += (targetZ - node.z) * 0.0012;
-      }
-
-      const visibleNodeList = simulation.nodes.filter((node) => visibleIds.has(node.id));
-      for (let i = 0; i < visibleNodeList.length; i += 1) {
-        const a = visibleNodeList[i];
-        for (let j = i + 1; j < visibleNodeList.length; j += 1) {
-          const b = visibleNodeList[j];
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const distanceSq = (dx * dx) + (dy * dy) + 0.01;
-          const distance = Math.sqrt(distanceSq);
-          const minDistance = radiusForNode(nodesById.get(a.id)) + radiusForNode(nodesById.get(b.id)) + 18;
-          if (distance < minDistance) {
-            const push = (minDistance - distance) * 0.008;
-            const ux = dx / distance;
-            const uy = dy / distance;
-            a.vx -= ux * push;
-            a.vy -= uy * push;
-            a.vz -= push * 0.45;
-            b.vx += ux * push;
-            b.vy += uy * push;
-            b.vz += push * 0.45;
-          }
-        }
-      }
-
-      for (const edge of visibleEdges) {
-        const source = simulation.byId.get(edge.source);
-        const target = simulation.byId.get(edge.target);
-        if (!source || !target) {
-          continue;
-        }
-        const dx = target.x - source.x;
-        const dy = target.y - source.y;
-        const distance = Math.max(1, Math.sqrt((dx * dx) + (dy * dy)));
-        const desired = edge.type === "quote" ? 120 : (edge.type === "repost" ? 78 : 96);
-        const pull = (distance - desired) * 0.0018;
-        const ux = dx / distance;
-        const uy = dy / distance;
-        source.vx += ux * pull;
-        source.vy += uy * pull;
-        source.vz += pull * (edge.type === "quote" ? 0.5 : 0.24);
-        target.vx -= ux * pull;
-        target.vy -= uy * pull;
-        target.vz -= pull * (edge.type === "quote" ? 0.5 : 0.24);
-      }
-
-      for (const node of simulation.nodes) {
-        if (!visibleIds.has(node.id)) {
-          continue;
-        }
-        if (node.id === state.selectedId) {
-          node.vx += (centerX - node.x) * 0.002;
-          node.vy += (centerY - node.y) * 0.002;
-          node.vz += (120 - node.z) * 0.003;
-        }
-        if (node.fx != null && node.fy != null) {
-          node.x = node.fx;
-          node.y = node.fy;
-          if (node.fz != null) {
-            node.z = node.fz;
-          }
-          node.vx = 0;
-          node.vy = 0;
-          node.vz = 0;
-          continue;
-        }
-        node.vx *= 0.9;
-        node.vy *= 0.9;
-        node.vz *= 0.88;
-        node.x += node.vx;
-        node.y += node.vy;
-        node.z += node.vz;
-      }
-    }
-
-    function settleLayout(iterations = 60) {
-      state.layoutFrozen = false;
-      let remaining = Math.max(0, Number(iterations) || 0);
-
-      function runChunk() {
-        const chunkSize = Math.min(10, remaining);
-        for (let index = 0; index < chunkSize; index += 1) {
-          stepSimulation();
-        }
-        remaining -= chunkSize;
-        draw();
-        if (remaining > 0) {
-          window.requestAnimationFrame(runChunk);
-          return;
-        }
-        state.layoutFrozen = true;
-      }
-
-      if (remaining <= 0) {
-        state.layoutFrozen = true;
-        draw();
-        return;
-      }
-
-      window.requestAnimationFrame(runChunk);
-    }
-
-    function isHighlightedEdge(edge) {
-      return edge.source === state.selectedId || edge.target === state.selectedId;
-    }
-
-    function draw() {
-      context.clearRect(0, 0, state.width, state.height);
-      context.fillStyle = "rgba(255, 255, 255, 0.02)";
-      context.fillRect(0, 0, state.width, state.height);
-
-      const visibleNodes = getVisibleNodes();
-      const visibleEdges = getVisibleEdges();
-      const projectedById = new Map();
-      for (const node of visibleNodes) {
-        const position = simulation.byId.get(node.id);
-        if (!position) {
-          continue;
-        }
-        projectedById.set(node.id, projectPoint(position));
-      }
-
-      for (const edge of visibleEdges) {
-        const sourcePos = projectedById.get(edge.source);
-        const targetPos = projectedById.get(edge.target);
-        if (!sourcePos || !targetPos) {
-          continue;
-        }
-        const midX = (sourcePos.x + targetPos.x) / 2;
-        const midY = (sourcePos.y + targetPos.y) / 2;
-        const curveLift = Math.max(-30, Math.min(30, (sourcePos.z + targetPos.z) * 0.04));
-        context.beginPath();
-        context.moveTo(sourcePos.x, sourcePos.y);
-        context.quadraticCurveTo(midX, midY - curveLift, targetPos.x, targetPos.y);
-        context.lineWidth = (isHighlightedEdge(edge) ? 2.4 : (edge.type === "quote" ? 1.8 : 1.1)) * ((sourcePos.depth + targetPos.depth) / 2);
-        context.strokeStyle = edge.type === "quote"
-          ? (isHighlightedEdge(edge) ? "rgba(178,75,52,0.82)" : "rgba(178,75,52,0.34)")
-          : (edge.type === "repost"
-            ? "rgba(154,154,146,0.2)"
-            : (isHighlightedEdge(edge) ? "rgba(47,109,178,0.76)" : "rgba(47,109,178,0.24)"));
-        context.stroke();
-      }
-
-      const sortedNodes = visibleNodes
-        .map((node) => ({ node, projection: projectedById.get(node.id) }))
-        .filter((entry) => entry.projection)
-        .sort((a, b) => a.projection.z - b.projection.z);
-
-      for (const entry of sortedNodes) {
-        const node = entry.node;
-        const position = entry.projection;
-        if (!position) {
-          continue;
-        }
-        const radius = radiusForNode(node) * position.depth;
-        const glowRadius = radius + (node.id === state.selectedId ? 12 : 7);
-        const glow = context.createRadialGradient(position.x, position.y, 0, position.x, position.y, glowRadius);
-        glow.addColorStop(0, node.id === state.selectedId ? "rgba(188,91,60,0.18)" : "rgba(255,255,255,0.14)");
-        glow.addColorStop(1, "rgba(255,255,255,0)");
-        context.beginPath();
-        context.arc(position.x, position.y, glowRadius, 0, Math.PI * 2);
-        context.fillStyle = glow;
-        context.fill();
-
-        context.beginPath();
-        context.ellipse(position.x, position.y + radius + 10, radius * 1.12, Math.max(3, radius * 0.32), 0, 0, Math.PI * 2);
-        context.fillStyle = "rgba(32,24,17,0.08)";
-        context.fill();
-
-        context.beginPath();
-        context.arc(position.x, position.y, radius, 0, Math.PI * 2);
-        context.fillStyle = colorForNode(node);
-        context.globalAlpha = node.kind === "repost" ? 0.55 : 0.92;
-        context.fill();
-        context.globalAlpha = 1;
-        context.lineWidth = node.id === state.selectedId ? 3.2 : 2;
-        context.strokeStyle = strokeColorForNode(node);
-        context.stroke();
-
-        if (state.focusedAuthor && node.author === state.focusedAuthor) {
-          context.beginPath();
-          context.arc(position.x, position.y, radius + 6, 0, Math.PI * 2);
-          context.lineWidth = 2.4;
-          context.strokeStyle = authorTagColor(node);
-          context.stroke();
-        }
-
-        if (nodeMatchesFocusedReference(node)) {
-          context.beginPath();
-          context.arc(position.x, position.y, radius + 11, 0, Math.PI * 2);
-          context.lineWidth = 2;
-          context.setLineDash([5, 4]);
-          context.strokeStyle = "rgba(17,17,17,0.55)";
-          context.stroke();
-          context.setLineDash([]);
-        }
-
-        context.beginPath();
-        context.arc(position.x - (radius * 0.28), position.y - (radius * 0.32), Math.max(1.5, radius * 0.28), 0, Math.PI * 2);
-        context.fillStyle = "rgba(255,255,255,0.24)";
-        context.fill();
-
-        if (state.showLabels && (node.id === state.selectedId || radius >= 8 || node.isRoot || node.isClicked)) {
-          context.font = "12px SF Pro Display, Avenir Next, Helvetica Neue, Arial, sans-serif";
-          context.fillStyle = authorTagColor(node);
-          context.textAlign = "left";
-          context.fillText(node.author, position.x + radius + 8, position.y + 4);
-        }
-      }
-    }
-
-    function escapeInlineHtml(value) {
+    function escapeInline(value) {
       return String(value || "").replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]));
     }
 
-    function renderTooltip() {
-      const node = state.hoverId ? nodesById.get(state.hoverId) : null;
-      if (!node) {
-        tooltipEl.classList.remove("visible");
-        tooltipEl.innerHTML = "";
-        return;
-      }
-
-      tooltipEl.innerHTML = \`
-        <div class="tooltip-title">
-          <span>\${escapeInlineHtml(node.author)}</span>
-          <span>\${escapeInlineHtml(node.kind)}</span>
-        </div>
-        <div class="tooltip-subtle">tweet <code>\${escapeInlineHtml(node.id)}</code></div>
-        <div class="tooltip-metrics">
-          <div class="tooltip-metric"><span class="tooltip-metric-label">ThinkerRank</span><span class="tooltip-metric-value">\${formatNumber(node.score)}</span></div>
-          <div class="tooltip-metric"><span class="tooltip-metric-label">Followers</span><span class="tooltip-metric-value">\${formatNumber(node.followers)}</span></div>
-          <div class="tooltip-metric"><span class="tooltip-metric-label">Reach</span><span class="tooltip-metric-value">\${formatNumber(node.reach)}</span></div>
-          <div class="tooltip-metric"><span class="tooltip-metric-label">Likes</span><span class="tooltip-metric-value">\${formatNumber(node.likes)}</span></div>
-          <div class="tooltip-metric"><span class="tooltip-metric-label">Replies</span><span class="tooltip-metric-value">\${formatNumber(node.replies)}</span></div>
-          <div class="tooltip-metric"><span class="tooltip-metric-label">Quotes</span><span class="tooltip-metric-value">\${formatNumber(node.quotes)}</span></div>
-        </div>
-      \`;
-
-      const shellRect = canvas.parentElement.getBoundingClientRect();
-      const tooltipRect = tooltipEl.getBoundingClientRect();
-      const offsetX = 18;
-      const offsetY = 18;
-      let left = state.hoverX + offsetX;
-      let top = state.hoverY + offsetY;
-      if (left + tooltipRect.width > shellRect.width - 8) {
-        left = Math.max(8, state.hoverX - tooltipRect.width - 14);
-      }
-      if (top + tooltipRect.height > shellRect.height - 8) {
-        top = Math.max(8, state.hoverY - tooltipRect.height - 14);
-      }
-      tooltipEl.style.left = left + "px";
-      tooltipEl.style.top = top + "px";
-      tooltipEl.classList.add("visible");
+    function authorTagColor(author) {
+      return authorColorByAuthor[String(author || "").trim()] || "#9aa3af";
     }
 
-    function pickNodeAt(clientX, clientY) {
-      const rect = canvas.getBoundingClientRect();
-      const x = clientX - rect.left;
-      const y = clientY - rect.top;
-      const visibleNodes = getVisibleNodes()
-        .map((node) => {
-          const position = simulation.byId.get(node.id);
-          return position ? { node, projection: projectPoint(position) } : null;
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.projection.z - a.projection.z);
-      for (const entry of visibleNodes) {
-        const node = entry.node;
-        const position = entry.projection;
-        if (!position) {
+    function visibleNodes() {
+      const query = state.search.trim().toLowerCase();
+      return GRAPH.nodes.filter((node) => {
+        if (state.hideReposts && node.kind === "repost") return false;
+        if (Number(node.score || 0) < state.scoreThreshold && node.id !== state.selectedId && !clickedPathSet.has(node.id)) return false;
+        if (!query) return true;
+        const haystack = [node.id, node.author, node.authorName, node.text].join(" ").toLowerCase();
+        return haystack.includes(query);
+      });
+    }
+
+    function buildDisplayItems(nodes) {
+      const items = [];
+      const pathIds = new Set(Array.isArray(GRAPH.clickedPath) ? GRAPH.clickedPath : []);
+      const visibleById = new Map(nodes.map((node) => [node.id, node]));
+      const childrenByVisibleParent = new Map();
+      for (const node of nodes) {
+        const parentId = String(node.parentId || "").trim();
+        if (!parentId || !visibleById.has(parentId)) continue;
+        if (!childrenByVisibleParent.has(parentId)) childrenByVisibleParent.set(parentId, []);
+        childrenByVisibleParent.get(parentId).push(node);
+      }
+
+      const assigned = new Set();
+      const sameDeckLink = (left, right) => {
+        if (!left || !right) return false;
+        if (left.author !== right.author) return false;
+        if (left.kind === "repost" || right.kind === "repost") return false;
+        if (pathIds.has(left.id) || pathIds.has(right.id)) return false;
+        return true;
+      };
+      const appendSingle = (node) => {
+        items.push({
+          id: node.id,
+          parentId: node.parentId,
+          kind: node.kind,
+          author: node.author,
+          authorName: node.authorName,
+          representative: node,
+          members: [node],
+          external_urls: node.external_urls || [],
+          isGroup: false
+        });
+        assigned.add(node.id);
+      };
+
+      for (const node of nodes) {
+        if (assigned.has(node.id)) continue;
+        if (pathIds.has(node.id) || node.kind === "repost") {
+          appendSingle(node);
           continue;
         }
-        const radius = radiusForNode(node) * position.depth;
-        const dx = x - position.x;
-        const dy = y - position.y;
-        if ((dx * dx) + (dy * dy) <= radius * radius) {
-          return node.id;
+
+        let root = node;
+        while (true) {
+          const parent = visibleById.get(String(root.parentId || ""));
+          if (!sameDeckLink(root, parent)) break;
+          root = parent;
+        }
+
+        const queue = [root];
+        const members = [];
+        const seen = new Set();
+        while (queue.length > 0) {
+          const current = queue.shift();
+          if (!current || seen.has(current.id) || assigned.has(current.id)) continue;
+          if (!sameDeckLink(root, current) && current.id !== root.id) continue;
+          seen.add(current.id);
+          members.push(current);
+          const parent = visibleById.get(String(current.parentId || ""));
+          if (sameDeckLink(current, parent) && !seen.has(parent.id)) {
+            queue.push(parent);
+          }
+          for (const child of childrenByVisibleParent.get(current.id) || []) {
+            if (sameDeckLink(current, child) && !seen.has(child.id)) {
+              queue.push(child);
+            }
+          }
+        }
+
+        if (members.length <= 1) {
+          appendSingle(node);
+          continue;
+        }
+
+        const memberIdSet = new Set(members.map((member) => member.id));
+        const parentOutsideGroupByMember = (member) => {
+          const parentId = String(member.parentId || "").trim();
+          return parentId && !memberIdSet.has(parentId) ? parentId : "";
+        };
+        members.sort((left, right) => {
+          const leftIsRoot = parentOutsideGroupByMember(left) ? 1 : 0;
+          const rightIsRoot = parentOutsideGroupByMember(right) ? 1 : 0;
+          if (leftIsRoot !== rightIsRoot) return rightIsRoot - leftIsRoot;
+          return String(left.id).localeCompare(String(right.id));
+        });
+        const representative = members[0];
+        const mergedUrls = [...new Set(members.flatMap((member) => Array.isArray(member.external_urls) ? member.external_urls : []))];
+        items.push({
+          id: "group:" + representative.id,
+          parentId: parentOutsideGroupByMember(representative) || representative.parentId,
+          kind: representative.kind,
+          author: representative.author,
+          authorName: representative.authorName,
+          representative,
+          members,
+          external_urls: mergedUrls,
+          isGroup: true
+        });
+        for (const member of members) {
+          assigned.add(member.id);
         }
       }
-      return null;
+
+      return items;
+    }
+
+    function computeLayout(items) {
+      const visibleSet = new Set(items.map((item) => item.id));
+      const positioned = new Map();
+      const centerX = 860;
+      const pathGap = 220;
+      const branchGapX = 118;
+      const branchGapY = 34;
+      const padX = 26;
+      const padY = 24;
+      const dimsById = new Map(items.map((item) => [item.id, dimensionForItem(item)]));
+
+      const pathIds = items.filter((item) => clickedPathSet.has(item.id)).map((item) => item.id);
+      pathIds.forEach((id, index) => {
+        const dims = dimsById.get(id) || { w: 280, h: 124 };
+        positioned.set(id, { x: centerX, y: 120 + (index * pathGap), w: dims.w, h: dims.h });
+      });
+
+      if (pathIds.length === 0 && GRAPH.canonicalRootId && visibleSet.has(GRAPH.canonicalRootId)) {
+        const dims = dimsById.get(GRAPH.canonicalRootId) || { w: 280, h: 124 };
+        positioned.set(GRAPH.canonicalRootId, { x: centerX, y: 120, w: dims.w, h: dims.h });
+      }
+
+      const fallbackAnchor = pathIds[pathIds.length - 1] || GRAPH.canonicalRootId || items[0]?.id || "";
+      const parentBuckets = new Map();
+      for (const item of items) {
+        if (positioned.has(item.id)) continue;
+        const parentId = positioned.has(item.parentId) ? item.parentId : fallbackAnchor;
+        if (!parentBuckets.has(parentId)) {
+          parentBuckets.set(parentId, { reply: [], quote: [], repost: [] });
+        }
+        const bucket = parentBuckets.get(parentId);
+        const side = item.kind === "quote" ? "quote" : (item.kind === "repost" ? "repost" : "reply");
+        bucket[side].push(item);
+      }
+
+      for (const [parentId, bucket] of parentBuckets.entries()) {
+        const parent = positioned.get(parentId) || { x: centerX, y: 120, w: 280, h: 124 };
+        const place = (list, xDir, yStartOffset) => {
+          list.forEach((item, index) => {
+            const dims = dimsById.get(item.id) || { w: 280, h: 124 };
+            positioned.set(item.id, {
+              x: parent.x + (xDir * ((parent.w / 2) + (dims.w / 2) + branchGapX)),
+              y: parent.y + yStartOffset + (index * (dims.h + branchGapY)),
+              w: dims.w,
+              h: dims.h
+            });
+          });
+        };
+        const verticalSpan = (list) => list.reduce((total, item, index) => {
+          const dims = dimsById.get(item.id) || { h: 124 };
+          return total + dims.h + (index === list.length - 1 ? 0 : branchGapY);
+        }, 0);
+        place(bucket.reply, -1, -Math.max(0, verticalSpan(bucket.reply) / 2));
+        place(bucket.quote, 1, -Math.max(0, verticalSpan(bucket.quote) / 2));
+        place(bucket.repost, 1.65, -Math.max(0, verticalSpan(bucket.repost) / 2));
+      }
+
+      const unplaced = items.filter((item) => !positioned.has(item.id));
+      unplaced.forEach((item, index) => {
+        const dims = dimsById.get(item.id) || { w: 280, h: 124 };
+        positioned.set(item.id, { x: 80 + ((index % 3) * 360), y: 120 + (index * (dims.h + 40)), w: dims.w, h: dims.h });
+      });
+
+      const lockedIds = new Set(pathIds);
+      if (GRAPH.canonicalRootId && visibleSet.has(GRAPH.canonicalRootId)) {
+        lockedIds.add(GRAPH.canonicalRootId);
+      }
+
+      const overlapAmount = (left, right) => {
+        const dx = (left.x + (left.w / 2)) - (right.x + (right.w / 2));
+        const dy = (left.y + (left.h / 2)) - (right.y + (right.h / 2));
+        const ox = ((left.w + right.w) / 2) + padX - Math.abs(dx);
+        const oy = ((left.h + right.h) / 2) + padY - Math.abs(dy);
+        if (ox <= 0 || oy <= 0) {
+          return null;
+        }
+        return { dx, dy, ox, oy };
+      };
+
+      const itemIds = items.map((item) => item.id);
+      for (let iteration = 0; iteration < 16; iteration += 1) {
+        let moved = false;
+        for (let i = 0; i < itemIds.length; i += 1) {
+          for (let j = i + 1; j < itemIds.length; j += 1) {
+            const leftId = itemIds[i];
+            const rightId = itemIds[j];
+            const left = positioned.get(leftId);
+            const right = positioned.get(rightId);
+            if (!left || !right) continue;
+            const overlap = overlapAmount(left, right);
+            if (!overlap) continue;
+            moved = true;
+            const leftLocked = lockedIds.has(leftId);
+            const rightLocked = lockedIds.has(rightId);
+            const pushX = overlap.ox + 2;
+            const pushY = overlap.oy + 2;
+            if (pushX < pushY) {
+              const direction = overlap.dx >= 0 ? 1 : -1;
+              if (leftLocked && rightLocked) {
+                right.x -= direction * pushX;
+              } else if (leftLocked) {
+                right.x -= direction * pushX;
+              } else if (rightLocked) {
+                left.x += direction * pushX;
+              } else {
+                left.x += direction * (pushX / 2);
+                right.x -= direction * (pushX / 2);
+              }
+            } else {
+              const direction = overlap.dy >= 0 ? 1 : -1;
+              if (leftLocked && rightLocked) {
+                right.y -= direction * pushY;
+              } else if (leftLocked) {
+                right.y -= direction * pushY;
+              } else if (rightLocked) {
+                left.y += direction * pushY;
+              } else {
+                left.y += direction * (pushY / 2);
+                right.y -= direction * (pushY / 2);
+              }
+            }
+          }
+        }
+        if (!moved) break;
+      }
+
+      return positioned;
+    }
+
+    function applyTransform() {
+      stage.style.transform = \`translate(\${state.tx}px, \${state.ty}px) scale(\${state.scale})\`;
+    }
+
+    function bestNodeForReference(referenceUrl) {
+      return GRAPH.nodes
+        .filter((item) => Array.isArray(item.external_urls) && item.external_urls.includes(referenceUrl))
+        .sort((left, right) => right.score - left.score || right.reach - left.reach || String(left.id).localeCompare(String(right.id)))[0] || null;
+    }
+
+    function dimensionForItem(item) {
+      const score = Number(item?.representative?.score || 0);
+      const scoreRatio = maxScore > 0 ? Math.sqrt(Math.max(0, score) / maxScore) : 0;
+      let factor = 0.94 + (scoreRatio * 0.16);
+      if (item.members.some((member) => clickedPathSet.has(member.id))) factor += 0.03;
+      if (item.representative?.isRoot || item.id === GRAPH.canonicalRootId) factor += 0.04;
+      if (item.members.some((member) => member.id === state.selectedId)) factor += 0.05;
+      if (item.id === state.expandedCardId) factor += 0.08;
+      factor = Math.max(0.92, Math.min(1.18, factor));
+      return {
+        w: Math.round(280 * factor),
+        h: Math.round(124 * factor)
+      };
+    }
+
+    function render() {
+      const nodes = visibleNodes();
+      const items = buildDisplayItems(nodes);
+      const layout = computeLayout(items);
+      const visibleRawSet = new Set(nodes.map((node) => node.id));
+      const rawToDisplayId = new Map();
+      for (const item of items) {
+        for (const member of item.members) {
+          rawToDisplayId.set(member.id, item.id);
+        }
+      }
+      if (state.expandedCardId && rawToDisplayId.has(state.expandedCardId)) {
+        state.expandedCardId = rawToDisplayId.get(state.expandedCardId);
+      }
+
+      nodesRoot.innerHTML = "";
+      edgesSvg.innerHTML = "";
+      edgesSvg.setAttribute("width", "2800");
+      edgesSvg.setAttribute("height", "2400");
+      edgesSvg.setAttribute("viewBox", "0 0 2800 2400");
+
+      for (const edge of GRAPH.edges) {
+        if (!visibleRawSet.has(edge.source) || !visibleRawSet.has(edge.target)) continue;
+        const sourceId = rawToDisplayId.get(edge.source);
+        const targetId = rawToDisplayId.get(edge.target);
+        if (!sourceId || !targetId || sourceId === targetId) continue;
+        const source = layout.get(sourceId);
+        const target = layout.get(targetId);
+        if (!source || !target) continue;
+        const x1 = source.x + (source.w / 2);
+        const y1 = source.y + (source.h / 2);
+        const x2 = target.x + (target.w / 2);
+        const y2 = target.y + (target.h / 2);
+        const isSelectedEdge = edge.source === state.selectedId || edge.target === state.selectedId;
+        const isQuote = edge.type === "quote";
+        const isRepost = edge.type === "repost";
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        line.setAttribute("d", \`M \${x1} \${y1} C \${(x1 + x2) / 2} \${y1}, \${(x1 + x2) / 2} \${y2}, \${x2} \${y2}\`);
+        line.setAttribute("fill", "none");
+        line.setAttribute("stroke", isQuote ? "#b85c38" : (isRepost ? "#cbc3b8" : "#5f88c6"));
+        line.setAttribute("stroke-opacity", isSelectedEdge ? (isQuote ? "0.95" : "0.82") : (isQuote ? "0.42" : (isRepost ? "0.16" : "0.28")));
+        line.setAttribute("stroke-width", isSelectedEdge ? (isQuote ? "4.5" : "3.2") : (isQuote ? "3.2" : (isRepost ? "1.4" : "2.2")));
+        line.setAttribute("stroke-linecap", isQuote ? "round" : "butt");
+        if (isQuote) {
+          line.setAttribute("stroke-dasharray", isSelectedEdge ? "12 8" : "9 7");
+        } else if (isRepost) {
+          line.setAttribute("stroke-dasharray", "2 9");
+        }
+        edgesSvg.appendChild(line);
+      }
+
+      const renderedEdgeKeys = new Set();
+      edgesSvg.querySelectorAll("path").forEach((pathElement) => {
+        const key = pathElement.getAttribute("d");
+        if (key) renderedEdgeKeys.add(key);
+      });
+
+      for (const item of items) {
+        const node = item.representative;
+        const pos = layout.get(item.id);
+        const element = document.createElement("article");
+        const classes = ["node", node.kind];
+        if (item.members.some((member) => clickedPathSet.has(member.id))) classes.push("path");
+        if (item.members.some((member) => member.id === state.selectedId)) classes.push("selected");
+        if (item.id === state.expandedCardId) classes.push("expanded");
+        if (item.id === state.animateExpandId) classes.push("expanding");
+        if (state.focusedAuthor && node.author === state.focusedAuthor) classes.push("author-match");
+        if (state.focusedReference && Array.isArray(item.external_urls) && item.external_urls.includes(state.focusedReference)) classes.push("reference-match");
+        const localChildren = item.members.flatMap((member) => Array.isArray(childrenByParent.get(member.id)) ? childrenByParent.get(member.id) : []);
+        const threadLikeCount = localChildren.filter((child) => child.kind !== "repost").length + item.members.length;
+        const stackLayers = Math.max(0, Math.min(3, threadLikeCount - 1));
+        const isExpanded = item.id === state.expandedCardId;
+        const expandedWidth = Math.max(420, pos.w + 120);
+        const expandedHeight = Math.max(220, pos.h + 96);
+        element.className = classes.join(" ");
+        element.dataset.nodeId = item.id;
+        element.style.left = pos.x + "px";
+        element.style.top = pos.y + "px";
+        element.style.width = (isExpanded ? expandedWidth : pos.w) + "px";
+        element.style.minHeight = (isExpanded ? expandedHeight : pos.h) + "px";
+        const stackHtml = Array.from({ length: stackLayers }, (_, index) => '<div class="node-stack-card layer-' + (index + 1) + '"></div>').join("");
+        const expandedDeckHtml = item.isGroup && isExpanded
+          ? '<div class="deck-list">' + item.members.map((member, index) => '<div class="deck-card"><div class="deck-card-title">Card ' + (index + 1) + ' · ' + member.kind + '</div>' + escapeInline(member.text) + '</div>').join("") + '</div>'
+          : '';
+        element.innerHTML = \`
+          <div class="node-stack">\${stackHtml}</div>
+          <div class="node-body">
+            \${isExpanded ? '<button class="node-fold" type="button" aria-label="Collapse tweet"></button>' : ""}
+            <div class="node-header">
+              <div class="node-header-main">
+                <span class="node-author" style="background:\${authorTagColor(node.author)}">
+                  <span class="node-author-name">\${escapeInline(node.authorName || node.author)}</span>
+                  <span class="node-author-handle">\${escapeInline(node.author)}</span>
+                </span>
+                <span class="node-score">score \${node.score.toFixed(3)}</span>
+                \${Array.isArray(node.external_urls) && node.external_urls.length > 0 ? '<button class="attach-badge" type="button" aria-label="Show references">+</button>' : ""}
+              </div>
+              <span class="node-kind">\${escapeInline(node.kind)}\${item.isGroup ? " · deck" : (stackLayers > 0 ? " · thread" : "")}</span>
+            </div>
+            <div class="node-text \${isExpanded ? "expanded" : ""}">\${escapeInline(isExpanded && !item.isGroup ? node.text : node.text.slice(0, 210))}</div>
+            \${expandedDeckHtml}
+            <div class="node-footer">
+              <span class="metric">score \${node.score.toFixed(3)}</span>
+              <span class="metric">likes \${node.likes}</span>
+              <span class="metric">followers \${node.followers}</span>
+              \${item.members.length > 1 ? '<span class="metric">cards ' + item.members.length + '</span>' : (threadLikeCount > 1 ? '<span class="metric">cards ' + threadLikeCount + '</span>' : "")}
+            </div>
+          </div>
+        \`;
+        element.addEventListener("click", () => {
+          state.selectedId = node.id;
+          if (state.expandedCardId !== item.id) {
+            state.animateExpandId = item.id;
+          }
+          state.expandedCardId = item.id;
+          state.focusedAuthor = node.author || "";
+          state.focusedReference = "";
+          renderInspector();
+          render();
+          emitLog(item.isGroup ? "tweet" : "tweet", item.isGroup ? "Opened thread deck" : "Selected tweet node", { tweetId: node.id, author: node.author });
+        });
+        const foldButton = element.querySelector(".node-fold");
+        if (foldButton) {
+          foldButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const current = event.currentTarget.closest(".node");
+            if (current) {
+              current.classList.add("collapsing");
+            }
+            window.setTimeout(() => {
+              state.expandedCardId = "";
+              state.animateExpandId = "";
+              render();
+              emitLog("tweet", item.isGroup ? "Collapsed thread deck" : "Collapsed tweet card", { tweetId: node.id, author: node.author });
+            }, 180);
+          });
+        }
+        const attachButton = element.querySelector(".attach-badge");
+        if (attachButton) {
+          attachButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const firstRef = Array.isArray(item.external_urls) ? item.external_urls[0] : "";
+            if (!firstRef) {
+              return;
+            }
+            const candidate = bestNodeForReference(firstRef);
+            state.focusedReference = firstRef;
+            state.selectedId = candidate?.id || node.id;
+            state.expandedCardId = rawToDisplayId.get(candidate?.id || "") || item.id;
+            state.focusedAuthor = "";
+            renderInspector();
+            render();
+            emitLog("reference", "Highlighted tweets with reference", { url: firstRef, tweetId: candidate?.id || node.id, author: candidate?.author || node.author });
+          });
+        }
+        nodesRoot.appendChild(element);
+      }
+
+      if (state.animateExpandId) {
+        const target = nodesRoot.querySelector('[data-node-id="' + state.animateExpandId.replace(/"/g, '\\"') + '"]');
+        if (target) {
+          window.requestAnimationFrame(() => {
+            target.classList.remove("expanding");
+          });
+        }
+        window.setTimeout(() => {
+          state.animateExpandId = "";
+        }, 240);
+      }
+
+      applyTransform();
     }
 
     function renderInspector() {
-      const node = nodesById.get(state.selectedId);
-      if (!node) {
-        inspectorRoot.innerHTML = "<p class='empty-note'>Select a node to inspect it.</p>";
-        return;
-      }
+      const node = nodeById.get(state.selectedId);
+      if (!node) return;
+      inspectorTitle.textContent = node.authorName || node.author;
+      inspectorMeta.textContent = \`\${node.author} · tweet \${node.id} · \${node.kind} · score \${node.score.toFixed(3)} · reach \${node.reach.toFixed(1)}\`;
+      inspectorText.innerHTML = \`<div class="chip"><strong>Tweet</strong><small>\${escapeInline(node.text)}</small></div>\`;
 
-      const neighbors = [...(adjacency.get(node.id) || new Set())]
-        .map((id) => nodesById.get(id))
-        .filter(Boolean)
-        .sort((a, b) => b.score - a.score || b.reach - a.reach)
-        .slice(0, 8);
-      const path = [];
-      let cursor = node.id;
-      const visited = new Set();
-      while (cursor && !visited.has(cursor) && nodesById.has(cursor)) {
-        visited.add(cursor);
-        const entry = nodesById.get(cursor);
-        path.push(entry);
-        cursor = entry.parentId && nodesById.has(entry.parentId) ? entry.parentId : null;
-      }
-
-      inspectorRoot.innerHTML = \`
-        <h2>\${node.author}</h2>
-        <div class="subtle">Tweet <code>\${node.id}</code> · kind \${node.kind} · parent \${node.parentId ? "<code>" + node.parentId + "</code>" : "none"}</div>
-        <div class="metric-grid">
-          <div class="metric"><span class="metric-label">ThinkerRank</span><span class="metric-value">\${formatNumber(node.score)}</span></div>
-          <div class="metric"><span class="metric-label">Weighted reach</span><span class="metric-value">\${formatNumber(node.reach)}</span></div>
-          <div class="metric"><span class="metric-label">Followers</span><span class="metric-value">\${formatNumber(node.followers)}</span></div>
-          <div class="metric"><span class="metric-label">Degree</span><span class="metric-value">\${formatNumber(node.degree)}</span></div>
-          <div class="metric"><span class="metric-label">Replies / Quotes</span><span class="metric-value">\${formatNumber(node.replies)} / \${formatNumber(node.quotes)}</span></div>
-          <div class="metric"><span class="metric-label">Incoming / Outgoing</span><span class="metric-value">\${formatNumber(node.incoming)} / \${formatNumber(node.outgoing)}</span></div>
-        </div>
-        <div class="tweet-text">\${node.text ? node.text.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char])) : "No tweet text available."}</div>
-        <div class="subtle">Edge types touching this node: \${node.edgeKinds.join(", ") || "none"}</div>
-        \${node.url ? '<a class="footer-link" href="' + node.url + '" target="_blank" rel="noreferrer">Open tweet</a>' : ""}
-        <section style="margin-top:20px;">
-          <h3 class="section-title">Local Trunk</h3>
-          <div class="path-list">\${path.map((entry) => '<div class="tweet-chip" data-node-id="' + entry.id + '"><div class="tweet-chip-title"><span>' + entry.author + '</span><span>' + formatNumber(entry.score) + '</span></div><p>' + truncate(entry.text, 120).replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char])) + '</p></div>').join("") || "<p class='empty-note'>No path available.</p>"}</div>
-        </section>
-        <section style="margin-top:20px;">
-          <h3 class="section-title">Strong Neighbors</h3>
-          <div class="path-list">\${neighbors.map((entry) => '<div class="tweet-chip" data-node-id="' + entry.id + '"><div class="tweet-chip-title"><span>' + entry.author + '</span><span>' + formatNumber(entry.score) + '</span></div><p>' + truncate(entry.text, 120).replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char])) + '</p></div>').join("") || "<p class='empty-note'>No nearby neighbors.</p>"}</div>
-        </section>
-      \`;
-
-      inspectorRoot.querySelectorAll("[data-node-id]").forEach((element) => {
-        element.addEventListener("click", () => {
-          state.selectedId = element.getAttribute("data-node-id");
-          const selectedNode = nodesById.get(state.selectedId);
-          state.focusedAuthor = selectedNode?.author || "";
-          state.focusedReferenceUrl = "";
-          recenterSimulation(state.selectedId);
-          renderInspector();
-          emitLog("tweet", "Selected tweet from local trunk", {
-            tweetId: state.selectedId,
-            author: selectedNode?.author || ""
-          });
-        });
-      });
-    }
-
-    function renderSideLists() {
-      topList.innerHTML = GRAPH_DATA.topByScore.map((node) => \`
-        <div class="tweet-chip" data-top-node-id="\${node.id}">
-          <div class="tweet-chip-title"><span>\${node.author}</span><span>\${formatNumber(node.score)}</span></div>
-          <p>\${truncate(node.text, 110).replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]))}</p>
+      authorsRoot.innerHTML = GRAPH.topAuthors.map((entry) => \`
+        <div class="chip" data-author="\${entry.author}">
+          <strong style="color:\${entry.color}">\${entry.author}</strong>
+          <small>score \${entry.totalScore.toFixed(3)} · tweets \${entry.tweetCount}</small>
         </div>
       \`).join("");
-
-      const clickedPathNodes = (GRAPH_DATA.clickedPath || [])
-        .map((id) => nodesById.get(id))
-        .filter(Boolean);
-      pathList.innerHTML = clickedPathNodes.length
-        ? clickedPathNodes.map((node) => \`
-          <div class="tweet-chip" data-path-node-id="\${node.id}">
-            <div class="tweet-chip-title"><span>\${node.author}</span><span>\${node.kind}</span></div>
-            <p>\${truncate(node.text, 110).replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]))}</p>
-          </div>
-        \`).join("")
-        : "<p class='empty-note'>No clicked path available.</p>";
-
-      authorLegend.innerHTML = (Array.isArray(GRAPH_DATA.topAuthors) ? GRAPH_DATA.topAuthors : []).map((entry) => \`
-        <div class="author-chip" data-author="\${entry.author}">
-          <span class="author-chip-swatch" style="background:\${entry.color}"></span>
-          <div>
-            <div><strong style="color:\${entry.color}">\${entry.author}</strong></div>
-            <div class="author-chip-meta">score \${formatNumber(entry.totalScore)} · tweets \${entry.tweetCount}</div>
-          </div>
-        </div>
-      \`).join("") || "<p class='empty-note'>No top authors.</p>";
-
-      document.querySelectorAll("[data-top-node-id], [data-path-node-id]").forEach((element) => {
-        element.addEventListener("click", () => {
-          state.selectedId = element.getAttribute("data-top-node-id") || element.getAttribute("data-path-node-id");
-          const selectedNode = nodesById.get(state.selectedId);
-          state.focusedAuthor = selectedNode?.author || "";
-          state.focusedReferenceUrl = "";
-          recenterSimulation(state.selectedId);
-          renderInspector();
-          emitLog("tweet", "Selected tweet from side panel", {
-            tweetId: state.selectedId,
-            author: selectedNode?.author || ""
-          });
-        });
-      });
-
-      authorLegend.querySelectorAll("[data-author]").forEach((element) => {
+      authorsRoot.querySelectorAll("[data-author]").forEach((element) => {
         element.addEventListener("click", () => {
           const author = element.getAttribute("data-author") || "";
-          const candidate = GRAPH_DATA.nodes
-            .filter((node) => node.author === author)
-            .sort((a, b) => b.score - a.score || b.reach - a.reach)[0];
-          if (!candidate) {
-            return;
-          }
+          const candidate = GRAPH.nodes.filter((item) => item.author === author).sort((a, b) => b.score - a.score)[0];
+          if (!candidate) return;
           state.selectedId = candidate.id;
+          state.expandedCardId = candidate.id;
           state.focusedAuthor = author;
-          state.focusedReferenceUrl = "";
-          recenterSimulation(state.selectedId);
+          state.focusedReference = "";
           renderInspector();
-          emitLog("author", "Focused author", {
-            author,
-            tweetId: candidate.id
-          });
+          render();
+          emitLog("author", "Focused author", { author, tweetId: candidate.id });
         });
       });
 
-      referenceList.innerHTML = (Array.isArray(GRAPH_DATA.topReferences) ? GRAPH_DATA.topReferences : []).map((entry) => \`
-        <div class="reference-chip" data-reference-url="\${entry.url}">
-          <div><strong>\${entry.domain || "reference"}</strong> · \${entry.count} cite\${entry.count === 1 ? "" : "s"}</div>
-          <div class="reference-chip-url">\${entry.url}</div>
+      referencesRoot.innerHTML = GRAPH.topReferences.map((entry) => \`
+        <div class="chip" data-ref="\${entry.url}">
+          <strong>\${entry.domain || "reference"}</strong>
+          <small>\${entry.count} cites · \${escapeInline(entry.url)}</small>
         </div>
-      \`).join("") || "<p class='empty-note'>No references.</p>";
-
-      referenceList.querySelectorAll("[data-reference-url]").forEach((element) => {
+      \`).join("");
+      referenceRailRoot.innerHTML = GRAPH.topReferences.map((entry) => \`
+        <div class="chip reference-chip \${state.focusedReference === entry.url ? "active" : ""}" data-rail-ref="\${entry.url}">
+          <strong>\${entry.domain || "reference"}</strong>
+          <small>\${entry.count} cites</small>
+        </div>
+      \`).join("");
+      referencesRoot.querySelectorAll("[data-ref]").forEach((element) => {
         element.addEventListener("click", () => {
-          state.focusedReferenceUrl = element.getAttribute("data-reference-url") || "";
-          const url = state.focusedReferenceUrl;
-          const candidate = GRAPH_DATA.nodes.find((node) => Array.isArray(node.external_urls) && node.external_urls.includes(url));
+          const ref = element.getAttribute("data-ref") || "";
+          const candidate = bestNodeForReference(ref);
+          state.focusedReference = ref;
           if (candidate) {
             state.selectedId = candidate.id;
-            state.focusedAuthor = candidate.author || "";
-            recenterSimulation(state.selectedId);
+            state.expandedCardId = rawToDisplayId.get(candidate.id) || candidate.id;
           }
+          state.focusedAuthor = "";
           renderInspector();
-          emitLog("reference", "Focused reference", {
-            url,
-            tweetId: candidate?.id || "",
-            author: candidate?.author || ""
-          });
+          render();
+          emitLog("reference", "Highlighted tweets with reference", { url: ref, tweetId: candidate?.id || "", author: candidate?.author || "" });
+        });
+      });
+      referenceRailRoot.querySelectorAll("[data-rail-ref]").forEach((element) => {
+        element.addEventListener("click", () => {
+          const ref = element.getAttribute("data-rail-ref") || "";
+          const candidate = bestNodeForReference(ref);
+          state.focusedReference = ref;
+          if (candidate) {
+            state.selectedId = candidate.id;
+            state.expandedCardId = rawToDisplayId.get(candidate.id) || candidate.id;
+          }
+          state.focusedAuthor = "";
+          renderInspector();
+          render();
+          emitLog("reference", "Highlighted tweets with canonical reference", { url: ref, tweetId: candidate?.id || "", author: candidate?.author || "" });
         });
       });
     }
 
-    function scheduleRender() {
-      if (state.animationHandle != null) {
-        return;
-      }
-      state.animationHandle = window.requestAnimationFrame((timestamp) => {
-        const deltaMs = state.lastTimestamp ? Math.min(32, Math.max(8, timestamp - state.lastTimestamp)) : 16;
-        state.lastTimestamp = timestamp;
-        state.animationHandle = null;
-        if (state.autoRotate && !state.pointerDown) {
-          state.targetYaw += 0.00035 * deltaMs;
-          state.yaw += (state.targetYaw - state.yaw) * 0.08;
-          state.pitch += (state.targetPitch - state.pitch) * 0.08;
-          draw();
-          scheduleRender();
-          return;
-        }
-        draw();
-      });
-    }
+    viewport.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const rect = viewport.getBoundingClientRect();
+      const mouseX = event.clientX - rect.left;
+      const mouseY = event.clientY - rect.top;
+      const worldX = (mouseX - state.tx) / state.scale;
+      const worldY = (mouseY - state.ty) / state.scale;
+      const nextScale = event.deltaY < 0 ? state.scale * 1.08 : state.scale / 1.08;
+      state.scale = Math.max(0.35, Math.min(2.2, nextScale));
+      state.tx = mouseX - (worldX * state.scale);
+      state.ty = mouseY - (worldY * state.scale);
+      applyTransform();
+    }, { passive: false });
 
-    canvas.addEventListener("click", (event) => {
-      const pickedId = pickNodeAt(event.clientX, event.clientY);
-      if (!pickedId) {
-        return;
-      }
-      state.selectedId = pickedId;
-      state.focusedAuthor = nodesById.get(pickedId)?.author || "";
-      state.focusedReferenceUrl = "";
-      renderInspector();
-      emitLog("tweet", "Selected tweet node", {
-        tweetId: pickedId,
-        author: nodesById.get(pickedId)?.author || ""
-      });
-      scheduleRender();
-    });
-
-    canvas.addEventListener("mousemove", (event) => {
-      const rect = canvas.getBoundingClientRect();
-      state.hoverX = event.clientX - rect.left;
-      state.hoverY = event.clientY - rect.top;
-      state.hoverId = pickNodeAt(event.clientX, event.clientY);
-      renderTooltip();
-      scheduleRender();
-    });
-
-    canvas.addEventListener("mouseleave", () => {
-      state.hoverId = null;
-      renderTooltip();
-      scheduleRender();
-    });
-
-    canvas.addEventListener("mousedown", (event) => {
-      const pickedId = pickNodeAt(event.clientX, event.clientY);
-      state.pointerDown = true;
-      state.dragOriginX = event.clientX;
-      state.dragOriginY = event.clientY;
-      simulation.draggingId = pickedId;
-      state.dragMode = pickedId ? "node" : "orbit";
-      if (!pickedId) {
-        return;
-      }
-      const position = simulation.byId.get(pickedId);
-      if (!position) {
-        return;
-      }
-      const rect = canvas.getBoundingClientRect();
-      position.fx = event.clientX - rect.left;
-      position.fy = event.clientY - rect.top;
-      position.fz = 150;
-      state.layoutFrozen = false;
-      state.selectedId = pickedId;
-      state.focusedAuthor = nodesById.get(pickedId)?.author || "";
-      state.focusedReferenceUrl = "";
-      renderInspector();
-      emitLog("tweet", "Dragging tweet node", {
-        tweetId: pickedId,
-        author: nodesById.get(pickedId)?.author || ""
-      });
-      scheduleRender();
+    viewport.addEventListener("mousedown", (event) => {
+      if (event.target.closest(".node") || event.target.closest(".overlay") || event.target.closest(".topbar")) return;
+      state.dragging = true;
+      state.dragX = event.clientX;
+      state.dragY = event.clientY;
     });
 
     window.addEventListener("mousemove", (event) => {
-      if (!state.pointerDown) {
-        return;
-      }
-      if (state.dragMode === "orbit") {
-        const dx = event.clientX - state.dragOriginX;
-        const dy = event.clientY - state.dragOriginY;
-        state.targetYaw += dx * 0.0035;
-        state.targetPitch = Math.max(-0.8, Math.min(0.8, state.targetPitch + (dy * 0.003)));
-        state.dragOriginX = event.clientX;
-        state.dragOriginY = event.clientY;
-        scheduleRender();
-        return;
-      }
-      if (!simulation.draggingId) {
-        return;
-      }
-      const position = simulation.byId.get(simulation.draggingId);
-      if (!position) {
-        return;
-      }
-      const rect = canvas.getBoundingClientRect();
-      position.fx = event.clientX - rect.left;
-      position.fy = event.clientY - rect.top;
-      position.fz = 150;
-      state.layoutFrozen = false;
-      draw();
+      if (!state.dragging) return;
+      state.tx += event.clientX - state.dragX;
+      state.ty += event.clientY - state.dragY;
+      state.dragX = event.clientX;
+      state.dragY = event.clientY;
+      applyTransform();
     });
 
     window.addEventListener("mouseup", () => {
-      state.pointerDown = false;
-      state.dragMode = null;
-      const position = simulation.byId.get(simulation.draggingId);
-      if (position) {
-        position.fx = null;
-        position.fy = null;
-        position.fz = null;
-      }
-      simulation.draggingId = null;
-      settleLayout(40);
-      scheduleRender();
+      state.dragging = false;
     });
 
-    sizeMetricEl.addEventListener("change", () => {
-      state.sizeMetric = sizeMetricEl.value;
-      scheduleRender();
-    });
-    toggleRepostsEl.addEventListener("change", () => {
-      state.showReposts = toggleRepostsEl.checked;
-      settleLayout(40);
-      scheduleRender();
-    });
-    toggleLabelsEl.addEventListener("change", () => {
-      state.showLabels = toggleLabelsEl.checked;
-      scheduleRender();
-    });
-    toggleNeighborhoodEl.addEventListener("change", () => {
-      state.neighborhoodOnly = toggleNeighborhoodEl.checked;
-      settleLayout(60);
-      scheduleRender();
-    });
-    toggleAutoRotateEl.addEventListener("change", () => {
-      state.autoRotate = toggleAutoRotateEl.checked;
-      if (state.autoRotate) {
-        state.layoutFrozen = false;
-        scheduleRender();
-      }
-    });
-    searchBoxEl.addEventListener("input", () => {
-      state.search = searchBoxEl.value;
-      settleLayout(60);
-      scheduleRender();
-    });
-    recenterButtonEl.addEventListener("click", () => {
-      state.selectedId = GRAPH_DATA.clickedTweetId || GRAPH_DATA.canonicalRootId || state.selectedId;
-      state.focusedAuthor = nodesById.get(state.selectedId)?.author || "";
-      state.focusedReferenceUrl = "";
-      recenterSimulation(state.selectedId);
-      renderInspector();
-      scheduleRender();
+    searchInput.addEventListener("input", () => {
+      state.search = searchInput.value;
+      render();
     });
 
-    window.addEventListener("resize", () => {
-      resizeCanvas();
-      recenterSimulation(state.selectedId);
-      settleLayout(80);
-      scheduleRender();
+    scoreThresholdInput.addEventListener("input", () => {
+      const ratio = Number(scoreThresholdInput.value || 0) / 100;
+      state.scoreThreshold = maxScore * ratio;
+      updateScoreUi();
+      render();
+      emitLog("system", "Adjusted score threshold", {
+        tweetId: state.selectedId,
+        author: state.focusedAuthor,
+        url: "score>=" + state.scoreThreshold.toFixed(3)
+      });
     });
 
-    resizeCanvas();
-    recenterSimulation(state.selectedId);
-    renderSideLists();
+    resetViewButton.addEventListener("click", () => {
+      state.scale = 0.85;
+      state.tx = 80;
+      state.ty = 60;
+      applyTransform();
+      emitLog("system", "Reset graph view", { tweetId: state.selectedId, author: state.focusedAuthor });
+    });
+
+    toggleRepostsButton.addEventListener("click", () => {
+      state.hideReposts = !state.hideReposts;
+      toggleRepostsButton.textContent = state.hideReposts ? "Show Reposts" : "Hide Reposts";
+      render();
+      emitLog("system", state.hideReposts ? "Hid repost nodes" : "Showed repost nodes", { tweetId: state.selectedId, author: state.focusedAuthor });
+    });
+
+    updateScoreUi();
     renderInspector();
-    emitLog("system", "Graph loaded", {
-      tweetId: state.selectedId,
-      author: nodesById.get(state.selectedId)?.author || ""
-    });
-    draw();
-    settleLayout();
-    scheduleRender();
+    render();
+    emitLog("system", "Graph loaded", { tweetId: state.selectedId, author: state.focusedAuthor });
   </script>
 </body>
 </html>`;
@@ -1792,42 +1319,27 @@ function buildHtmlReport(payload) {
 async function renderConversationGraphReport(rawArgs = process.argv.slice(2)) {
   const args = parseArgs(rawArgs);
   if (args.help) {
-    return {
-      exitCode: 0,
-      stdout: `${usage()}\n`
-    };
+    return { exitCode: 0, stdout: `${usage()}\n` };
   }
   if (!args.fixture) {
     throw new Error("Missing required --fixture <path>");
   }
 
   const fixturePath = path.resolve(args.fixture);
-  const dataset = await loadConversationDataset({
-    kind: "fixture",
-    path: fixturePath
-  });
+  const dataset = await loadConversationDataset({ kind: "fixture", path: fixturePath });
   const payload = buildGraphPayload(dataset, fixturePath);
-
   const rawFixture = JSON.parse(await fs.readFile(fixturePath, "utf8"));
   payload.capturedAt = String(rawFixture?.capturedAt || "").trim() || null;
 
   const outputPath = args.output
     ? path.resolve(args.output)
-    : defaultOutputPath({
-      outputDir: args.outputDir,
-      fixturePath,
-      canonicalRootId: dataset.canonicalRootId
-    });
+    : defaultOutputPath({ outputDir: args.outputDir, fixturePath, canonicalRootId: dataset.canonicalRootId });
 
   const html = buildHtmlReport(payload);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, `${html}\n`, "utf8");
 
-  return {
-    exitCode: 0,
-    outputPath,
-    payload
-  };
+  return { exitCode: 0, outputPath, payload };
 }
 
 async function main() {

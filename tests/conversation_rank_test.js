@@ -250,3 +250,58 @@ test("disabling follower weight removes follower-count bias", () => {
   const b = getScore(ranking, "B");
   assert.ok(Math.abs(a - b) < 1e-8);
 });
+
+test("root-mentioned authors get a bounded base-score boost when they appear in the graph", () => {
+  const g = graph(
+    [
+      { id: "root", author: "@host", text: "Curious what @alice thinks about this thread." },
+      { id: "alice", author: "@alice" },
+      { id: "bob", author: "@bob" }
+    ],
+    []
+  );
+
+  const ranking = ranker.rankConversationGraph(g, {
+    reachWeight: 0,
+    edgeReachBoost: 0,
+    followerWeight: 0,
+    followedAuthorWeight: 1,
+    defaultAuthorWeight: 1
+  });
+
+  assert.ok(getScore(ranking, "alice") > getScore(ranking, "bob"));
+  const aliceEntry = ranking.scores.find((entry) => entry.id === "alice");
+  const bobEntry = ranking.scores.find((entry) => entry.id === "bob");
+  assert.equal(aliceEntry?.rootMentionSignal, 1);
+  assert.equal(bobEntry?.rootMentionSignal, 0);
+  assert.deepEqual(ranking.rootMentionHandles, ["@alice"]);
+});
+
+test("direct replies from root-mentioned authors get an additional bounded boost", () => {
+  const g = graph(
+    [
+      { id: "root", author: "@host", text: "Would love replies from @alice and @bob here." },
+      { id: "alice-direct", author: "@alice", reply_to: "root" },
+      { id: "bob-later", author: "@bob" }
+    ],
+    [
+      { source: "alice-direct", target: "root", type: "reply" }
+    ]
+  );
+
+  const ranking = ranker.rankConversationGraph(g, {
+    reachWeight: 0,
+    edgeReachBoost: 0,
+    followerWeight: 0,
+    followedAuthorWeight: 1,
+    defaultAuthorWeight: 1
+  });
+
+  assert.ok(getScore(ranking, "alice-direct") > getScore(ranking, "bob-later"));
+  const aliceEntry = ranking.scores.find((entry) => entry.id === "alice-direct");
+  const bobEntry = ranking.scores.find((entry) => entry.id === "bob-later");
+  assert.equal(aliceEntry?.rootMentionSignal, 1);
+  assert.equal(aliceEntry?.rootMentionDirectSignal, 1);
+  assert.equal(bobEntry?.rootMentionSignal, 1);
+  assert.equal(bobEntry?.rootMentionDirectSignal, 0);
+});

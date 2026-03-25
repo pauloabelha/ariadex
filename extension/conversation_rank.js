@@ -35,7 +35,9 @@
     followingSet: null,
     reachWeight: 0.6,
     edgeReachBoost: 0.45,
-    followerWeight: 0.4
+    followerWeight: 0.4,
+    rootMentionWeight: 0.35,
+    rootMentionDirectWeight: 0.18
   };
 
   function normalizeOptions(options = {}) {
@@ -57,6 +59,8 @@
     merged.reachWeight = Math.max(0, Number(merged.reachWeight) || 0);
     merged.edgeReachBoost = Math.max(0, Number(merged.edgeReachBoost) || 0);
     merged.followerWeight = Math.max(0, Number(merged.followerWeight) || 0);
+    merged.rootMentionWeight = Math.max(0, Number(merged.rootMentionWeight) || 0);
+    merged.rootMentionDirectWeight = Math.max(0, Number(merged.rootMentionDirectWeight) || 0);
 
     if (!Array.isArray(merged.allowedEdgeTypes) || merged.allowedEdgeTypes.length === 0) {
       merged.allowedEdgeTypes = [...DEFAULT_OPTIONS.allowedEdgeTypes];
@@ -209,6 +213,97 @@
     return raw.startsWith("@") ? raw : `@${raw}`;
   }
 
+  function collectMentionHandles(rawNode) {
+    const handles = new Set();
+    const addHandle = (value) => {
+      const normalized = normalizeHandle(value);
+      if (normalized) {
+        handles.add(normalized);
+      }
+    };
+
+    const mentions = Array.isArray(rawNode?.entities?.mentions) ? rawNode.entities.mentions : [];
+    for (const mention of mentions) {
+      addHandle(mention?.username || mention?.screen_name || mention?.handle || mention?.tag);
+    }
+
+    const text = String(rawNode?.text || "");
+    for (const match of text.matchAll(/(^|[^A-Za-z0-9_])@([A-Za-z0-9_]{1,15})/g)) {
+      addHandle(match[2]);
+    }
+
+    return handles;
+  }
+
+  function hasDirectRootReference(rawNode, rootId) {
+    const normalizedRootId = String(rootId || "").trim();
+    if (!normalizedRootId) {
+      return false;
+    }
+
+    if (String(rawNode?.reply_to || "").trim() === normalizedRootId) {
+      return true;
+    }
+    if (String(rawNode?.quote_of || "").trim() === normalizedRootId) {
+      return true;
+    }
+
+    const refs = Array.isArray(rawNode?.referenced_tweets) ? rawNode.referenced_tweets : [];
+    return refs.some((entry) => {
+      const entryId = String(entry?.id || "").trim();
+      const entryType = String(entry?.type || "").toLowerCase();
+      return entryId === normalizedRootId && (entryType === "replied_to" || entryType === "quoted");
+    });
+  }
+
+  function buildRootMentionSignals(index, graph) {
+    const n = index.nodeOrder.length;
+    const mentionSignals = new Float64Array(n);
+    const directSignals = new Float64Array(n);
+    const rootId = String(graph?.rootId || graph?.root?.id || "").trim();
+
+    if (!rootId) {
+      return {
+        mentionSignals,
+        directSignals,
+        rootMentionHandles: []
+      };
+    }
+
+    const rootRawNode = index.nodes.get(rootId)?.raw || {};
+    const rootMentionHandles = [...collectMentionHandles(rootRawNode)];
+    if (rootMentionHandles.length === 0) {
+      return {
+        mentionSignals,
+        directSignals,
+        rootMentionHandles
+      };
+    }
+
+    const mentionSet = new Set(rootMentionHandles);
+    for (let i = 0; i < n; i += 1) {
+      const id = index.nodeOrder[i];
+      if (id === rootId) {
+        continue;
+      }
+      const rawNode = index.nodes.get(id)?.raw || {};
+      const authorHandle = normalizeHandle(rawNode?.author);
+      if (!authorHandle || !mentionSet.has(authorHandle)) {
+        continue;
+      }
+      mentionSignals[i] = 1;
+      if (hasDirectRootReference(rawNode, rootId)) {
+        directSignals[i] = 1;
+      }
+    }
+
+    return {
+      mentionSignals,
+      directSignals,
+      rootMentionHandles
+    };
+  }
+
   function isFollowedAuthor(followingSet, rawNode) {
     const authorId = rawNode?.author_id != null ? String(rawNode.author_id).trim() : "";
     if (authorId && (followingSet.has(authorId) || followingSet.has(authorId.toLowerCase()))) {
@@ -223,7 +318,7 @@
     return followingSet.has(handle) || followingSet.has(handle.slice(1));
   }
 
-  function buildBaseScores(index, followingSet, config, reachSignals, followerSignals) {
+  function buildBaseScores(index, followingSet, config, reachSignals, followerSignals, rootMentionSignals, rootMentionDirectSignals) {
     const n = index.nodeOrder.length;
     const baseScores = new Float64Array(n);
     let total = 0;
@@ -237,7 +332,9 @@
         : config.defaultAuthorWeight;
       const reachFactor = 1 + (config.reachWeight * (reachSignals[i] || 0));
       const followerFactor = 1 + (config.followerWeight * (followerSignals[i] || 0));
-      const base = authorBase * reachFactor * followerFactor;
+      const rootMentionFactor = 1 + (config.rootMentionWeight * (rootMentionSignals[i] || 0));
+      const rootMentionDirectFactor = 1 + (config.rootMentionDirectWeight * (rootMentionDirectSignals[i] || 0));
+      const base = authorBase * reachFactor * followerFactor * rootMentionFactor * rootMentionDirectFactor;
 
       baseScores[i] = base;
       total += base;
@@ -320,7 +417,12 @@
     const followingSet = normalizeFollowingSet(config.followingSet);
     const reachSignals = buildReachSignals(index);
     const followerSignals = buildFollowerSignals(index);
-    const baseScores = buildBaseScores(index, followingSet, config, reachSignals, followerSignals);
+    const {
+      mentionSignals: rootMentionSignals,
+      directSignals: rootMentionDirectSignals,
+      rootMentionHandles
+    } = buildRootMentionSignals(index, graph);
+    const baseScores = buildBaseScores(index, followingSet, config, reachSignals, followerSignals, rootMentionSignals, rootMentionDirectSignals);
     const { incomingByTarget, outgoingWeightSums } = prepareIterationData(index, config, reachSignals);
 
     const current = new Float64Array(n);
@@ -380,6 +482,8 @@
       baseScore: baseScores[i],
       reachSignal: reachSignals[i],
       followerSignal: followerSignals[i],
+      rootMentionSignal: rootMentionSignals[i],
+      rootMentionDirectSignal: rootMentionDirectSignals[i],
       inputIndex: i,
       tweet: index.nodes.get(id)?.raw || { id }
     }));
@@ -418,6 +522,7 @@
       iterations: iterationsUsed,
       converged,
       scoreSpread: scores.length > 1 ? scores[0].score - scores[scores.length - 1].score : 0,
+      rootMentionHandles,
       graphIndex: index
     };
   }
