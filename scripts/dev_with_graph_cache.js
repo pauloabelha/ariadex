@@ -18,6 +18,7 @@ function withDefaults(env) {
   merged.ARIADEX_GRAPH_CACHE_FILE = merged.ARIADEX_GRAPH_CACHE_FILE
     || path.join(ROOT_DIR, ".cache", "graph_cache_store.json");
   merged.ARIADEX_ENABLE_OPENAI_CONTRIBUTION_FILTER = merged.ARIADEX_ENABLE_OPENAI_CONTRIBUTION_FILTER || "true";
+  merged.ARIADEX_LLM_MODEL = merged.ARIADEX_LLM_MODEL || merged.ARIADEX_OPENAI_MODEL || "gpt-4o-mini";
   merged.ARIADEX_OPENAI_MODEL = merged.ARIADEX_OPENAI_MODEL || "gpt-4o-mini";
   return merged;
 }
@@ -29,25 +30,30 @@ function ensureBearer(env) {
   }
 }
 
-function run() {
-  const baseEnv = buildEnvObject();
+function run({
+  buildEnvObjectImpl = buildEnvObject,
+  syncFromEnvironmentImpl = syncFromEnvironment,
+  spawnImpl = spawn,
+  processObj = process
+} = {}) {
+  const baseEnv = buildEnvObjectImpl();
   const env = withDefaults({
-    ...process.env,
+    ...processObj.env,
     ...baseEnv
   });
 
   ensureBearer(env);
 
   // Ensure extension runtime config points to local graph cache service.
-  process.env.ARIADEX_ENV = env.ARIADEX_ENV;
-  process.env.ARIADEX_ALLOW_CLIENT_DIRECT_API = env.ARIADEX_ALLOW_CLIENT_DIRECT_API;
-  process.env.ARIADEX_GRAPH_API_URL = env.ARIADEX_GRAPH_API_URL;
-  process.env.ARIADEX_GRAPH_API_URL_DEV = env.ARIADEX_GRAPH_API_URL_DEV;
-  process.env.X_BEARER_TOKEN = env.X_BEARER_TOKEN || env.X_API_BEARER_TOKEN;
-  process.env.X_API_BEARER_TOKEN = env.X_API_BEARER_TOKEN || env.X_BEARER_TOKEN;
-  syncFromEnvironment();
+  processObj.env.ARIADEX_ENV = env.ARIADEX_ENV;
+  processObj.env.ARIADEX_ALLOW_CLIENT_DIRECT_API = env.ARIADEX_ALLOW_CLIENT_DIRECT_API;
+  processObj.env.ARIADEX_GRAPH_API_URL = env.ARIADEX_GRAPH_API_URL;
+  processObj.env.ARIADEX_GRAPH_API_URL_DEV = env.ARIADEX_GRAPH_API_URL_DEV;
+  processObj.env.X_BEARER_TOKEN = env.X_BEARER_TOKEN || env.X_API_BEARER_TOKEN;
+  processObj.env.X_API_BEARER_TOKEN = env.X_API_BEARER_TOKEN || env.X_BEARER_TOKEN;
+  syncFromEnvironmentImpl();
 
-  const child = spawn(process.execPath, [SERVER_ENTRY], {
+  const child = spawnImpl(processObj.execPath, [SERVER_ENTRY], {
     cwd: ROOT_DIR,
     env,
     stdio: "inherit"
@@ -59,21 +65,34 @@ function run() {
     }
   };
 
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
+  processObj.on("SIGINT", stop);
+  processObj.on("SIGTERM", stop);
 
   child.on("exit", (code, signal) => {
     if (signal) {
-      process.exitCode = 1;
+      processObj.exitCode = 1;
       return;
     }
-    process.exitCode = code || 0;
+    processObj.exitCode = code || 0;
   });
+
+  return {
+    env,
+    child
+  };
 }
 
-try {
-  run();
-} catch (error) {
-  console.error(`[Ariadex] ${error.message}`);
-  process.exitCode = 1;
+if (require.main === module) {
+  try {
+    run();
+  } catch (error) {
+    console.error(`[Ariadex] ${error.message}`);
+    process.exitCode = 1;
+  }
+} else {
+  module.exports = {
+    withDefaults,
+    ensureBearer,
+    run
+  };
 }

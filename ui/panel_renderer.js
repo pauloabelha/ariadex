@@ -468,8 +468,12 @@
     try {
       const parsed = new URL(canonical);
       const host = String(parsed.hostname || "").toLowerCase();
+      const pathname = String(parsed.pathname || "").toLowerCase();
       if (host === "t.co") {
         return false;
+      }
+      if ((host === "x.com" || host === "twitter.com") && /^\/i\/article\/\d+/.test(pathname)) {
+        return true;
       }
       if (host === "x.com" || host === "twitter.com") {
         return false;
@@ -507,7 +511,10 @@
       if (!tweetId) {
         continue;
       }
-      const urls = extractUrlsFromText(tweet?.text || "");
+      const urls = [
+        ...extractUrlsFromText(tweet?.text || ""),
+        ...(Array.isArray(tweet?.external_urls) ? tweet.external_urls : [])
+      ];
       if (urls.length === 0) {
         continue;
       }
@@ -572,19 +579,19 @@
     return entries;
   }
 
-  function buildPeopleEntries({ rankedEntries, followingSet } = {}) {
+  function buildPeopleEntries({ rankedEntries, nodes, scoreById, followingSet, alwaysIncludeTweetIds = [] } = {}) {
     const followed = normalizeFollowingSet(followingSet);
     const ranked = Array.isArray(rankedEntries) ? rankedEntries : [];
+    const safeNodes = Array.isArray(nodes) ? nodes : [];
     const byAuthorId = new Map();
 
-    for (let i = 0; i < ranked.length; i += 1) {
-      const entry = ranked[i];
+    function addPersonEntry(entry) {
       const tweet = entry?.tweet || {};
       const authorId = String(tweet?.author_id || "").trim();
       const author = String(tweet?.author || "@unknown").trim() || "@unknown";
       const key = authorId || author.toLowerCase();
       if (!key) {
-        continue;
+        return;
       }
       let person = byAuthorId.get(key);
       if (!person) {
@@ -613,6 +620,27 @@
         person.bestScore = entryScore;
       }
       person.isFollowed = person.isFollowed || isAuthorFollowed(tweet, followed);
+    }
+
+    for (let i = 0; i < ranked.length; i += 1) {
+      addPersonEntry(ranked[i]);
+    }
+
+    const alwaysIncludeIds = new Set(
+      (Array.isArray(alwaysIncludeTweetIds) ? alwaysIncludeTweetIds : [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    );
+    for (const tweet of safeNodes) {
+      const tweetId = String(tweet?.id || "").trim();
+      if (!tweetId || !alwaysIncludeIds.has(tweetId)) {
+        continue;
+      }
+      addPersonEntry({
+        id: tweetId,
+        tweet,
+        score: readScore(scoreById, tweetId)
+      });
     }
 
     const people = [...byAuthorId.values()];
@@ -1313,7 +1341,10 @@
     });
     const people = buildPeopleEntries({
       rankedEntries: sections.rankedEntries,
-      followingSet
+      nodes,
+      scoreById,
+      followingSet,
+      alwaysIncludeTweetIds: snapshotMeta?.pathAnchored?.mandatoryPathIds || []
     });
     const context = buildContextSummary({
       nodes,

@@ -2,6 +2,10 @@
 
 Ariadex is a conversation analysis engine plus a Chrome extension UI.
 
+The name is intentional:
+- `Ariadne` for the thread-through-the-labyrinth idea
+- `Dex` for the indexed explorer view Ariadex renders over one conversation
+
 When you click `◇ Explore` on X:
 1. Ariadex canonicalizes the root tweet.
 2. On cache miss, it retrieves connected tweets from the official X API in two passes:
@@ -44,7 +48,8 @@ Extension networking note:
 - extension now uses async snapshot jobs and shows server progress messages while loading.
 
 Server filtering note:
-- graph-cache server can run an OpenAI cheap model pass (`gpt-4o-mini`) to mark tweets as contributing/non-contributing
+- graph-cache server can run a configured LLM pass to mark tweets as contributing/non-contributing
+- repo config defaults that LLM path to local Gemma 4 via `llama-server`
 - non-contributing tweets are filtered before ThinkerRank
 
 UI note:

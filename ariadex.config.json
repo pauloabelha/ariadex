@@ -1,0 +1,17 @@
+{
+  "llm": {
+    "local": true,
+    "localBaseUrl": "http://127.0.0.1:8091/v1",
+    "localModel": "google_gemma-4-E2B-it-Q4_K_M",
+    "localArticleModel": "google_gemma-4-E2B-it-Q4_K_M",
+    "localApiKey": "",
+    "localServerBinary": "/home/pauloabelha/alienware16-llm/llama.cpp/build-cuda/bin/llama-server",
+    "localServerModelPath": "/home/pauloabelha/alienware16-llm/llama.cpp/models/gemma4/google_gemma-4-E2B-it-Q4_K_M.gguf",
+    "localServerHost": "127.0.0.1",
+    "localServerPort": 8091,
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "articleModel": "gpt-4o-mini",
+    "apiKey": ""
+  }
+}

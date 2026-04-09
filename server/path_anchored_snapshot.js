@@ -231,9 +231,10 @@ function classifyReference(url) {
     const parsed = new URL(canonical);
     const host = String(parsed.hostname || "").toLowerCase();
     const pathname = String(parsed.pathname || "").toLowerCase();
+    const isXArticle = (host === "x.com" || host === "twitter.com") && /^\/i\/article\/\d+/.test(pathname);
     if (
-      host === "x.com"
-      || host === "twitter.com"
+      (!isXArticle && host === "x.com")
+      || (!isXArticle && host === "twitter.com")
       || host.endsWith(".x.com")
       || host.endsWith(".twitter.com")
       || host === "t.co"
@@ -242,7 +243,9 @@ function classifyReference(url) {
     }
 
     let kind = "web";
-    if (pathname.endsWith(".pdf") || host.includes("arxiv.org") || host.includes("doi.org")) {
+    if (isXArticle) {
+      kind = "document";
+    } else if (pathname.endsWith(".pdf") || host.includes("arxiv.org") || host.includes("doi.org")) {
       kind = "document";
     } else if (host.includes("youtube.com") || host.includes("youtu.be") || host.includes("vimeo.com")) {
       kind = "video";

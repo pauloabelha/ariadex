@@ -2,6 +2,11 @@
 
 Ariadex explores conversations on X by turning connected tweets into a typed graph and ranking influential posts with ThinkerRank.
 
+Name note:
+- `Ariadex` is meant as `Ariadne` + `Dex`
+- `Ariadne` because the product is trying to give you a thread through the maze of a messy conversation
+- `Dex` because the UI is a compact explorer/index over branches, references, people, context, and digest views
+
 ## What Ariadex does
 - injects `◇ Explore` into X tweet action bars
 - resolves canonical root tweets
@@ -83,9 +88,54 @@ Behavior:
 - caches both article JSON and PDF artifacts separately from the base snapshot
 
 Environment flags:
-- `OPENAI_API_KEY` (required to enable model-backed article generation)
-- `ARIADEX_OPENAI_ARTICLE_MODEL` (default: `ARIADEX_OPENAI_MODEL`, else `gpt-4o-mini`)
+- `ARIADEX_LOCAL=true|false` toggles local-vs-remote LLM routing
+- `ARIADEX_LOCAL_MODEL` local model id for contribution filtering
+- `ARIADEX_LOCAL_ARTICLE_MODEL` optional local override for article generation
+- `ARIADEX_LOCAL_BASE_URL` local OpenAI-compatible base URL
+- `ARIADEX_LOCAL_API_KEY` optional key for local endpoint
 - `ARIADEX_OPENAI_ARTICLE_TIMEOUT_MS` (default: `30000`)
+
+Compatibility notes:
+- Ariadex now reads repo defaults from [`ariadex.config.json`](/home/pauloabelha/ariadex/ariadex.config.json)
+- that config currently defaults `llm.local=true`, so local Gemma is the default path unless env overrides it
+- Ariadex still supports `OPENAI_API_KEY`, `ARIADEX_OPENAI_BASE_URL`, `ARIADEX_OPENAI_MODEL`, and `ARIADEX_OPENAI_ARTICLE_MODEL`
+- new `ARIADEX_LLM_*` vars take priority when present
+- localhost endpoints such as `http://127.0.0.1:8080/v1` do not require an API key
+
+### Local Gemma 4 via `llama-server`
+Local defaults already point at your Gemma 4 setup in [`/home/pauloabelha/alienware16-llm`](/home/pauloabelha/alienware16-llm). Start the local server with:
+
+```bash
+npm run llm:local
+```
+
+Then run the graph cache server:
+
+```bash
+npm run dev:cache
+```
+
+Optional smoke check against the live local endpoint:
+
+```bash
+npm run llm:smoke
+```
+
+The repo default local endpoint is now `http://127.0.0.1:8091/v1`, matching the tested `llama-server` path in this workspace.
+For the extension bridge in local dev, Ariadex also falls back to `http://127.0.0.1:8787` as the default Graph API URL when runtime config has not been hydrated yet.
+
+Optional overrides:
+
+```bash
+ARIADEX_LOCAL=true \
+ARIADEX_LOCAL_MODEL=google_gemma-4-E2B-it-Q4_K_M \
+ARIADEX_LOCAL_BASE_URL=http://127.0.0.1:8080/v1 \
+npm run dev:cache
+```
+
+Current practical note:
+- local Gemma 4 is already good enough for Ariadex's contribution-filter pass
+- article generation may still fall back to Ariadex's deterministic local digest if the model does not return the strict JSON schema that the digest endpoint expects
 
 ## Run extension
 Install dependencies first:
@@ -282,10 +332,15 @@ Cache keys include pipeline version, mode, canonical root, and following-set sig
 
 Cache layers now work like this:
 - entity cache: tweet and user hydrations are memoized by id, so repeated `/2/tweets/:id`, `/2/tweets`, and `/2/users` lookups avoid redundant X fetches
+- entity cache is opportunistic across generic X API responses too, so tweet/user entities returned in `data`, `includes.users`, or `includes.tweets` are persisted immediately for reuse
 - snapshot cache: collected conversation datasets are reused per canonical root/mode/following signature
 - article cache: generated article JSON and PDF are cached separately on top of the snapshot
 
 Article generation reuses the cached snapshot by default and does not trigger an incremental refresh unless explicitly requested.
+
+Panel behavior notes:
+- the explored tweet author and ancestor-path authors are always retained in `People`, even when those tweets are hidden from branch ranking cards
+- X Articles such as `https://x.com/i/article/...` are treated as external references and can appear in `References`
 
 ### Environment-based endpoint config (dev/prod)
 Use environment-aware endpoint mapping so extension always targets a pre-specified server.
@@ -360,7 +415,7 @@ Ranking diagnostics are logged on snapshot completion:
 - `topRankingPreview`
 - `emptyRankingReason`
 
-OpenAI status is logged at startup (`openAiEnabled`) for article generation, and snapshot completion logs include ranking diagnostics for the full collected graph.
+LLM status is logged at startup (`llmEnabled`, `llmProvider`, `llmEndpointBase`). `openAiEnabled` is still logged for backward compatibility, and snapshot completion logs include ranking diagnostics for the full collected graph.
 - `dedupedCount`
 - `maxConcurrentBatches`
 - `candidateCount`, `classifiedCount`

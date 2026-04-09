@@ -12,6 +12,7 @@ const {
 test("isExternalReferenceUrl excludes x status urls and keeps external documents", () => {
   assert.equal(isExternalReferenceUrl("https://x.com/a/status/123"), false);
   assert.equal(isExternalReferenceUrl("https://twitter.com/a/status/123"), false);
+  assert.equal(isExternalReferenceUrl("https://x.com/i/article/123"), true);
   assert.equal(isExternalReferenceUrl("https://t.co/abc123"), false);
   assert.equal(isExternalReferenceUrl("https://example.com/doc?utm_source=x"), true);
 });
@@ -31,6 +32,23 @@ test("createReferenceEntries canonicalizes non-x urls and ranks by weighted cita
   assert.equal(references[0].canonicalUrl, "https://example.com/doc");
   assert.equal(references[0].citationCount, 2);
   assert.deepEqual(references[0].citedByTweetIds, ["a", "b"]);
+});
+
+test("createReferenceEntries includes X articles from external_urls", () => {
+  const references = createReferenceEntries([
+    {
+      id: "root",
+      text: "root tweet",
+      author: "@root",
+      external_urls: ["https://x.com/i/article/2041371538482761728"]
+    }
+  ], new Map([["root", 1.25]]));
+
+  assert.deepEqual(references.map((entry) => entry.canonicalUrl), [
+    "https://x.com/i/article/2041371538482761728"
+  ]);
+  assert.equal(references[0].domain, "x.com");
+  assert.equal(references[0].citationCount, 1);
 });
 
 test("buildArticleInput excludes synthetic tweets and preserves top human tweets", () => {
@@ -203,9 +221,85 @@ test("buildFallbackArticle emits standard digest section order when artifact is 
 });
 
 test("createOpenAiArticleGenerator accepts minimal model schema and builds standard sections locally", async () => {
+  let seenHeaders = null;
   const generator = createOpenAiArticleGenerator({
-    apiKey: "test-key",
     enabled: true,
+    endpointBase: "http://127.0.0.1:8080/v1",
+    fetchImpl: async (_url, options) => {
+      seenHeaders = options.headers;
+      return {
+        ok: true,
+        async text() {
+          return JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    title: "Digest title",
+                    dek: "Digest dek",
+                    summary: "A concise model-written summary."
+                  })
+                }
+              }
+            ]
+          });
+        }
+      };
+    }
+  });
+
+  const article = await generator.generateArticle({
+    clickedTweetId: "seed",
+    dataset: {
+      canonicalRootId: "root",
+      rootTweet: { id: "root", author: "@root", text: "root text" },
+      tweets: [
+        { id: "root", author: "@root", text: "root text" },
+        { id: "seed", author: "@seed", text: "seed text", quote_of: "root" }
+      ]
+    },
+    snapshot: {
+      canonicalRootId: "root",
+      root: { id: "root", author: "@root", text: "root text" },
+      pathAnchored: {
+        selectedTweetIds: ["root", "seed"],
+        references: [],
+        artifact: {
+          exploredTweetId: "seed",
+          rootTweet: { id: "root", author: "@root", text: "root text" },
+          mandatoryPath: [
+            { id: "root", author: "@root", text: "root text" },
+            { id: "seed", author: "@seed", text: "seed text", quoteOf: "root" }
+          ],
+          expansions: [],
+          selectedTweets: []
+        }
+      },
+      ranking: [
+        { id: "seed", score: 1 },
+        { id: "root", score: 0.9 }
+      ]
+    }
+  });
+
+  assert.equal(seenHeaders.Authorization, undefined);
+  assert.equal(generator.llmProvider, "local");
+  assert.equal(article.llmProvider, "local");
+  assert.equal(article.usedLlm, true);
+  assert.equal(article.usedOpenAi, false);
+  assert.equal(article.title, "Digest title");
+  assert.equal(article.dek, "Digest dek");
+  assert.equal(article.summary, "A concise model-written summary.");
+  assert.deepEqual(
+    article.sections.map((section) => section.heading),
+    ["Original tweet", "Why this appeared", "Ancestor path", "Digest summary"]
+  );
+});
+
+test("createOpenAiArticleGenerator falls back cleanly when local model returns invalid json", async () => {
+  const generator = createOpenAiArticleGenerator({
+    enabled: true,
+    endpointBase: "http://127.0.0.1:8091/v1",
     fetchImpl: async () => ({
       ok: true,
       async text() {
@@ -213,11 +307,7 @@ test("createOpenAiArticleGenerator accepts minimal model schema and builds stand
           choices: [
             {
               message: {
-                content: JSON.stringify({
-                  title: "Digest title",
-                  dek: "Digest dek",
-                  summary: "A concise model-written summary."
-                })
+                content: "not-json"
               }
             }
           ]
@@ -260,10 +350,10 @@ test("createOpenAiArticleGenerator accepts minimal model schema and builds stand
     }
   });
 
-  assert.equal(article.usedOpenAi, true);
-  assert.equal(article.title, "Digest title");
-  assert.equal(article.dek, "Digest dek");
-  assert.equal(article.summary, "A concise model-written summary.");
+  assert.equal(article.llmProvider, "local");
+  assert.equal(article.usedLlm, false);
+  assert.equal(article.usedOpenAi, false);
+  assert.match(article.title, /conversation/);
   assert.deepEqual(
     article.sections.map((section) => section.heading),
     ["Original tweet", "Why this appeared", "Ancestor path", "Digest summary"]

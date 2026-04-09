@@ -19,14 +19,16 @@ test("parseOpenAiContent parses strict JSON content", () => {
 
 test("createOpenAiContributionClassifier classifies tweets in batches", async () => {
   const seenBodies = [];
+  const seenHeaders = [];
   const classifier = createOpenAiContributionClassifier({
-    apiKey: "test-key",
-    model: "gpt-4o-mini",
+    endpointBase: "http://127.0.0.1:8080/v1",
+    model: "google_gemma-4-E2B-it-Q4_K_M",
     batchSize: 2,
     maxTweetsPerSnapshot: 10,
     fetchImpl: async (_url, options) => {
       const payload = JSON.parse(String(options.body));
       seenBodies.push(payload);
+      seenHeaders.push(options.headers);
       const batch = JSON.parse(payload.messages[1].content).tweets;
       const labels = batch.map((tweet, index) => ({
         id: tweet.id,
@@ -69,10 +71,13 @@ test("createOpenAiContributionClassifier classifies tweets in batches", async ()
   });
 
   assert.equal(classifier.enabled, true);
+  assert.equal(classifier.llmProvider, "local");
   assert.equal(seenBodies.length, 1);
+  assert.equal(seenHeaders[0].Authorization, undefined);
   assert.equal(result.candidateCount, 2);
   assert.equal(result.heuristicRejectedCount, 1);
   assert.equal(result.classifiedCount, 2);
+  assert.equal(result.llmProvider, "local");
   assert.equal(Object.keys(result.byTweetId).length, 3);
   assert.equal(result.byTweetId.t2, false);
   assert.equal(result.scoreByTweetId.t2, 0);

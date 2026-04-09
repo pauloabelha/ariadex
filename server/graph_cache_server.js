@@ -10,6 +10,11 @@ const conversationDatasetSource = require("../data/conversation_dataset_source.j
 const conversationEngine = require("../core/conversation_engine.js");
 const { createOpenAiArticleGenerator } = require("./openai_article_generator.js");
 const { createArticlePdfBuffer } = require("./article_pdf.js");
+const {
+  deriveProviderName,
+  resolveApiKeyFromEnv,
+  resolveEndpointBase
+} = require("./llm_runtime.js");
 const { DEFAULT_SELECTOR_ID, runRegisteredSelector } = require("../research/selectors/registry.js");
 const { buildConversationArtifact } = require("./conversation_artifact.js");
 
@@ -1422,6 +1427,8 @@ function createGraphCacheService({
       summary: "No article could be generated.",
       sections: [],
       references: [],
+      usedLlm: false,
+      llmProvider: null,
       usedOpenAi: false,
       model: null,
       input: null
@@ -1445,6 +1452,8 @@ function createGraphCacheService({
       articleCacheKey,
       snapshotCacheKey,
       byteLength: pdf.byteLength,
+      usedLlm: Boolean(normalizedArticle.usedLlm),
+      llmProvider: normalizedArticle.llmProvider || null,
       usedOpenAi: Boolean(normalizedArticle.usedOpenAi)
     });
 
@@ -1813,6 +1822,9 @@ async function main() {
   const logger = createLogger({
     level: process.env.ARIADEX_LOG_LEVEL || "info"
   });
+  const llmEndpointBase = resolveEndpointBase();
+  const llmApiKey = resolveApiKeyFromEnv(undefined, llmEndpointBase);
+  const llmProvider = deriveProviderName(llmEndpointBase);
 
   const cachePath = process.env.ARIADEX_GRAPH_CACHE_FILE
     ? path.resolve(process.env.ARIADEX_GRAPH_CACHE_FILE)
@@ -1851,6 +1863,9 @@ async function main() {
     cachePath,
     cacheMaxEntries,
     logLevel: logger.level,
+    llmEnabled: Boolean(llmApiKey || llmProvider === "local"),
+    llmProvider,
+    llmEndpointBase,
     openAiEnabled: Boolean((process.env.OPENAI_API_KEY || "").trim()),
     pipelineVersion: PIPELINE_VERSION
   });

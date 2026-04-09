@@ -116,6 +116,61 @@
     };
   }
 
+  function looksLikeTweetEntity(value) {
+    return Boolean(
+      value
+      && typeof value === "object"
+      && value.id
+      && (
+        Object.prototype.hasOwnProperty.call(value, "author_id")
+        || Object.prototype.hasOwnProperty.call(value, "conversation_id")
+        || Object.prototype.hasOwnProperty.call(value, "referenced_tweets")
+        || Object.prototype.hasOwnProperty.call(value, "text")
+      )
+    );
+  }
+
+  function looksLikeUserEntity(value) {
+    return Boolean(
+      value
+      && typeof value === "object"
+      && value.id
+      && (
+        Object.prototype.hasOwnProperty.call(value, "username")
+        || Object.prototype.hasOwnProperty.call(value, "name")
+        || Object.prototype.hasOwnProperty.call(value, "profile_image_url")
+      )
+    );
+  }
+
+  function cacheResponseEntities(entityCache, response) {
+    if (!entityCache || !response || typeof response !== "object") {
+      return;
+    }
+
+    for (const item of ensureArray(response?.data)) {
+      if (looksLikeTweetEntity(item)) {
+        entityCache.setTweet(item);
+        continue;
+      }
+      if (looksLikeUserEntity(item)) {
+        entityCache.setUser(item);
+      }
+    }
+
+    for (const user of ensureArray(response?.includes?.users)) {
+      if (looksLikeUserEntity(user)) {
+        entityCache.setUser(user);
+      }
+    }
+
+    for (const tweet of ensureArray(response?.includes?.tweets)) {
+      if (looksLikeTweetEntity(tweet)) {
+        entityCache.setTweet(tweet);
+      }
+    }
+  }
+
   function createConcurrencyLimiter(maxConcurrent) {
     const limit = Math.max(1, Math.floor(Number(maxConcurrent) || 1));
     const queue = [];
@@ -416,6 +471,7 @@
     }
 
     const normalizedOptions = normalizeOptions(options);
+    const entityCacheFacade = createEntityCacheFacade(entityCache);
 
     async function request(path, params = {}) {
       const rateLimitBucket = endpointRateLimitBucket(path);
@@ -450,7 +506,9 @@
           throw error;
         }
 
-        return response.json();
+        const parsed = await response.json();
+        cacheResponseEntities(entityCacheFacade, parsed);
+        return parsed;
       } finally {
         timeout.cancel();
       }
@@ -459,7 +517,7 @@
     return {
       request,
       options: normalizedOptions,
-      entityCache: createEntityCacheFacade(entityCache)
+      entityCache: entityCacheFacade
     };
   }
 

@@ -354,6 +354,76 @@ test("panel renderer excludes t.co and x status urls from references", () => {
   assert.deepEqual(viewModel.evidence.map((entry) => entry.canonicalUrl), ["https://example.com/report"]);
 });
 
+test("panel renderer includes X articles from external_urls in references", () => {
+  const viewModel = panelRenderer.buildDexViewModel({
+    nodes: [
+      {
+        id: "root",
+        author_id: "u1",
+        author: "@pete",
+        text: "root tweet",
+        external_urls: ["https://x.com/i/article/2041371538482761728"],
+        author_profile: { username: "pete", name: "Pete Florence", description: "human" }
+      }
+    ],
+    scoreById: new Map([["root", 1]]),
+    followingSet: new Set(),
+    networkLimit: 5,
+    topLimit: 10
+  });
+
+  assert.deepEqual(viewModel.evidence.map((entry) => entry.canonicalUrl), [
+    "https://x.com/i/article/2041371538482761728"
+  ]);
+});
+
+test("panel renderer always includes explored and ancestor-path authors in people", () => {
+  const viewModel = panelRenderer.buildDexViewModel({
+    nodes: [
+      {
+        id: "ROOT",
+        author_id: "u_root",
+        author: "@peteflorence",
+        text: "root tweet",
+        author_profile: { username: "peteflorence", name: "Pete Florence", description: "human" }
+      },
+      {
+        id: "CLICKED",
+        author_id: "u_clicked",
+        author: "@chris_j_paxton",
+        text: "clicked quote",
+        quote_of: "ROOT",
+        author_profile: { username: "chris_j_paxton", name: "Chris Paxton", description: "human" }
+      },
+      {
+        id: "A",
+        author_id: "u1",
+        author: "@xiao_ted",
+        text: "reply",
+        reply_to: "ROOT",
+        author_profile: { username: "xiao_ted", name: "Ted", description: "human" }
+      }
+    ],
+    scoreById: new Map([
+      ["ROOT", 0.99],
+      ["CLICKED", 0.95],
+      ["A", 0.9]
+    ]),
+    followingSet: new Set(),
+    excludedTweetIds: new Set(["ROOT", "CLICKED"]),
+    networkLimit: 5,
+    topLimit: 10,
+    snapshotMeta: {
+      pathAnchored: {
+        mandatoryPathIds: ["ROOT", "CLICKED"]
+      }
+    }
+  });
+
+  const authors = [...viewModel.people.followed, ...viewModel.people.others].map((entry) => entry.author);
+  assert.deepEqual(authors, ["@peteflorence", "@chris_j_paxton", "@xiao_ted"]);
+});
+
 test("panel renderer canonicalizes youtube shortlinks and arxiv pdf links", () => {
   assert.equal(
     panelRenderer.canonicalizeUrl("https://youtu.be/abc123?si=tracking"),

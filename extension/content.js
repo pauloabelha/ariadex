@@ -39,6 +39,9 @@
   const BUTTON_TWEET_ID_ATTR = "data-ariadex-tweet-id";
   const INJECTED_ATTR = "data-ariadex-injected";
   const EXPLORE_MODE = "deep";
+  const DEFAULT_GRAPH_API_URL_BY_ENV = {
+    dev: "http://127.0.0.1:8787"
+  };
   const buttonTweetElementByButton = new WeakMap();
 
   const extractTweetData = typeof domCollectorApi.extractTweetData === "function"
@@ -357,9 +360,12 @@
       ? graphApiByEnv[runtimeEnv].trim()
       : "";
     const graphApiFromLocalStorage = (readLocalStorageValue("ariadex.graph_api_url") || "").trim();
+    const graphApiDefault = typeof DEFAULT_GRAPH_API_URL_BY_ENV[runtimeEnv] === "string"
+      ? DEFAULT_GRAPH_API_URL_BY_ENV[runtimeEnv]
+      : "";
     const graphApiUrl = typeof settings.graphApiUrl === "string" && settings.graphApiUrl.trim().length > 0
       ? settings.graphApiUrl.trim()
-      : (graphApiFromEnvMap || graphApiFromLocalStorage || null);
+      : (graphApiFromEnvMap || graphApiFromLocalStorage || graphApiDefault || null);
 
     const followingSource = settings.followingSet
       || settings.followingIds

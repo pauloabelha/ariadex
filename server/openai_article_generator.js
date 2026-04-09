@@ -1,9 +1,17 @@
 "use strict";
 
 const { canonicalizeUrl, extractUrlsFromText } = require("../ui/panel_renderer.js");
+const {
+  buildAuthHeaders,
+  createProviderSignature,
+  deriveProviderName,
+  resolveApiKeyFromEnv,
+  resolveArticleModel,
+  resolveEndpointBase
+} = require("./llm_runtime.js");
 
-const DEFAULT_MODEL = process.env.ARIADEX_OPENAI_ARTICLE_MODEL || process.env.ARIADEX_OPENAI_MODEL || "gpt-4o-mini";
-const DEFAULT_ENDPOINT = process.env.ARIADEX_OPENAI_BASE_URL || "https://api.openai.com/v1";
+const DEFAULT_MODEL = resolveArticleModel();
+const DEFAULT_ENDPOINT = resolveEndpointBase();
 const ARTICLE_GENERATOR_VERSION = "v2";
 
 function cleanTweetText(text) {
@@ -26,10 +34,12 @@ function isExternalReferenceUrl(rawUrl) {
   try {
     const parsed = new URL(canonical);
     const host = String(parsed.hostname || "").toLowerCase();
+    const pathname = String(parsed.pathname || "").toLowerCase();
+    const isXArticle = (host === "x.com" || host === "twitter.com") && /^\/i\/article\/\d+/.test(pathname);
     return !(
       host === "t.co"
-      || host === "x.com"
-      || host === "twitter.com"
+      || (!isXArticle && host === "x.com")
+      || (!isXArticle && host === "twitter.com")
       || host.endsWith(".x.com")
       || host.endsWith(".twitter.com")
     );
@@ -45,7 +55,10 @@ function createReferenceEntries(tweets, scoreById) {
     if (!tweet || !tweet.id || !tweet.text) {
       continue;
     }
-    const urls = extractUrlsFromText(tweet.text).filter(isExternalReferenceUrl);
+    const urls = [
+      ...extractUrlsFromText(tweet.text),
+      ...(Array.isArray(tweet?.external_urls) ? tweet.external_urls : [])
+    ].filter(isExternalReferenceUrl);
     const uniqueUrls = [...new Set(urls.map((url) => canonicalizeUrl(url)).filter(Boolean))];
     for (const canonicalUrl of uniqueUrls) {
       if (!byUrl.has(canonicalUrl)) {
@@ -789,7 +802,7 @@ function normalizeArticleResponse(raw, fallbackReferences, sourceTweets = [], ar
 }
 
 function createOpenAiArticleGenerator({
-  apiKey = process.env.OPENAI_API_KEY,
+  apiKey = undefined,
   model = DEFAULT_MODEL,
   endpointBase = DEFAULT_ENDPOINT,
   fetchImpl = (typeof fetch === "function" ? fetch.bind(globalThis) : null),
@@ -797,9 +810,11 @@ function createOpenAiArticleGenerator({
   enabled = true,
   requestTimeoutMs = Number(process.env.ARIADEX_OPENAI_ARTICLE_TIMEOUT_MS || 30000)
 } = {}) {
-  const trimmedApiKey = String(apiKey || "").trim();
-  const generatorEnabled = Boolean(enabled && trimmedApiKey && fetchImpl);
-  const endpoint = `${String(endpointBase || DEFAULT_ENDPOINT).replace(/\/$/, "")}/chat/completions`;
+  const resolvedEndpointBase = resolveEndpointBase(endpointBase);
+  const resolvedApiKey = resolveApiKeyFromEnv(apiKey, resolvedEndpointBase);
+  const provider = deriveProviderName(resolvedEndpointBase);
+  const generatorEnabled = Boolean(enabled && fetchImpl);
+  const endpoint = `${resolvedEndpointBase}/chat/completions`;
   const timeoutMs = Math.max(3000, Math.floor(requestTimeoutMs || 30000));
 
   async function generateArticle({ dataset, snapshot, requestId = null, canonicalRootId = null, clickedTweetId = null } = {}) {
@@ -809,6 +824,8 @@ function createOpenAiArticleGenerator({
       return {
         ...fallback,
         model: null,
+        llmProvider: null,
+        usedLlm: false,
         usedOpenAi: false,
         input: articleInput
       };
@@ -821,7 +838,7 @@ function createOpenAiArticleGenerator({
         method: "POST",
         headers: {
           "content-type": "application/json",
-          Authorization: `Bearer ${trimmedApiKey}`
+          ...buildAuthHeaders(resolvedApiKey)
         },
         ...(controller ? { signal: controller.signal } : {}),
         body: JSON.stringify({
@@ -897,7 +914,9 @@ function createOpenAiArticleGenerator({
       return {
         ...normalized,
         model,
-        usedOpenAi: true,
+        llmProvider: provider,
+        usedLlm: true,
+        usedOpenAi: provider === "openai",
         input: articleInput
       };
     } catch (error) {
@@ -910,6 +929,8 @@ function createOpenAiArticleGenerator({
       return {
         ...fallback,
         model,
+        llmProvider: provider,
+        usedLlm: false,
         usedOpenAi: false,
         input: articleInput
       };
@@ -923,7 +944,10 @@ function createOpenAiArticleGenerator({
   return {
     enabled: generatorEnabled,
     model: generatorEnabled ? model : null,
-    signature: generatorEnabled ? `article:${ARTICLE_GENERATOR_VERSION}:${model}` : `article:fallback:${ARTICLE_GENERATOR_VERSION}`,
+    llmProvider: provider,
+    signature: generatorEnabled
+      ? `article:${ARTICLE_GENERATOR_VERSION}:${createProviderSignature({ provider, model, endpointBase: resolvedEndpointBase })}`
+      : `article:fallback:${ARTICLE_GENERATOR_VERSION}`,
     buildArticleInput,
     generateArticle
   };

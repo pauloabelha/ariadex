@@ -1,7 +1,16 @@
 "use strict";
 
-const DEFAULT_MODEL = process.env.ARIADEX_OPENAI_MODEL || "gpt-4o-mini";
-const DEFAULT_ENDPOINT = process.env.ARIADEX_OPENAI_BASE_URL || "https://api.openai.com/v1";
+const {
+  buildAuthHeaders,
+  createProviderSignature,
+  deriveProviderName,
+  resolveApiKeyFromEnv,
+  resolveContributionModel,
+  resolveEndpointBase
+} = require("./llm_runtime.js");
+
+const DEFAULT_MODEL = resolveContributionModel();
+const DEFAULT_ENDPOINT = resolveEndpointBase();
 
 function toBoolean(value, fallback = false) {
   if (typeof value === "boolean") {
@@ -198,7 +207,7 @@ async function mapWithConcurrency(items, concurrency, worker) {
 }
 
 function createOpenAiContributionClassifier({
-  apiKey = process.env.OPENAI_API_KEY,
+  apiKey = undefined,
   model = DEFAULT_MODEL,
   endpointBase = DEFAULT_ENDPOINT,
   fetchImpl = (typeof fetch === "function" ? fetch.bind(globalThis) : null),
@@ -213,8 +222,10 @@ function createOpenAiContributionClassifier({
   batchSize = Number(process.env.ARIADEX_OPENAI_BATCH_SIZE || 30),
   requestTimeoutMs = Number(process.env.ARIADEX_OPENAI_TIMEOUT_MS || 20000)
 } = {}) {
-  const trimmedApiKey = String(apiKey || "").trim();
-  const classifierEnabled = Boolean(enabled && trimmedApiKey && fetchImpl);
+  const resolvedEndpointBase = resolveEndpointBase(endpointBase);
+  const resolvedApiKey = resolveApiKeyFromEnv(apiKey, resolvedEndpointBase);
+  const provider = deriveProviderName(resolvedEndpointBase);
+  const classifierEnabled = Boolean(enabled && fetchImpl);
   const normalizedBatchSize = Math.max(5, Math.min(50, Math.floor(batchSize || 30)));
   const normalizedMaxTweets = Math.max(10, Math.floor(maxTweetsPerSnapshot || 120));
   const normalizedTimeoutMs = Math.max(2000, Math.floor(requestTimeoutMs || 20000));
@@ -222,7 +233,7 @@ function createOpenAiContributionClassifier({
   const normalizedScoreThreshold = Number.isFinite(scoreThreshold)
     ? Math.max(0.2, Math.min(0.95, scoreThreshold))
     : 0.65;
-  const endpoint = `${String(endpointBase || DEFAULT_ENDPOINT).replace(/\/$/, "")}/chat/completions`;
+  const endpoint = `${resolvedEndpointBase}/chat/completions`;
 
   async function classifyBatch(batch, meta = {}) {
     const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -246,7 +257,7 @@ function createOpenAiContributionClassifier({
         method: "POST",
         headers: {
           "content-type": "application/json",
-          Authorization: `Bearer ${trimmedApiKey}`
+          ...buildAuthHeaders(resolvedApiKey)
         },
         body: JSON.stringify({
           model,
@@ -321,6 +332,7 @@ function createOpenAiContributionClassifier({
       return {
         enabled: false,
         model,
+        llmProvider: provider,
         byTweetId: {},
         scoreByTweetId: {},
         reasonByTweetId: {},
@@ -437,6 +449,7 @@ function createOpenAiContributionClassifier({
     return {
       enabled: true,
       model,
+      llmProvider: provider,
       threshold: normalizedScoreThreshold,
       byTweetId,
       scoreByTweetId,
@@ -459,9 +472,10 @@ function createOpenAiContributionClassifier({
   return {
     enabled: classifierEnabled,
     model,
+    llmProvider: provider,
     signature: classifierEnabled
-      ? `openai:${model}:th=${normalizedScoreThreshold}:heur=${enableHeuristics ? 1 : 0}`
-      : "openai:disabled",
+      ? `${createProviderSignature({ provider, model, endpointBase: resolvedEndpointBase })}:th=${normalizedScoreThreshold}:heur=${enableHeuristics ? 1 : 0}`
+      : "llm:disabled",
     classifyTweets
   };
 }

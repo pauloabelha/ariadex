@@ -62,11 +62,13 @@ These tests run pure engine/data logic:
 - `tests/tweet_extraction_test.js`
 - `tests/x_api_client_network_discovery_test.js`
 - `tests/x_api_client_cache_test.js`
+- covers opportunistic entity-cache seeding from generic X API payloads (`data`, `includes.users`, `includes.tweets`)
 - `tests/benchmark_snapshot_pipeline_test.js`
 - `tests/openai_contribution_filter_test.js`
 - `tests/graph_cache_server_test.js`
 - `tests/openai_article_generator_test.js`
 - `tests/article_pdf_test.js`
+- `tests/dev_with_graph_cache_test.js`
 
 ## UI / Extension DOM
 - `tests/ui_panel_render_test.js`
@@ -97,6 +99,8 @@ Heuristic split:
 - article input excludes synthetic/X-only references and preserves canonical non-X references: `openai_article_generator_test.js`
 - PDF rendering returns a valid PDF header and includes article content: `article_pdf_test.js`
 - article endpoint and panel digest actions work through the extension bridge: `graph_cache_server_test.js`, `content_graph_api_bridge_test.js`, `ui_panel_renderer_layer_test.js`
+- panel regressions cover mandatory-path people retention and X Article reference rendering: `ui_panel_renderer_layer_test.js`
+- local `npm run dev:cache` defaults and generated local graph API wiring: `dev_with_graph_cache_test.js`, `sync_env_config_test.js`
 
 ## Performance Baseline Command
 

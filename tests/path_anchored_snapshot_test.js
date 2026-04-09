@@ -120,6 +120,7 @@ test("buildPathAnchoredSelection keeps mandatory ancestor path and recursively e
 
 test("classifyReference ignores X links and classifies documents and videos", () => {
   assert.equal(classifyReference("https://x.com/a/status/1"), null);
+  assert.equal(classifyReference("https://x.com/i/article/123").kind, "document");
   assert.equal(classifyReference("https://example.com/doc.pdf").kind, "document");
   assert.equal(classifyReference("https://youtu.be/abc").kind, "video");
 });

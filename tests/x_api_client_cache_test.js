@@ -105,3 +105,62 @@ test("fetchUsersByIds only requests uncached ids", async () => {
   assert.deepEqual(users.map((user) => user.id).sort(), ["u1", "u2"]);
   assert.equal(entityCache.users.get("u2").username, "fresh");
 });
+
+test("client request seeds entity cache from generic X API payloads", async () => {
+  const entityCache = {
+    tweets: new Map(),
+    users: new Map(),
+    getTweet(id) {
+      return this.tweets.get(String(id)) || null;
+    },
+    setTweet(tweet) {
+      this.tweets.set(String(tweet.id), tweet);
+    },
+    getUser(id) {
+      return this.users.get(String(id)) || null;
+    },
+    setUser(user) {
+      this.users.set(String(user.id), user);
+    }
+  };
+
+  const client = await xApiClient.createClient({
+    bearerToken: "test-token",
+    entityCache,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      async json() {
+        return {
+          data: [
+            {
+              id: "200",
+              author_id: "u2",
+              conversation_id: "200",
+              text: "primary tweet"
+            }
+          ],
+          includes: {
+            users: [{ id: "u2", username: "bob", name: "Bob" }],
+            tweets: [
+              {
+                id: "201",
+                author_id: "u3",
+                conversation_id: "200",
+                text: "included tweet"
+              }
+            ]
+          }
+        };
+      }
+    })
+  });
+
+  const payload = await client.request("/tweets/search/recent", { query: "robotics" });
+
+  assert.equal(Array.isArray(payload.data), true);
+  assert.equal(entityCache.tweets.get("200")?.text, "primary tweet");
+  assert.equal(entityCache.tweets.get("201")?.text, "included tweet");
+  assert.equal(entityCache.users.get("u2")?.username, "bob");
+});

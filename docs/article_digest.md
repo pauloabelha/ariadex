@@ -22,7 +22,7 @@ The goal is not to replace panel exploration. The goal is to let users:
    - derives a path-anchored conversation artifact JSON from mandatory path tweets, selected branches, and canonical non-X references
    - asks the model only for minimal narrative metadata (`title`, `dek`, `summary`)
    - builds the final digest sections deterministically from the artifact
-   - uses OpenAI when available, otherwise falls back to deterministic local article generation
+  - uses a configured OpenAI-compatible LLM endpoint when available, otherwise falls back to deterministic local article generation
    - renders a PDF
    - caches both article JSON and PDF payload
 6. The panel renders the digest and exposes `Download PDF`.
@@ -67,6 +67,8 @@ Response body:
         "citationCount": 3
       }
     ],
+    "usedLlm": true,
+    "llmProvider": "openai",
     "usedOpenAi": true,
     "model": "gpt-4o-mini"
   },
@@ -181,8 +183,8 @@ Important constraints:
 - canonical references exclude X/Twitter URLs
 - article generation is grounded in structured data and the path-anchored artifact, not raw tweet dumps
 
-## OpenAI Behavior
-If `OPENAI_API_KEY` is available, Ariadex uses the article generator model.
+## LLM Behavior
+If an LLM endpoint is configured, Ariadex uses the article generator model.
 
 The model is asked to return strict JSON in this minimal schema:
 
@@ -211,17 +213,42 @@ This is why the model schema is intentionally minimal.
 
 Model selection:
 
+- `ARIADEX_LOCAL_ARTICLE_MODEL` when `ARIADEX_LOCAL=true`
+- fallback: `ARIADEX_LOCAL_MODEL` when `ARIADEX_LOCAL=true`
+- `ARIADEX_LLM_ARTICLE_MODEL`
+- fallback: `ARIADEX_OPENAI_ARTICLE_MODEL`
+- fallback: `ARIADEX_LLM_MODEL`
 - `ARIADEX_OPENAI_ARTICLE_MODEL`
 - fallback: `ARIADEX_OPENAI_MODEL`
 - fallback: `gpt-4o-mini`
 
-If OpenAI is unavailable or returns invalid output:
+Endpoint selection:
+
+- `ARIADEX_LOCAL_BASE_URL` when `ARIADEX_LOCAL=true`
+- fallback local default from [`ariadex.config.json`](/home/pauloabelha/ariadex/ariadex.config.json)
+- `ARIADEX_LLM_BASE_URL`
+- fallback: `ARIADEX_OPENAI_BASE_URL`
+- fallback: `https://api.openai.com/v1`
+
+Auth selection:
+
+- `ARIADEX_LOCAL_API_KEY` when `ARIADEX_LOCAL=true`
+- `ARIADEX_LLM_API_KEY`
+- fallback: `OPENAI_API_KEY`
+- localhost endpoints may omit an API key
+
+If the configured LLM is unavailable or returns invalid output:
 
 - Ariadex logs the failure
 - Ariadex falls back to deterministic local digest generation
 - PDF generation still succeeds
 
 This keeps the feature usable in local dev and cheap environments.
+
+Local Gemma note:
+- in a live smoke test against local `llama-server`, the contribution filter produced usable JSON classifications
+- the article step still fell back cleanly because the model output did not satisfy Ariadex's strict `{"title","dek","summary"}` JSON contract on that run
+- the repo's tested local default endpoint is `http://127.0.0.1:8091/v1`
 
 ## Caching
 Article generation uses the snapshot cache as its base identity.

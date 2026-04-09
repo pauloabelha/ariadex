@@ -26,6 +26,44 @@ test.afterEach(() => {
   cleanupGlobals();
 });
 
+test("readXApiRuntimeConfig falls back to local graph api url in dev", () => {
+  global.window = {
+    localStorage: {
+      getItem(key) {
+        if (key === "ariadex.runtime_env") {
+          return "dev";
+        }
+        return null;
+      }
+    }
+  };
+
+  const runtimeConfig = content.readXApiRuntimeConfig();
+
+  assert.equal(runtimeConfig.graphApiUrl, "http://127.0.0.1:8787");
+  assert.equal(runtimeConfig.runtimeEnv, "dev");
+});
+
+test("readXApiRuntimeConfig prefers graph api url from local storage", () => {
+  global.window = {
+    localStorage: {
+      getItem(key) {
+        if (key === "ariadex.graph_api_url") {
+          return "http://127.0.0.1:9999";
+        }
+        if (key === "ariadex.runtime_env") {
+          return "dev";
+        }
+        return null;
+      }
+    }
+  };
+
+  const runtimeConfig = content.readXApiRuntimeConfig();
+
+  assert.equal(runtimeConfig.graphApiUrl, "http://127.0.0.1:9999");
+});
+
 test("buildConversationSnapshot uses extension message bridge for graph API", async () => {
   let sentMessage = null;
   global.chrome = {
