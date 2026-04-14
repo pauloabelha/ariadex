@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "AriadeX v2",
+  "version": "0.0.1",
+  "description": "Minimal root-path explorer for X conversations.",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://cdn.syndication.twimg.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
