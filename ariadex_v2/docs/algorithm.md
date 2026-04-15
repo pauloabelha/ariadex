@@ -8,10 +8,12 @@ That file owns the pure logic for:
 - cache adapter creation
 - syndication fetch client creation
 - tweet payload normalization
+- person handle/display-name/avatar normalization
 - `quote > reply` parent selection
 - recursive root-path walking
 - external reference canonicalization
 - per-path reference deduplication and numbering
+- per-path people deduplication by canonical X handle
 
 ## Why this split exists
 
@@ -39,7 +41,8 @@ Given a clicked tweet id:
 9. emit `canonicalizing_refs`
 10. reverse into root-to-explored order
 11. canonicalize and dedupe references across that path
-12. emit `done`
+12. dedupe path authors and mentions into canonical `people`
+13. emit `done`
 
 ## Output artifact
 
@@ -51,6 +54,12 @@ The algorithm returns:
 - `references`
   canonical deduped references cited anywhere on that path
 
+- `people`
+  canonical deduped people found anywhere on that path
+  collected from:
+  - tweet authors on the path
+  - explicit `user_mentions` on path tweets
+
 Each path tweet also carries:
 
 - `outboundRelation`
@@ -58,3 +67,6 @@ Each path tweet also carries:
 
 - `referenceNumbers`
   the numbered references cited by that tweet
+
+- `peopleHandles`
+  canonical X handles collected from that tweet

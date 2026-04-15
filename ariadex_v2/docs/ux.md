@@ -1,9 +1,17 @@
 # UX Notes
 
-The floating panel has two tabs:
+The floating panel has three tabs:
 
 - `Root Path`
 - `References`
+- `People`
+
+The panel header also exposes:
+
+- `Export`
+- `Clear Cache`
+
+The header itself is draggable, so the panel can be repositioned around the viewport.
 
 ## Root Path tab
 
@@ -29,3 +37,23 @@ Each reference card shows:
 
 Clicking a reference opens the canonical URL in a new tab.
 
+## People tab
+
+Each people card shows:
+
+- profile picture when available
+- handle
+- display name
+- profile URL
+- source types such as `author` or `mention`
+- count of path tweets where that handle appeared
+
+Clicking a people card opens that X profile in a new tab.
+
+## Export
+
+`Export` downloads a JSON snapshot containing:
+
+- `clickedTweetId`
+- `exportedAt`
+- `artifact`

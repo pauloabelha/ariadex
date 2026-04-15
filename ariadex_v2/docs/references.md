@@ -39,3 +39,9 @@ Each tweet stores the numbers it cites so the path tab can show markers like:
 - `[1]`
 - `[1] [3]`
 
+The current export feature writes the full current artifact as JSON, so the same
+canonical reference list is preserved outside the panel together with:
+
+- `path`
+- `references`
+- `people`

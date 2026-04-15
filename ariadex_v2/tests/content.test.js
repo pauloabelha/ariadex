@@ -482,6 +482,144 @@ test("renderPeopleTab shows an empty state when no people are available", () => 
   assert.equal(empty.textContent, "No people were collected on this root path.");
 });
 
+test("renderReferencesTab renders canonical references and opens them on click", () => {
+  const opened = [];
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        children: [],
+        listeners: {},
+        appendChild(child) {
+          this.children.push(child);
+        },
+        addEventListener(type, listener) {
+          this.listeners[type] = listener;
+        }
+      };
+    },
+    defaultView: {
+      open(url, target, features) {
+        opened.push({ url, target, features });
+      }
+    }
+  };
+
+  const list = content.renderReferencesTab([{
+    number: 1,
+    canonicalUrl: "https://example.com/paper",
+    domain: "example.com",
+    citedByTweetIds: ["10", "20"]
+  }], root);
+
+  assert.equal(list.children.length, 1);
+  assert.equal(list.children[0].children[0].textContent, "Reference [1]");
+  assert.equal(list.children[0].children[1].textContent, "https://example.com/paper");
+  assert.match(list.children[0].children[2].textContent, /2 path tweets/);
+  list.children[0].listeners.click();
+  assert.deepEqual(opened, [{
+    url: "https://example.com/paper",
+    target: "_blank",
+    features: "noopener,noreferrer"
+  }]);
+});
+
+test("renderReferencesTab shows an empty state when no references are available", () => {
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        appendChild() {},
+        addEventListener() {}
+      };
+    }
+  };
+
+  const empty = content.renderReferencesTab([], root);
+  assert.equal(empty.textContent, "No external references found on this root path.");
+});
+
+test("renderPathTab navigates to the tweet url on card click", () => {
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        children: [],
+        listeners: {},
+        appendChild(child) {
+          this.children.push(child);
+        },
+        addEventListener(type, listener) {
+          this.listeners[type] = listener;
+        }
+      };
+    },
+    defaultView: {
+      location: {
+        href: "https://x.com/home"
+      }
+    }
+  };
+
+  const list = content.renderPathTab([{
+    id: "10",
+    author: "alice",
+    text: "hello",
+    url: "https://x.com/alice/status/10",
+    outboundRelation: "",
+    referenceNumbers: [1]
+  }], "10", root);
+
+  assert.equal(list.children.length, 1);
+  assert.equal(list.children[0].children[0].textContent, "Root");
+  assert.equal(list.children[0].children[3].textContent, "[1]");
+  list.children[0].listeners.click();
+  assert.equal(root.defaultView.location.href, "https://x.com/alice/status/10");
+});
+
+test("renderPathTab omits the reference badge when a tweet has no references", () => {
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        children: [],
+        listeners: {},
+        appendChild(child) {
+          this.children.push(child);
+        },
+        addEventListener(type, listener) {
+          this.listeners[type] = listener;
+        }
+      };
+    },
+    defaultView: {
+      location: {
+        href: "https://x.com/home"
+      }
+    }
+  };
+
+  const list = content.renderPathTab([{
+    id: "10",
+    author: "alice",
+    text: "hello",
+    url: "https://x.com/alice/status/10",
+    outboundRelation: "",
+    referenceNumbers: []
+  }], "10", root);
+
+  assert.equal(list.children[0].children.length, 4);
+  assert.equal(list.children[0].children[3].textContent, "10");
+});
+
 test("triggerJsonDownload creates a blob url and clicks a temporary download link", () => {
   const appended = [];
   const clicked = [];
@@ -528,4 +666,24 @@ test("triggerJsonDownload creates a blob url and clicks a temporary download lin
   }]);
   assert.equal(removed.length, 1);
   assert.deepEqual(revoked, ["blob:ariadex"]);
+});
+
+test("triggerJsonDownload rejects when blob downloads are unavailable", () => {
+  const root = {
+    createElement() {
+      return {};
+    },
+    body: {
+      appendChild() {}
+    },
+    defaultView: {
+      URL: {
+        createObjectURL() {
+          return "";
+        }
+      }
+    }
+  };
+
+  assert.throws(() => content.triggerJsonDownload({ ok: true }, "snapshot.json", root), /download_unavailable/);
 });

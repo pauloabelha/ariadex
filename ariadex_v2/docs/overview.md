@@ -5,14 +5,15 @@
 - click `Explore Path` on a tweet
 - resolve the structural path from that tweet to root
 - collect references cited along that path
-- render the path and the reference list in a floating panel
+- collect authors and mentioned users along that path
+- render the path, references, and people in a floating panel
 
 This version intentionally does not try to do ranking, branch selection, or full conversation mapping yet.
 
 ## Code layout
 
 - `extension/algo.js`
-  pure root-path and reference logic
+  pure root-path, reference, and people logic
 
 - `extension/background.js`
   Chrome service-worker shell around the algorithm
@@ -30,10 +31,17 @@ The background worker returns a small artifact:
 - `references`
   deduped canonical references found on that path
 
+- `people`
+  deduped canonical X users found on that path
+  from path authors plus explicit mentions
+
 Each path tweet may also include:
 
 - `referenceNumbers`
   the reference ids cited by that tweet
+
+- `peopleHandles`
+  the canonical X handles collected from that tweet
 
 ## Structural parent rule
 

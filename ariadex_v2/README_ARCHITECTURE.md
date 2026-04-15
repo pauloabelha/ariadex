@@ -7,7 +7,8 @@ This prototype implements only one product slice:
 - start from a clicked tweet id
 - recursively resolve its structural parent chain
 - collect canonical references cited along that path
-- render the root path and its references
+- collect canonical people found along that path
+- render the root path, references, and people
 
 ## Parent Rule
 
@@ -33,8 +34,13 @@ Only the fields needed for this slice are used:
 
 - `id_str`
 - `user.screen_name`
+- `user.name`
+- `user.profile_image_url_https`
 - `text`
 - `entities.urls[].expanded_url`
+- `entities.user_mentions[].screen_name`
+- `entities.user_mentions[].name`
+- `entities.user_mentions[].profile_image_url_https`
 - `quoted_tweet.id_str`
 - `in_reply_to_status_id_str`
 
@@ -69,6 +75,26 @@ Each path tweet keeps the list of reference numbers it cites, and the UI renders
 - inline markers like `[1] [2]` on the tweet card
 - a `References` tab listing the canonical URLs
 
+## People Rule
+
+People are collected only from tweets on the resolved root path.
+
+For each path tweet:
+
+1. collect the tweet author
+2. collect explicit `entities.user_mentions`
+3. canonicalize each user by X handle
+4. merge duplicates across the whole path
+5. keep the best available display name and avatar URL seen for that handle
+
+The UI renders a `People` tab listing:
+
+- handle
+- display name
+- avatar when available
+- profile URL
+- source types and path-tweet count
+
 ## Files
 
 - `extension/background.js`
@@ -77,7 +103,7 @@ Each path tweet keeps the list of reference numbers it cites, and the UI renders
 
 - `extension/content.js`
   content script
-  injects button, requests root path, renders panel
+  injects button, requests root path, renders panel, and exports JSON
 
 - `extension/algo.js`
   pure algorithm module
@@ -97,3 +123,6 @@ The test suite should lock down:
 - label formatting like `Ancestor 5 (replied to Ancestor 4)`
 - reference canonicalization and deduplication
 - per-tweet reference numbering
+- people aggregation across authors and mentions
+- person display names and avatars when present
+- panel tabs and export behavior
