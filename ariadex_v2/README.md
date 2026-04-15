@@ -5,15 +5,18 @@ Minimal clean-room prototype.
 Current scope:
 - inject `Explore Path` into tweet cards on `x.com`
 - recursively resolve the clicked tweet's root path
-- render only that ordered path in a side panel
+- collect and canonicalize references cited along that root path
+- render the path and the deduped reference list in separate tabs
 
 Important limitation:
 - this version uses X's public syndication tweet payloads
 - parent rule is deterministic: `quote > reply`
-- it only renders the root path, nothing else
+- references are deduped and numbered globally for the current explored path
+- each path tweet shows its local reference numbers like `[1] [2]`
 
 Code health:
-- background and content scripts are written to be testable under Node
+- the root-path algorithm lives in its own module and is testable under Node
+- background and content scripts stay thin around that core logic
 - recursive resolution and label formatting are covered by unit tests
 - tweet payloads are cached by tweet id in `chrome.storage.local`
 
@@ -34,3 +37,7 @@ npm test
 
 More detail:
 - [`README_ARCHITECTURE.md`](/home/pauloabelha/ariadex_v2/README_ARCHITECTURE.md)
+- [`docs/overview.md`](/home/pauloabelha/ariadex_v2/docs/overview.md)
+- [`docs/algorithm.md`](/home/pauloabelha/ariadex_v2/docs/algorithm.md)
+- [`docs/references.md`](/home/pauloabelha/ariadex_v2/docs/references.md)
+- [`docs/ux.md`](/home/pauloabelha/ariadex_v2/docs/ux.md)

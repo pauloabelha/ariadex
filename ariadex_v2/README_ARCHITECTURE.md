@@ -6,7 +6,8 @@ This prototype implements only one product slice:
 
 - start from a clicked tweet id
 - recursively resolve its structural parent chain
-- render only that root path
+- collect canonical references cited along that path
+- render the root path and its references
 
 ## Parent Rule
 
@@ -24,7 +25,7 @@ This means a quote-of-a-reply walks:
 
 ## Data Source
 
-`extension/background.js` uses X's public syndication payload:
+`extension/algo.js` uses X's public syndication payload:
 
 - `https://cdn.syndication.twimg.com/tweet-result`
 
@@ -33,6 +34,7 @@ Only the fields needed for this slice are used:
 - `id_str`
 - `user.screen_name`
 - `text`
+- `entities.urls[].expanded_url`
 - `quoted_tweet.id_str`
 - `in_reply_to_status_id_str`
 
@@ -50,15 +52,36 @@ Recursive lookup is:
 
 So once a tweet id is seen, later path walks reuse it.
 
+## Reference Rule
+
+References are collected only from tweets on the resolved root path.
+
+For each path tweet:
+
+1. read external URLs from `entities.urls`
+2. canonicalize them
+3. ignore internal X/Twitter/t.co links
+4. dedupe repeated references across the whole path
+5. assign stable 1-based reference numbers in first-seen order
+
+Each path tweet keeps the list of reference numbers it cites, and the UI renders:
+
+- inline markers like `[1] [2]` on the tweet card
+- a `References` tab listing the canonical URLs
+
 ## Files
 
 - `extension/background.js`
   background service worker
-  owns fetch + cache + recursive root-path resolution
+  owns Chrome message wiring, progress streaming, and cache clearing
 
 - `extension/content.js`
   content script
   injects button, requests root path, renders panel
+
+- `extension/algo.js`
+  pure algorithm module
+  owns fetch client creation, cache adapters, root-path recursion, and reference canonicalization
 
 - `extension/styles.css`
   minimal panel and button styling
@@ -72,4 +95,5 @@ The test suite should lock down:
 - cycle protection
 - cache hit before network
 - label formatting like `Ancestor 5 (replied to Ancestor 4)`
-
+- reference canonicalization and deduplication
+- per-tweet reference numbering
