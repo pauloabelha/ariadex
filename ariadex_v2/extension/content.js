@@ -66,6 +66,29 @@
     return numbers.map((number) => `[${number}]`).join(" ");
   }
 
+  function buildExportFilename(clickedId) {
+    const normalizedId = String(clickedId || "root-path").trim() || "root-path";
+    return `ariadex-v2-${normalizedId}.json`;
+  }
+
+  function triggerJsonDownload(payload, filename, root = document) {
+    const view = root?.defaultView;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const objectUrl = view?.URL?.createObjectURL?.(blob);
+    if (!objectUrl) {
+      throw new Error("download_unavailable");
+    }
+
+    const link = root.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    link.style.display = "none";
+    root.body.appendChild(link);
+    link.click();
+    link.remove();
+    view.URL.revokeObjectURL(objectUrl);
+  }
+
   // Turn low-level resolver progress into short UX copy that keeps moving.
   function formatProgressMessage(progress) {
     const phase = String(progress?.phase || "").trim();
@@ -136,7 +159,9 @@
     panel.className = "ariadex-v2-panel";
     panel.__ariadexV2State = {
       activeTab: DEFAULT_TAB,
-      position: null
+      position: null,
+      latestArtifact: null,
+      latestClickedId: ""
     };
     root.body.appendChild(panel);
     return panel;
@@ -198,7 +223,7 @@
 
     const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
       ? panel.__ariadexV2State
-      : { activeTab: DEFAULT_TAB, position: null };
+      : { activeTab: DEFAULT_TAB, position: null, latestArtifact: null, latestClickedId: "" };
     panel.__ariadexV2State = state;
 
     function onMouseDown(event) {
@@ -256,6 +281,34 @@
 
     const actions = root.createElement("div");
     actions.className = "ariadex-v2-header-actions";
+
+    const exportButton = root.createElement("button");
+    exportButton.type = "button";
+    exportButton.className = "ariadex-v2-header-button";
+    exportButton.textContent = "Export";
+    exportButton.addEventListener("click", () => {
+      const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+        ? panel.__ariadexV2State
+        : null;
+      const latestArtifact = state?.latestArtifact;
+      if (!latestArtifact) {
+        meta.textContent = "Nothing to export yet.";
+        return;
+      }
+
+      try {
+        triggerJsonDownload({
+          clickedTweetId: state?.latestClickedId || "",
+          exportedAt: new Date().toISOString(),
+          artifact: latestArtifact
+        }, buildExportFilename(state?.latestClickedId || ""), root);
+        meta.textContent = "Exported JSON snapshot.";
+      } catch (error) {
+        meta.textContent = `Export failed: ${error.message}`;
+      }
+    });
+    actions.appendChild(exportButton);
+
     const clearButton = root.createElement("button");
     clearButton.type = "button";
     clearButton.className = "ariadex-v2-header-button";
@@ -388,13 +441,76 @@
     return list;
   }
 
+  // Build the deduped people tab from canonical root-path participants and mentions.
+  function renderPeopleTab(people, root) {
+    if (!Array.isArray(people) || people.length === 0) {
+      const empty = root.createElement("div");
+      empty.className = "ariadex-v2-empty";
+      empty.textContent = "No people were collected on this root path.";
+      return empty;
+    }
+
+    const list = root.createElement("ol");
+    list.className = "ariadex-v2-list";
+
+    for (const person of people) {
+      const item = root.createElement("li");
+      item.className = "ariadex-v2-item";
+
+      if (person.avatarUrl) {
+        const avatar = root.createElement("img");
+        avatar.className = "ariadex-v2-person-avatar";
+        avatar.src = person.avatarUrl;
+        avatar.alt = person.displayName
+          ? `${person.displayName} profile picture`
+          : `@${String(person.handle || "").replace(/^@/, "")} profile picture`;
+        avatar.loading = "lazy";
+        item.appendChild(avatar);
+      }
+
+      const role = root.createElement("div");
+      role.className = "ariadex-v2-item-role";
+      role.textContent = `@${String(person.handle || "").replace(/^@/, "")}`;
+
+      const displayName = root.createElement("div");
+      displayName.className = "ariadex-v2-item-author";
+      displayName.textContent = person.displayName || "(no display name)";
+
+      const profile = root.createElement("div");
+      profile.className = "ariadex-v2-item-text";
+      profile.textContent = person.profileUrl || "";
+
+      const sourceTypes = Array.isArray(person.sourceTypes) ? person.sourceTypes : [];
+      const citedByTweetIds = Array.isArray(person.citedByTweetIds) ? person.citedByTweetIds : [];
+      const meta = root.createElement("div");
+      meta.className = "ariadex-v2-item-id";
+      meta.textContent = `${sourceTypes.join(", ") || "person"} · seen in ${citedByTweetIds.length} path tweet${citedByTweetIds.length === 1 ? "" : "s"}`;
+
+      item.appendChild(role);
+      item.appendChild(displayName);
+      item.appendChild(profile);
+      item.appendChild(meta);
+
+      item.addEventListener("click", () => {
+        if (person.profileUrl) {
+          root.defaultView.open(person.profileUrl, "_blank", "noopener,noreferrer");
+        }
+      });
+
+      list.appendChild(item);
+    }
+
+    return list;
+  }
+
   // Render the full artifact and keep the active tab sticky across rerenders.
   function renderArtifact(artifact, clickedId, root = document) {
     const panel = ensurePanel(root);
     panel.innerHTML = "";
     const path = Array.isArray(artifact?.path) ? artifact.path : [];
     const references = Array.isArray(artifact?.references) ? artifact.references : [];
-    renderHeader(panel, root, `${path.length} path tweets · ${references.length} refs`);
+    const people = Array.isArray(artifact?.people) ? artifact.people : [];
+    renderHeader(panel, root, `${path.length} path tweets · ${references.length} refs · ${people.length} people`);
 
     if (path.length === 0) {
       const empty = root.createElement("div");
@@ -406,8 +522,14 @@
 
     const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
       ? panel.__ariadexV2State
-      : { activeTab: DEFAULT_TAB, position: null };
+      : { activeTab: DEFAULT_TAB, position: null, latestArtifact: null, latestClickedId: "" };
     panel.__ariadexV2State = state;
+    state.latestArtifact = {
+      path,
+      references,
+      people
+    };
+    state.latestClickedId = clickedId || "";
 
     const tabBar = root.createElement("div");
     tabBar.className = "ariadex-v2-tab-bar";
@@ -416,11 +538,16 @@
 
     const tabs = [
       { id: "path", label: "Root Path" },
-      { id: "references", label: "References" }
+      { id: "references", label: "References" },
+      { id: "people", label: "People" }
     ];
 
     function paintTab(tabId) {
       content.innerHTML = "";
+      if (tabId === "people") {
+        content.appendChild(renderPeopleTab(people, root));
+        return;
+      }
       if (tabId === "references") {
         content.appendChild(renderReferencesTab(references, root));
         return;
@@ -478,7 +605,8 @@
               : {};
             resolve({
               path: Array.isArray(artifact.path) ? artifact.path : [],
-              references: Array.isArray(artifact.references) ? artifact.references : []
+              references: Array.isArray(artifact.references) ? artifact.references : [],
+              people: Array.isArray(artifact.people) ? artifact.people : []
             });
             return;
           }
@@ -511,7 +639,8 @@
             : {};
           resolve({
             path: Array.isArray(artifact.path) ? artifact.path : [],
-            references: Array.isArray(artifact.references) ? artifact.references : []
+            references: Array.isArray(artifact.references) ? artifact.references : [],
+            people: Array.isArray(artifact.people) ? artifact.people : []
           });
         }
       );
@@ -635,8 +764,11 @@
       makePanelMovable,
       renderStatus,
       buildReferenceBadgeText,
+      buildExportFilename,
+      triggerJsonDownload,
       renderPathTab,
       renderReferencesTab,
+      renderPeopleTab,
       renderArtifact,
       resolveRootArtifact,
       clearTweetCache,

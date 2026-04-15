@@ -116,6 +116,14 @@
   padding: 12px;
 }
 
+.ariadex-v2-person-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
 .ariadex-v2-item-role {
   color: #1d9bf0;
   font: 700 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;

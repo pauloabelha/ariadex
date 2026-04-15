@@ -98,19 +98,26 @@ test("normalizeTweet maps only the fields needed for v2", () => {
     in_reply_to_status_id_str: "9",
     quoted_tweet: { id_str: "8" },
     entities: {
+      user_mentions: [
+        { screen_name: "Bob", name: "Bob Example", profile_image_url_https: "https://img.example/bob.jpg" }
+      ],
       urls: [
         { expanded_url: "https://example.com/a?utm_source=x" }
       ]
     },
-    user: { screen_name: "alice" }
+    user: { screen_name: "alice", name: "Alice Example", profile_image_url_https: "https://img.example/alice.jpg" }
   });
 
   assert.deepEqual(tweet, {
     id: "10",
     author: "alice",
+    authorName: "Alice Example",
+    authorAvatarUrl: "https://img.example/alice.jpg",
     text: "hello",
     url: "https://x.com/alice/status/10",
     referenceUrls: ["https://example.com/a?utm_source=x"],
+    mentionHandles: ["bob"],
+    mentionPeople: [{ handle: "bob", displayName: "Bob Example", avatarUrl: "https://img.example/bob.jpg" }],
     quotedId: "8",
     repliedToId: "9"
   });
@@ -139,6 +146,55 @@ test("extractReferenceUrls keeps explicit url entities and drops blanks", () => 
       }
     }),
     ["https://example.com/a", "https://example.com/b"]
+  );
+});
+
+test("canonicalizeHandle normalizes x handles and rejects invalid values", () => {
+  assert.equal(algo.canonicalizeHandle("@Alice_1"), "alice_1");
+  assert.equal(algo.canonicalizeHandle(" bad handle "), "");
+  assert.equal(algo.canonicalizeHandle(""), "");
+});
+
+test("normalizeDisplayName trims and collapses whitespace", () => {
+  assert.equal(algo.normalizeDisplayName("  Alice \n Example  "), "Alice Example");
+  assert.equal(algo.normalizeDisplayName(""), "");
+});
+
+test("normalizeAvatarUrl trims and preserves avatar urls", () => {
+  assert.equal(algo.normalizeAvatarUrl(" https://img.example/a.jpg "), "https://img.example/a.jpg");
+  assert.equal(algo.normalizeAvatarUrl(""), "");
+});
+
+test("extractMentionHandles keeps explicit user mentions and drops invalid handles", () => {
+  assert.deepEqual(
+    algo.extractMentionHandles({
+      entities: {
+        user_mentions: [
+          { screen_name: "Alice" },
+          { screen_name: "@Bob" },
+          { screen_name: "bad handle" }
+        ]
+      }
+    }),
+    ["alice", "bob"]
+  );
+});
+
+test("extractMentionPeople keeps display names alongside canonical handles", () => {
+  assert.deepEqual(
+    algo.extractMentionPeople({
+      entities: {
+        user_mentions: [
+          { screen_name: "Alice", name: "Alice Example", profile_image_url_https: "https://img.example/alice.jpg" },
+          { screen_name: "@Bob", name: "  Bob   Example ", profile_image_url_https: "https://img.example/bob.jpg" },
+          { screen_name: "bad handle", name: "Ignored" }
+        ]
+      }
+    }),
+    [
+      { handle: "alice", displayName: "Alice Example", avatarUrl: "https://img.example/alice.jpg" },
+      { handle: "bob", displayName: "Bob Example", avatarUrl: "https://img.example/bob.jpg" }
+    ]
   );
 });
 
@@ -208,6 +264,57 @@ test("buildReferenceArtifact collapses repeated path references from bare and ab
     ["root", [1]],
     ["ancestor", [2]],
     ["explored", [2]]
+  ]);
+});
+
+test("buildPeopleArtifact dedupes path authors and mentions by canonical handle", () => {
+  const artifact = algo.buildPeopleArtifact([
+    {
+      id: "10",
+      author: "Alice",
+      authorName: "Alice Example",
+      authorAvatarUrl: "https://img.example/alice.jpg",
+      mentionPeople: [
+        { handle: "Bob", displayName: "Bob Example", avatarUrl: "https://img.example/bob.jpg" },
+        { handle: "@carol", displayName: "Carol Example", avatarUrl: "" },
+        { handle: "bad handle", displayName: "Ignored" }
+      ]
+    },
+    {
+      id: "20",
+      author: "bob",
+      authorName: "Bobby",
+      authorAvatarUrl: "",
+      mentionPeople: [
+        { handle: "alice", displayName: "Alice Example", avatarUrl: "" },
+        { handle: "Bob", displayName: "" }
+      ]
+    }
+  ]);
+
+  assert.deepEqual(artifact.people.map((person) => person.handle), [
+    "alice",
+    "bob",
+    "carol"
+  ]);
+  assert.deepEqual(artifact.path.map((tweet) => [tweet.id, tweet.peopleHandles]), [
+    ["10", ["alice", "bob", "carol"]],
+    ["20", ["bob", "alice"]]
+  ]);
+  assert.deepEqual(artifact.people.map((person) => [person.handle, person.displayName]), [
+    ["alice", "Alice Example"],
+    ["bob", "Bob Example"],
+    ["carol", "Carol Example"]
+  ]);
+  assert.deepEqual(artifact.people.map((person) => [person.handle, person.avatarUrl]), [
+    ["alice", "https://img.example/alice.jpg"],
+    ["bob", "https://img.example/bob.jpg"],
+    ["carol", ""]
+  ]);
+  assert.deepEqual(artifact.people.map((person) => [person.handle, person.citedByTweetIds, person.sourceTypes]), [
+    ["alice", ["10", "20"], ["author", "mention"]],
+    ["bob", ["10", "20"], ["mention", "author"]],
+    ["carol", ["10"], ["mention"]]
   ]);
 });
 
@@ -305,8 +412,11 @@ test("resolveRootPath walks quote parent first and then reply ancestry", async (
     30: {
       id_str: "30",
       text: "clicked",
-      user: { screen_name: "clicked" },
+      user: { screen_name: "clicked", name: "Clicked Author", profile_image_url_https: "https://img.example/clicked.jpg" },
       entities: {
+        user_mentions: [
+          { screen_name: "QuoteGuide", name: "Quote Guide", profile_image_url_https: "https://img.example/guide.jpg" }
+        ],
         urls: [
           { expanded_url: "https://example.com/c" }
         ]
@@ -317,8 +427,11 @@ test("resolveRootPath walks quote parent first and then reply ancestry", async (
     20: {
       id_str: "20",
       text: "quoted reply",
-      user: { screen_name: "quoted" },
+      user: { screen_name: "quoted", name: "Quoted Author", profile_image_url_https: "https://img.example/quoted.jpg" },
       entities: {
+        user_mentions: [
+          { screen_name: "Root", name: "Root Author", profile_image_url_https: "https://img.example/root.jpg" }
+        ],
         urls: [
           { expanded_url: "https://example.com/b" }
         ]
@@ -328,8 +441,11 @@ test("resolveRootPath walks quote parent first and then reply ancestry", async (
     10: {
       id_str: "10",
       text: "root",
-      user: { screen_name: "root" },
+      user: { screen_name: "root", name: "Root Author", profile_image_url_https: "https://img.example/root.jpg" },
       entities: {
+        user_mentions: [
+          { screen_name: "Quoted", name: "Quoted Author", profile_image_url_https: "https://img.example/quoted.jpg" }
+        ],
         urls: [
           { expanded_url: "https://example.com/a" }
         ]
@@ -357,6 +473,29 @@ test("resolveRootPath walks quote parent first and then reply ancestry", async (
     "https://example.com/a",
     "https://example.com/b",
     "https://example.com/c"
+  ]);
+  assert.deepEqual(artifact.path.map((entry) => [entry.id, entry.peopleHandles]), [
+    ["10", ["root", "quoted"]],
+    ["20", ["quoted", "root"]],
+    ["30", ["clicked", "quoteguide"]]
+  ]);
+  assert.deepEqual(artifact.people.map((entry) => entry.handle), [
+    "root",
+    "quoted",
+    "clicked",
+    "quoteguide"
+  ]);
+  assert.deepEqual(artifact.people.map((entry) => [entry.handle, entry.displayName]), [
+    ["root", "Root Author"],
+    ["quoted", "Quoted Author"],
+    ["clicked", "Clicked Author"],
+    ["quoteguide", "Quote Guide"]
+  ]);
+  assert.deepEqual(artifact.people.map((entry) => [entry.handle, entry.avatarUrl]), [
+    ["root", "https://img.example/root.jpg"],
+    ["quoted", "https://img.example/quoted.jpg"],
+    ["clicked", "https://img.example/clicked.jpg"],
+    ["quoteguide", "https://img.example/guide.jpg"]
   ]);
 });
 
@@ -448,7 +587,8 @@ test("resolveRootPath stops cleanly when a fetched payload cannot be normalized"
 
   assert.deepEqual(artifact, {
     path: [],
-    references: []
+    references: [],
+    people: []
   });
 });
 
@@ -598,14 +738,29 @@ test("background message handler resolves root-path requests and ignores unrelat
         {
           id: "10",
           author: "root",
+          authorName: "",
+          authorAvatarUrl: "",
           text: "root",
           url: "https://x.com/root/status/10",
           referenceUrls: [],
+          mentionHandles: [],
+          mentionPeople: [],
           outboundRelation: "",
-          referenceNumbers: []
+          referenceNumbers: [],
+          peopleHandles: ["root"]
         }
       ],
-      references: []
+      references: [],
+      people: [
+        {
+          handle: "root",
+          displayName: "",
+          avatarUrl: "",
+          profileUrl: "https://x.com/root",
+          citedByTweetIds: ["10"],
+          sourceTypes: ["author"]
+        }
+      ]
     }
   });
   assert.equal(chromeStub.triggerMessage({ type: "UNRELATED" }, {}, () => {}), false);

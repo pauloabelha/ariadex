@@ -66,6 +66,11 @@ test("buildReferenceBadgeText formats reference markers", () => {
   assert.equal(content.buildReferenceBadgeText([1, 3]), "[1] [3]");
 });
 
+test("buildExportFilename uses the clicked tweet id when available", () => {
+  assert.equal(content.buildExportFilename("123"), "ariadex-v2-123.json");
+  assert.equal(content.buildExportFilename(""), "ariadex-v2-root-path.json");
+});
+
 test("formatProgressMessage writes compact path and reference progress", () => {
   assert.equal(
     content.formatProgressMessage({ phase: "start", clickedTweetId: "30" }),
@@ -254,7 +259,11 @@ test("resolveRootArtifact sends the expected extension message", async () => {
       sendMessage(message, callback) {
         callback({
           ok: true,
-          artifact: { path: [{ id: "1" }, { id: "2" }], references: [{ number: 1 }] }
+          artifact: {
+            path: [{ id: "1" }, { id: "2" }],
+            references: [{ number: 1 }],
+            people: [{ handle: "alice", displayName: "Alice Example" }]
+          }
         });
         chromeStub.sent = message;
       }
@@ -264,7 +273,8 @@ test("resolveRootArtifact sends the expected extension message", async () => {
   const artifact = await content.resolveRootArtifact("2", chromeStub);
   assert.deepEqual(artifact, {
     path: [{ id: "1" }, { id: "2" }],
-    references: [{ number: 1 }]
+    references: [{ number: 1 }],
+    people: [{ handle: "alice", displayName: "Alice Example" }]
   });
   assert.deepEqual(chromeStub.sent, {
     type: content.MESSAGE_TYPE,
@@ -323,7 +333,8 @@ test("resolveRootArtifact uses the streaming port when available and relays prog
               type: "result",
               artifact: {
                 path: [{ id: "1" }],
-                references: null
+                references: null,
+                people: [{ handle: "alice", displayName: "Alice Example" }]
               }
             });
           },
@@ -342,7 +353,8 @@ test("resolveRootArtifact uses the streaming port when available and relays prog
   assert.deepEqual(progressEvents, [{ phase: "start" }]);
   assert.deepEqual(artifact, {
     path: [{ id: "1" }],
-    references: []
+    references: [],
+    people: [{ handle: "alice", displayName: "Alice Example" }]
   });
   assert.equal(disconnected, true);
 });
@@ -401,4 +413,119 @@ test("clearTweetCache surfaces runtime failures", async () => {
   };
 
   await assert.rejects(() => content.clearTweetCache(chromeStub), /send failed/);
+});
+
+test("renderPeopleTab renders canonical people and opens profiles on click", () => {
+  const opened = [];
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        children: [],
+        listeners: {},
+        appendChild(child) {
+          this.children.push(child);
+        },
+        addEventListener(type, listener) {
+          this.listeners[type] = listener;
+        }
+      };
+    },
+    defaultView: {
+      open(url, target, features) {
+        opened.push({ url, target, features });
+      }
+    }
+  };
+
+  const list = content.renderPeopleTab([
+    {
+      handle: "alice",
+      displayName: "Alice Example",
+      avatarUrl: "https://img.example/alice.jpg",
+      profileUrl: "https://x.com/alice",
+      citedByTweetIds: ["10", "20"],
+      sourceTypes: ["author", "mention"]
+    }
+  ], root);
+
+  assert.equal(list.children.length, 1);
+  assert.equal(list.children[0].children[0].tagName, "img");
+  assert.equal(list.children[0].children[0].src, "https://img.example/alice.jpg");
+  assert.equal(list.children[0].children[1].textContent, "@alice");
+  assert.equal(list.children[0].children[2].textContent, "Alice Example");
+  assert.match(list.children[0].children[4].textContent, /2 path tweets/);
+  list.children[0].listeners.click();
+  assert.deepEqual(opened, [{
+    url: "https://x.com/alice",
+    target: "_blank",
+    features: "noopener,noreferrer"
+  }]);
+});
+
+test("renderPeopleTab shows an empty state when no people are available", () => {
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        appendChild() {},
+        addEventListener() {}
+      };
+    }
+  };
+
+  const empty = content.renderPeopleTab([], root);
+  assert.equal(empty.textContent, "No people were collected on this root path.");
+});
+
+test("triggerJsonDownload creates a blob url and clicks a temporary download link", () => {
+  const appended = [];
+  const clicked = [];
+  const removed = [];
+  const revoked = [];
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        style: {},
+        click() {
+          clicked.push({ href: this.href, download: this.download });
+        },
+        remove() {
+          removed.push(true);
+        }
+      };
+    },
+    body: {
+      appendChild(node) {
+        appended.push(node);
+      }
+    },
+    defaultView: {
+      URL: {
+        createObjectURL(blob) {
+          appended.push(blob);
+          return "blob:ariadex";
+        },
+        revokeObjectURL(url) {
+          revoked.push(url);
+        }
+      }
+    }
+  };
+
+  content.triggerJsonDownload({ hello: "world" }, "snapshot.json", root);
+
+  assert.equal(appended[0] instanceof Blob, true);
+  assert.equal(appended[1].tagName, "a");
+  assert.deepEqual(clicked, [{
+    href: "blob:ariadex",
+    download: "snapshot.json"
+  }]);
+  assert.equal(removed.length, 1);
+  assert.deepEqual(revoked, ["blob:ariadex"]);
 });

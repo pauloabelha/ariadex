@@ -17,6 +17,20 @@ function normalizeTweetId(tweetId) {
   return String(tweetId || "").trim();
 }
 
+// Collapse equivalent X handles so people can be deduped across the whole root path.
+function canonicalizeHandle(rawHandle) {
+  const normalized = String(rawHandle || "").trim().replace(/^@+/, "").toLowerCase();
+  return /^[a-z0-9_]{1,15}$/.test(normalized) ? normalized : "";
+}
+
+function normalizeDisplayName(rawName) {
+  return String(rawName || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeAvatarUrl(rawUrl) {
+  return String(rawUrl || "").trim();
+}
+
 // Wrap chrome storage behind a tiny promise-based adapter so the resolver stays testable.
 function createStorageAdapter(chromeApi) {
   return {
@@ -87,12 +101,18 @@ function normalizeTweet(payload) {
     return null;
   }
 
+  const authorHandle = canonicalizeHandle(payload.user?.screen_name || "unknown") || "unknown";
+  const mentionPeople = extractMentionPeople(payload);
   return {
     id: String(payload.id_str),
-    author: String(payload.user?.screen_name || "unknown"),
+    author: authorHandle,
+    authorName: normalizeDisplayName(payload.user?.name || ""),
+    authorAvatarUrl: normalizeAvatarUrl(payload.user?.profile_image_url_https || payload.user?.profile_image_url || ""),
     text: String(payload.text || ""),
-    url: buildTweetUrl(payload.user?.screen_name || "i", payload.id_str),
+    url: buildTweetUrl(authorHandle || "i", payload.id_str),
     referenceUrls: extractReferenceUrls(payload),
+    mentionHandles: mentionPeople.map((entry) => entry.handle),
+    mentionPeople,
     quotedId: payload?.quoted_tweet?.id_str ? String(payload.quoted_tweet.id_str) : "",
     repliedToId: payload?.in_reply_to_status_id_str ? String(payload.in_reply_to_status_id_str) : ""
   };
@@ -103,6 +123,29 @@ function extractReferenceUrls(payload) {
   const urls = Array.isArray(payload?.entities?.urls) ? payload.entities.urls : [];
   return urls
     .map((entry) => String(entry?.expanded_url || entry?.url || "").trim())
+    .filter(Boolean);
+}
+
+// v2 also keeps explicit user mentions so future expansion can reason over path participants.
+function extractMentionHandles(payload) {
+  return extractMentionPeople(payload).map((entry) => entry.handle);
+}
+
+function extractMentionPeople(payload) {
+  const mentions = Array.isArray(payload?.entities?.user_mentions) ? payload.entities.user_mentions : [];
+  return mentions
+    .map((entry) => {
+      const handle = canonicalizeHandle(entry?.screen_name);
+      if (!handle) {
+        return null;
+      }
+
+      return {
+        handle,
+        displayName: normalizeDisplayName(entry?.name || ""),
+        avatarUrl: normalizeAvatarUrl(entry?.profile_image_url_https || entry?.profile_image_url || "")
+      };
+    })
     .filter(Boolean);
 }
 
@@ -218,6 +261,80 @@ function buildReferenceArtifact(path) {
   };
 }
 
+// Deduplicate path authors and mentioned users by canonical X handle.
+function buildPeopleArtifact(path) {
+  const people = [];
+  const personByHandle = new Map();
+  const enrichedPath = [];
+
+  for (const tweet of Array.isArray(path) ? path : []) {
+    const peopleHandles = [];
+    const rawPeople = [
+      {
+        handle: tweet?.author,
+        displayName: normalizeDisplayName(tweet?.authorName || ""),
+        avatarUrl: normalizeAvatarUrl(tweet?.authorAvatarUrl || ""),
+        sourceType: "author"
+      },
+      ...(Array.isArray(tweet?.mentionPeople) ? tweet.mentionPeople.map((entry) => ({
+        handle: entry?.handle,
+        displayName: normalizeDisplayName(entry?.displayName || ""),
+        avatarUrl: normalizeAvatarUrl(entry?.avatarUrl || ""),
+        sourceType: "mention"
+      })) : [])
+    ];
+
+    for (const rawPerson of rawPeople) {
+      const handle = canonicalizeHandle(rawPerson?.handle);
+      if (!handle) {
+        continue;
+      }
+
+      let person = personByHandle.get(handle);
+      if (!person) {
+        person = {
+          handle,
+          displayName: normalizeDisplayName(rawPerson?.displayName || ""),
+          avatarUrl: normalizeAvatarUrl(rawPerson?.avatarUrl || ""),
+          profileUrl: `https://x.com/${encodeURIComponent(handle)}`,
+          citedByTweetIds: [],
+          sourceTypes: []
+        };
+        people.push(person);
+        personByHandle.set(handle, person);
+      }
+      if (!person.displayName && rawPerson?.displayName) {
+        person.displayName = normalizeDisplayName(rawPerson.displayName);
+      }
+      if (!person.avatarUrl && rawPerson?.avatarUrl) {
+        person.avatarUrl = normalizeAvatarUrl(rawPerson.avatarUrl);
+      }
+
+      if (!peopleHandles.includes(handle)) {
+        peopleHandles.push(handle);
+      }
+      if (!person.citedByTweetIds.includes(tweet.id)) {
+        person.citedByTweetIds.push(tweet.id);
+      }
+
+      const sourceType = rawPerson?.sourceType === "author" ? "author" : "mention";
+      if (!person.sourceTypes.includes(sourceType)) {
+        person.sourceTypes.push(sourceType);
+      }
+    }
+
+    enrichedPath.push({
+      ...tweet,
+      peopleHandles
+    });
+  }
+
+  return {
+    path: enrichedPath,
+    people
+  };
+}
+
 // AriadeX structural rule: quote ancestry wins over reply ancestry.
 function resolveParentId(tweet) {
   if (!tweet) {
@@ -285,6 +402,10 @@ async function resolveRootPath(tweetId, deps) {
       text: tweet.text,
       url: tweet.url,
       referenceUrls: tweet.referenceUrls,
+      authorName: tweet.authorName,
+      authorAvatarUrl: tweet.authorAvatarUrl,
+      mentionHandles: tweet.mentionHandles,
+      mentionPeople: tweet.mentionPeople,
       outboundRelation: relationType || ""
     });
 
@@ -309,7 +430,12 @@ async function resolveRootPath(tweetId, deps) {
     });
   }
 
-  const artifact = buildReferenceArtifact(path.reverse());
+  const referenceArtifact = buildReferenceArtifact(path.reverse());
+  const peopleArtifact = buildPeopleArtifact(referenceArtifact.path);
+  const artifact = {
+    ...referenceArtifact,
+    ...peopleArtifact
+  };
 
   if (onProgress) {
     onProgress({
@@ -332,7 +458,13 @@ const api = {
   normalizeTweet,
   extractReferenceUrls,
   canonicalizeReferenceUrl,
+  canonicalizeHandle,
+  normalizeDisplayName,
+  normalizeAvatarUrl,
   buildReferenceArtifact,
+  extractMentionHandles,
+  extractMentionPeople,
+  buildPeopleArtifact,
   resolveParentId,
   fetchTweet,
   resolveRootPath
