@@ -8,6 +8,7 @@
   const CLEAR_CACHE_MESSAGE_TYPE = "ARIADEx_V2_CLEAR_CACHE";
   const RESOLVE_ROOT_PATH_PORT_NAME = "ARIADEx_V2_RESOLVE_ROOT_PATH_PORT";
   const DEFAULT_TAB = "path";
+  const PANEL_MARGIN = 20;
 
   // Keep UI strings compact and predictable before rendering them into the panel.
   function normalizeText(value) {
@@ -133,8 +134,111 @@
     panel = root.createElement("aside");
     panel.id = PANEL_ID;
     panel.className = "ariadex-v2-panel";
+    panel.__ariadexV2State = {
+      activeTab: DEFAULT_TAB,
+      position: null
+    };
     root.body.appendChild(panel);
     return panel;
+  }
+
+  function getViewportBounds(root = document) {
+    const view = root?.defaultView || globalThis;
+    return {
+      width: Number(view?.innerWidth || 0),
+      height: Number(view?.innerHeight || 0)
+    };
+  }
+
+  function getPanelSize(panel) {
+    const rect = panel?.getBoundingClientRect?.();
+    const width = Number(rect?.width || panel?.offsetWidth || 420);
+    const height = Number(rect?.height || panel?.offsetHeight || 320);
+    return { width, height };
+  }
+
+  function clampPanelPosition(position, panel, root = document) {
+    const nextLeft = Number(position?.left || 0);
+    const nextTop = Number(position?.top || 0);
+    const { width: viewportWidth, height: viewportHeight } = getViewportBounds(root);
+    const { width: panelWidth, height: panelHeight } = getPanelSize(panel);
+    const maxLeft = Math.max(PANEL_MARGIN, viewportWidth - panelWidth - PANEL_MARGIN);
+    const maxTop = Math.max(PANEL_MARGIN, viewportHeight - panelHeight - PANEL_MARGIN);
+
+    return {
+      left: Math.min(Math.max(PANEL_MARGIN, nextLeft), maxLeft),
+      top: Math.min(Math.max(PANEL_MARGIN, nextTop), maxTop)
+    };
+  }
+
+  function applyPanelPosition(panel, position, root = document) {
+    if (!panel || !position) {
+      return;
+    }
+
+    const clamped = clampPanelPosition(position, panel, root);
+    panel.style.left = `${clamped.left}px`;
+    panel.style.top = `${clamped.top}px`;
+    panel.style.right = "auto";
+  }
+
+  function makePanelMovable(panel, handle, root = document) {
+    if (!panel || !handle) {
+      return;
+    }
+
+    if (typeof panel.__ariadexV2DragCleanup === "function") {
+      panel.__ariadexV2DragCleanup();
+    }
+
+    const view = root?.defaultView;
+    if (!view?.addEventListener || !view?.removeEventListener) {
+      return;
+    }
+
+    const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+      ? panel.__ariadexV2State
+      : { activeTab: DEFAULT_TAB, position: null };
+    panel.__ariadexV2State = state;
+
+    function onMouseDown(event) {
+      if (event.button !== 0) {
+        return;
+      }
+      if (event.target?.closest?.("button, a, input, textarea, select")) {
+        return;
+      }
+
+      const rect = panel.getBoundingClientRect();
+      const dragOffsetX = Number(event.clientX) - Number(rect.left || 0);
+      const dragOffsetY = Number(event.clientY) - Number(rect.top || 0);
+
+      function onMouseMove(moveEvent) {
+        const nextPosition = clampPanelPosition({
+          left: Number(moveEvent.clientX) - dragOffsetX,
+          top: Number(moveEvent.clientY) - dragOffsetY
+        }, panel, root);
+        state.position = nextPosition;
+        applyPanelPosition(panel, nextPosition, root);
+      }
+
+      function onMouseUp() {
+        view.removeEventListener("mousemove", onMouseMove);
+        view.removeEventListener("mouseup", onMouseUp);
+        handle.classList.remove("ariadex-v2-panel-header-dragging");
+      }
+
+      handle.classList.add("ariadex-v2-panel-header-dragging");
+      view.addEventListener("mousemove", onMouseMove);
+      view.addEventListener("mouseup", onMouseUp);
+      event.preventDefault();
+    }
+
+    handle.classList.add("ariadex-v2-panel-header-draggable");
+    handle.addEventListener("mousedown", onMouseDown);
+    panel.__ariadexV2DragCleanup = () => {
+      handle.removeEventListener("mousedown", onMouseDown);
+    };
   }
 
   // Shared header renderer for loading, error, and resolved artifact states.
@@ -171,6 +275,14 @@
     header.appendChild(meta);
     header.appendChild(actions);
     panel.appendChild(header);
+    makePanelMovable(panel, header, root);
+
+    const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+      ? panel.__ariadexV2State
+      : null;
+    if (state?.position) {
+      applyPanelPosition(panel, state.position, root);
+    }
   }
 
   // Minimal single-message view used while loading or when resolution fails.
@@ -294,7 +406,7 @@
 
     const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
       ? panel.__ariadexV2State
-      : { activeTab: DEFAULT_TAB };
+      : { activeTab: DEFAULT_TAB, position: null };
     panel.__ariadexV2State = state;
 
     const tabBar = root.createElement("div");
@@ -516,6 +628,11 @@
       findClosestTweetArticle,
       extractTweetId,
       ensurePanel,
+      getViewportBounds,
+      getPanelSize,
+      clampPanelPosition,
+      applyPanelPosition,
+      makePanelMovable,
       renderStatus,
       buildReferenceBadgeText,
       renderPathTab,

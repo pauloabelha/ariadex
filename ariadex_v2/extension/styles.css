@@ -38,6 +38,15 @@
   padding: 14px 16px 12px;
 }
 
+.ariadex-v2-panel-header-draggable {
+  cursor: move;
+  user-select: none;
+}
+
+.ariadex-v2-panel-header-dragging {
+  cursor: grabbing;
+}
+
 .ariadex-v2-header-actions {
   margin-top: 10px;
   display: flex;

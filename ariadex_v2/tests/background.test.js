@@ -6,15 +6,23 @@ const background = require("../extension/background.js");
 
 function createChromeStub(initialCache = {}) {
   let cache = { ...initialCache };
+  const listeners = {
+    message: null,
+    connect: null
+  };
 
   return {
     runtime: {
       lastError: null,
       onMessage: {
-        addListener() {}
+        addListener(listener) {
+          listeners.message = listener;
+        }
       },
       onConnect: {
-        addListener() {}
+        addListener(listener) {
+          listeners.connect = listener;
+        }
       }
     },
     storage: {
@@ -34,6 +42,14 @@ function createChromeStub(initialCache = {}) {
     },
     inspectCache() {
       return { ...cache };
+    },
+    triggerMessage(message, sender, sendResponse) {
+      return listeners.message ? listeners.message(message, sender, sendResponse) : false;
+    },
+    triggerConnect(port) {
+      if (listeners.connect) {
+        listeners.connect(port);
+      }
     }
   };
 }
@@ -100,6 +116,32 @@ test("normalizeTweet maps only the fields needed for v2", () => {
   });
 });
 
+test("normalizeTweet returns null for payloads without a stable tweet id", () => {
+  assert.equal(
+    algo.normalizeTweet({
+      text: "missing id",
+      user: { screen_name: "alice" }
+    }),
+    null
+  );
+});
+
+test("extractReferenceUrls keeps explicit url entities and drops blanks", () => {
+  assert.deepEqual(
+    algo.extractReferenceUrls({
+      entities: {
+        urls: [
+          { expanded_url: "https://example.com/a" },
+          { url: "https://example.com/b" },
+          { expanded_url: "   " },
+          {}
+        ]
+      }
+    }),
+    ["https://example.com/a", "https://example.com/b"]
+  );
+});
+
 test("canonicalizeReferenceUrl strips trackers and ignores x urls", () => {
   assert.equal(
     algo.canonicalizeReferenceUrl("https://Example.com/a/?utm_source=x#frag"),
@@ -110,6 +152,14 @@ test("canonicalizeReferenceUrl strips trackers and ignores x urls", () => {
     "https://youtube.com/watch?v=abc123"
   );
   assert.equal(algo.canonicalizeReferenceUrl("https://x.com/a/status/1"), "");
+});
+
+test("canonicalizeReferenceUrl returns empty for invalid urls and normalizes youtube watch params", () => {
+  assert.equal(algo.canonicalizeReferenceUrl("not a valid url%%%"), "");
+  assert.equal(
+    algo.canonicalizeReferenceUrl("youtube.com/watch?v=abc123&si=noise&feature=shared"),
+    "https://youtube.com/watch?v=abc123"
+  );
 });
 
 test("buildReferenceArtifact dedupes references and assigns stable numbers", () => {
@@ -181,6 +231,11 @@ test("resolveParentId falls back to reply parent", () => {
   );
 });
 
+test("resolveParentId returns an empty relation when the tweet has no structural parent", () => {
+  assert.deepEqual(algo.resolveParentId(null), { parentId: "", relationType: "" });
+  assert.deepEqual(algo.resolveParentId({ quotedId: "", repliedToId: "" }), { parentId: "", relationType: "" });
+});
+
 test("fetchTweet hits the network only on cache miss and writes through", async () => {
   const chromeStub = createChromeStub();
   const storage = algo.createStorageAdapter(chromeStub);
@@ -196,6 +251,51 @@ test("fetchTweet hits the network only on cache miss and writes through", async 
   assert.equal(second.id_str, "10");
   assert.deepEqual(fetchImpl.calls, ["10"]);
   assert.equal(chromeStub.inspectCache()["10"].id_str, "10");
+});
+
+test("fetchTweet rejects missing tweet ids before touching storage or network", async () => {
+  const storage = {
+    async readCache() {
+      assert.fail("readCache should not run when the tweet id is missing");
+    }
+  };
+  const client = {
+    async fetchTweetFromNetwork() {
+      assert.fail("fetchTweetFromNetwork should not run when the tweet id is missing");
+    }
+  };
+
+  await assert.rejects(() => algo.fetchTweet("", { storage, client }), /missing_tweet_id/);
+});
+
+test("createTweetClient requests the syndication endpoint with credentials omitted", async () => {
+  const calls = [];
+  const client = algo.createTweetClient(async (url, options) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      async json() {
+        return { id_str: "10" };
+      }
+    };
+  });
+
+  await client.fetchTweetFromNetwork("10");
+
+  assert.match(calls[0].url, /tweet-result\?id=10&token=/);
+  assert.deepEqual(calls[0].options, { credentials: "omit" });
+});
+
+test("createTweetClient surfaces network failures with the response status", async () => {
+  const client = algo.createTweetClient(async () => ({
+    ok: false,
+    status: 503,
+    async json() {
+      return {};
+    }
+  }));
+
+  await assert.rejects(() => client.fetchTweetFromNetwork("10"), /tweet_fetch_failed_503/);
 });
 
 test("resolveRootPath walks quote parent first and then reply ancestry", async () => {
@@ -260,6 +360,57 @@ test("resolveRootPath walks quote parent first and then reply ancestry", async (
   ]);
 });
 
+test("resolveRootPath emits progress metadata for each phase", async () => {
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({
+    20: {
+      id_str: "20",
+      text: "clicked",
+      user: { screen_name: "clicked" },
+      in_reply_to_status_id_str: "10"
+    },
+    10: {
+      id_str: "10",
+      text: "root",
+      user: { screen_name: "root" }
+    }
+  });
+  const client = algo.createTweetClient(fetchImpl);
+  const progressEvents = [];
+
+  await algo.resolveRootPath("20", {
+    storage,
+    client,
+    onProgress(progress) {
+      progressEvents.push(progress);
+    }
+  });
+
+  // Keep the assertions explicit so a future shape change is caught immediately.
+  assert.deepEqual(progressEvents, [
+    { phase: "start", clickedTweetId: "20" },
+    {
+      phase: "path_walk",
+      currentTweetId: "20",
+      tweetCount: 1,
+      ancestorCount: 0,
+      nextParentId: "10",
+      nextRelationType: "reply"
+    },
+    {
+      phase: "path_walk",
+      currentTweetId: "10",
+      tweetCount: 2,
+      ancestorCount: 1,
+      nextParentId: "",
+      nextRelationType: ""
+    },
+    { phase: "canonicalizing_refs", tweetCount: 2 },
+    { phase: "done", tweetCount: 2, referenceCount: 0 }
+  ]);
+});
+
 test("resolveRootPath stops at cycles", async () => {
   const chromeStub = createChromeStub();
   const storage = algo.createStorageAdapter(chromeStub);
@@ -282,6 +433,23 @@ test("resolveRootPath stops at cycles", async () => {
   const artifact = await algo.resolveRootPath("10", { storage, client });
 
   assert.deepEqual(artifact.path.map((entry) => entry.id), ["20", "10"]);
+});
+
+test("resolveRootPath stops cleanly when a fetched payload cannot be normalized", async () => {
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  const client = {
+    async fetchTweetFromNetwork() {
+      return { text: "missing id" };
+    }
+  };
+
+  const artifact = await algo.resolveRootPath("10", { storage, client });
+
+  assert.deepEqual(artifact, {
+    path: [],
+    references: []
+  });
 });
 
 test("resolveRootPath reuses cache entries across a recursive walk", async () => {
@@ -313,6 +481,38 @@ test("resolveRootPath reuses cache entries across a recursive walk", async () =>
 
   assert.deepEqual(artifact.path.map((entry) => entry.id), ["10", "20", "30"]);
   assert.deepEqual(fetchImpl.calls, ["30", "10"]);
+});
+
+test("createStorageAdapter surfaces chrome runtime errors for cache operations", async () => {
+  const chromeStub = {
+    runtime: {
+      lastError: null
+    },
+    storage: {
+      local: {
+        get(_keys, callback) {
+          chromeStub.runtime.lastError = { message: "read failed" };
+          callback({});
+          chromeStub.runtime.lastError = null;
+        },
+        set(_value, callback) {
+          chromeStub.runtime.lastError = { message: "write failed" };
+          callback();
+          chromeStub.runtime.lastError = null;
+        },
+        remove(_keys, callback) {
+          chromeStub.runtime.lastError = { message: "clear failed" };
+          callback();
+          chromeStub.runtime.lastError = null;
+        }
+      }
+    }
+  };
+  const storage = algo.createStorageAdapter(chromeStub);
+
+  await assert.rejects(() => storage.readCache(), /read failed/);
+  await assert.rejects(() => storage.writeCache({ 10: { id_str: "10" } }), /write failed/);
+  await assert.rejects(() => storage.clearCache(), /clear failed/);
 });
 
 test("background controller clears the stored tweet cache", async () => {
@@ -363,4 +563,128 @@ test("background controller forwards progress events when resolving through the 
 
   assert.deepEqual(phases, ["start", "path_walk", "path_walk", "path_walk", "canonicalizing_refs", "done"]);
   assert.deepEqual(artifact.path.map((entry) => entry.id), ["10", "20", "30"]);
+});
+
+test("background message handler resolves root-path requests and ignores unrelated messages", async () => {
+  const chromeStub = createChromeStub();
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: createFetchStub({
+      10: {
+        id_str: "10",
+        text: "root",
+        user: { screen_name: "root" }
+      }
+    })
+  });
+  controller.registerMessageHandler();
+
+  let response;
+  const handled = chromeStub.triggerMessage(
+    { type: background.RESOLVE_ROOT_PATH_MESSAGE_TYPE, tweetId: "10" },
+    {},
+    (value) => {
+      response = value;
+    }
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(handled, true);
+  assert.deepEqual(response, {
+    ok: true,
+    artifact: {
+      path: [
+        {
+          id: "10",
+          author: "root",
+          text: "root",
+          url: "https://x.com/root/status/10",
+          referenceUrls: [],
+          outboundRelation: "",
+          referenceNumbers: []
+        }
+      ],
+      references: []
+    }
+  });
+  assert.equal(chromeStub.triggerMessage({ type: "UNRELATED" }, {}, () => {}), false);
+});
+
+test("background message handler clears cache via runtime messages", async () => {
+  const chromeStub = createChromeStub({
+    10: { id_str: "10" }
+  });
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: createFetchStub({})
+  });
+  controller.registerMessageHandler();
+
+  let response;
+  chromeStub.triggerMessage(
+    { type: background.CLEAR_CACHE_MESSAGE_TYPE },
+    {},
+    (value) => {
+      response = value;
+    }
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(response, { ok: true, cleared: true });
+  assert.deepEqual(chromeStub.inspectCache(), {});
+});
+
+test("background port handler streams progress and final results back to the caller", async () => {
+  const chromeStub = createChromeStub();
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: createFetchStub({
+      20: {
+        id_str: "20",
+        text: "clicked",
+        user: { screen_name: "clicked" },
+        in_reply_to_status_id_str: "10"
+      },
+      10: {
+        id_str: "10",
+        text: "root",
+        user: { screen_name: "root" }
+      }
+    })
+  });
+  controller.registerPortHandler();
+
+  const posted = [];
+  let onMessage;
+  const port = {
+    name: background.RESOLVE_ROOT_PATH_PORT_NAME,
+    onMessage: {
+      addListener(listener) {
+        onMessage = listener;
+      }
+    },
+    postMessage(message) {
+      posted.push(message);
+    }
+  };
+
+  chromeStub.triggerConnect(port);
+  onMessage({
+    type: background.RESOLVE_ROOT_PATH_MESSAGE_TYPE,
+    tweetId: "20"
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(posted.map((message) => message.type), [
+    "progress",
+    "progress",
+    "progress",
+    "progress",
+    "progress",
+    "result"
+  ]);
+  assert.deepEqual(posted[posted.length - 1].artifact.path.map((entry) => entry.id), ["10", "20"]);
 });

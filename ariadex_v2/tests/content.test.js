@@ -25,6 +25,14 @@ test("relationLabel formats quote and reply against parent labels", () => {
   );
 });
 
+test("relationLabel falls back to the raw relation type for unknown edge labels", () => {
+  assert.equal(
+    content.relationLabel({ id: "2", outboundRelation: "mention" }, { id: "1" }, 0, "9"),
+    "mention Root"
+  );
+  assert.equal(content.relationLabel({ id: "2" }, { id: "1" }, 0, "9"), "");
+});
+
 test("buildPathEntries creates stable readable titles", () => {
   const entries = content.buildPathEntries([
     { id: "10", outboundRelation: "", referenceNumbers: [] },
@@ -37,6 +45,19 @@ test("buildPathEntries creates stable readable titles", () => {
     "Ancestor 1 (replied to Root)",
     "Explored (quoted Ancestor 1)"
   ]);
+});
+
+test("buildPathEntries returns new objects instead of mutating the original artifact", () => {
+  const path = [
+    { id: "10", outboundRelation: "" },
+    { id: "20", outboundRelation: "reply" }
+  ];
+
+  const entries = content.buildPathEntries(path, "20");
+
+  assert.notEqual(entries[0], path[0]);
+  assert.equal(path[0].title, undefined);
+  assert.equal(entries[1].title, "Explored (replied to Root)");
 });
 
 test("buildReferenceBadgeText formats reference markers", () => {
@@ -59,17 +80,171 @@ test("formatProgressMessage writes compact path and reference progress", () => {
     "Tracing the root path... 4 ancestors found so far. Next hop is a reply."
   );
   assert.equal(
+    content.formatProgressMessage({ phase: "path_walk", ancestorCount: 1 }),
+    "Tracing the root path... 1 ancestor found so far."
+  );
+  assert.equal(
+    content.formatProgressMessage({ phase: "path_walk", ancestorCount: 0 }),
+    "Found the explored tweet. Checking whether it has a parent..."
+  );
+  assert.equal(
     content.formatProgressMessage({ phase: "canonicalizing_refs", tweetCount: 7 }),
     "Root path complete. Canonicalizing references across 7 tweets..."
+  );
+  assert.equal(
+    content.formatProgressMessage({ phase: "done", tweetCount: 1, referenceCount: 1 }),
+    "Done. Resolved 1 path tweet and 1 reference."
   );
   assert.equal(
     content.formatProgressMessage({ phase: "done", tweetCount: 7, referenceCount: 2 }),
     "Done. Resolved 7 path tweets and 2 references."
   );
+  assert.equal(
+    content.formatProgressMessage({ phase: "mystery" }),
+    "Tracing the root path..."
+  );
 });
 
 test("normalizeText trims and collapses whitespace", () => {
   assert.equal(content.normalizeText(" a \n  b   c "), "a b c");
+});
+
+test("findClosestTweetArticle delegates to closest when available", () => {
+  const article = { id: "tweet" };
+  const node = {
+    closest(selector) {
+      assert.equal(selector, content.ARTICLE_SELECTOR);
+      return article;
+    }
+  };
+
+  assert.equal(content.findClosestTweetArticle(node), article);
+  assert.equal(content.findClosestTweetArticle(null), null);
+});
+
+test("extractTweetId reads the tweet id from the status permalink", () => {
+  const article = {
+    querySelector(selector) {
+      assert.equal(selector, 'a[href*="/status/"]');
+      return {
+        getAttribute(name) {
+          assert.equal(name, "href");
+          return "/alice/status/1234567890?s=20";
+        }
+      };
+    }
+  };
+
+  assert.equal(content.extractTweetId(article), "1234567890");
+  assert.equal(content.extractTweetId({ querySelector() { return null; } }), "");
+});
+
+test("clampPanelPosition keeps the floating panel inside the viewport margins", () => {
+  const panel = {
+    getBoundingClientRect() {
+      return { width: 320, height: 200 };
+    }
+  };
+  const root = {
+    defaultView: {
+      innerWidth: 900,
+      innerHeight: 700
+    }
+  };
+
+  assert.deepEqual(
+    content.clampPanelPosition({ left: -50, top: 10 }, panel, root),
+    { left: 20, top: 20 }
+  );
+  assert.deepEqual(
+    content.clampPanelPosition({ left: 800, top: 650 }, panel, root),
+    { left: 560, top: 480 }
+  );
+});
+
+test("applyPanelPosition writes fixed left and top coordinates onto the panel", () => {
+  const panel = {
+    style: {},
+    getBoundingClientRect() {
+      return { width: 300, height: 180 };
+    }
+  };
+  const root = {
+    defaultView: {
+      innerWidth: 1000,
+      innerHeight: 800
+    }
+  };
+
+  content.applyPanelPosition(panel, { left: 120, top: 140 }, root);
+
+  assert.equal(panel.style.left, "120px");
+  assert.equal(panel.style.top, "140px");
+  assert.equal(panel.style.right, "auto");
+});
+
+test("makePanelMovable updates the saved panel position while dragging the header", () => {
+  const listeners = {};
+  const panel = {
+    style: {},
+    __ariadexV2State: { activeTab: "path", position: null },
+    getBoundingClientRect() {
+      return { left: 20, top: 20, width: 300, height: 200 };
+    }
+  };
+  const handle = {
+    classList: {
+      add() {},
+      remove() {}
+    },
+    addEventListener(type, listener) {
+      listeners[type] = listener;
+    },
+    removeEventListener(type, listener) {
+      if (listeners[type] === listener) {
+        delete listeners[type];
+      }
+    }
+  };
+  const root = {
+    defaultView: {
+      innerWidth: 1000,
+      innerHeight: 800,
+      addEventListener(type, listener) {
+        listeners[`window:${type}`] = listener;
+      },
+      removeEventListener(type, listener) {
+        if (listeners[`window:${type}`] === listener) {
+          delete listeners[`window:${type}`];
+        }
+      }
+    }
+  };
+
+  content.makePanelMovable(panel, handle, root);
+  listeners.mousedown({
+    button: 0,
+    clientX: 70,
+    clientY: 80,
+    target: {
+      closest() {
+        return null;
+      }
+    },
+    preventDefault() {}
+  });
+  listeners["window:mousemove"]({
+    clientX: 250,
+    clientY: 260
+  });
+  listeners["window:mouseup"]();
+
+  assert.deepEqual(panel.__ariadexV2State.position, {
+    left: 200,
+    top: 200
+  });
+  assert.equal(panel.style.left, "200px");
+  assert.equal(panel.style.top, "200px");
 });
 
 test("resolveRootArtifact sends the expected extension message", async () => {
@@ -97,12 +272,98 @@ test("resolveRootArtifact sends the expected extension message", async () => {
   });
 });
 
+test("resolveRootArtifact returns an empty artifact immediately when no tweet id is provided", async () => {
+  const artifact = await content.resolveRootArtifact("", {
+    runtime: {}
+  });
+  assert.deepEqual(artifact, { path: [], references: [] });
+});
+
 test("resolveRootArtifact rejects extension errors", async () => {
   const chromeStub = {
     runtime: {
       lastError: null,
       sendMessage(_message, callback) {
         callback({ ok: false, error: "boom" });
+      }
+    }
+  };
+
+  await assert.rejects(() => content.resolveRootArtifact("2", chromeStub), /boom/);
+});
+
+test("resolveRootArtifact rejects when the extension runtime is unavailable", async () => {
+  await assert.rejects(() => content.resolveRootArtifact("2", {}), /extension_runtime_unavailable/);
+});
+
+test("resolveRootArtifact uses the streaming port when available and relays progress", async () => {
+  const progressEvents = [];
+  let portListener;
+  let disconnected = false;
+  const chromeStub = {
+    runtime: {
+      sendMessage() {},
+      connect(options) {
+        assert.deepEqual(options, { name: "ARIADEx_V2_RESOLVE_ROOT_PATH_PORT" });
+        return {
+          onMessage: {
+            addListener(listener) {
+              portListener = listener;
+            }
+          },
+          postMessage(message) {
+            assert.deepEqual(message, {
+              type: content.MESSAGE_TYPE,
+              tweetId: "2"
+            });
+
+            // Simulate the worker's streaming contract in-order.
+            portListener({ type: "progress", progress: { phase: "start" } });
+            portListener({
+              type: "result",
+              artifact: {
+                path: [{ id: "1" }],
+                references: null
+              }
+            });
+          },
+          disconnect() {
+            disconnected = true;
+          }
+        };
+      }
+    }
+  };
+
+  const artifact = await content.resolveRootArtifact("2", chromeStub, (progress) => {
+    progressEvents.push(progress);
+  });
+
+  assert.deepEqual(progressEvents, [{ phase: "start" }]);
+  assert.deepEqual(artifact, {
+    path: [{ id: "1" }],
+    references: []
+  });
+  assert.equal(disconnected, true);
+});
+
+test("resolveRootArtifact rejects streaming port errors", async () => {
+  let portListener;
+  const chromeStub = {
+    runtime: {
+      sendMessage() {},
+      connect() {
+        return {
+          onMessage: {
+            addListener(listener) {
+              portListener = listener;
+            }
+          },
+          postMessage() {
+            portListener({ type: "error", error: "boom" });
+          },
+          disconnect() {}
+        };
       }
     }
   };
@@ -125,4 +386,19 @@ test("clearTweetCache sends the expected extension message", async () => {
   assert.deepEqual(chromeStub.sent, {
     type: content.CLEAR_CACHE_MESSAGE_TYPE
   });
+});
+
+test("clearTweetCache surfaces runtime failures", async () => {
+  await assert.rejects(() => content.clearTweetCache({}), /extension_runtime_unavailable/);
+
+  const chromeStub = {
+    runtime: {
+      lastError: { message: "send failed" },
+      sendMessage(_message, callback) {
+        callback({});
+      }
+    }
+  };
+
+  await assert.rejects(() => content.clearTweetCache(chromeStub), /send failed/);
 });
