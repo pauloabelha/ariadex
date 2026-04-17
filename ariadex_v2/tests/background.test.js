@@ -4,8 +4,10 @@ const assert = require("node:assert/strict");
 const algo = require("../extension/algo.js");
 const background = require("../extension/background.js");
 
-function createChromeStub(initialCache = {}) {
+function createChromeStub(initialCache = {}, initialConversationCache = {}, initialLocalStorage = {}) {
   let cache = { ...initialCache };
+  let conversationCache = { ...initialConversationCache };
+  let localStorageEntries = { ...initialLocalStorage };
   const listeners = {
     message: null,
     connect: null
@@ -27,21 +29,53 @@ function createChromeStub(initialCache = {}) {
     },
     storage: {
       local: {
-        get(_keys, callback) {
-          callback({ [algo.TWEET_CACHE_KEY]: cache });
+        get(keys, callback) {
+          const requestedKeys = Array.isArray(keys) ? keys : Object.keys(keys || {});
+          const result = {};
+
+          for (const key of requestedKeys) {
+            if (key === algo.TWEET_CACHE_KEY) {
+              result[key] = cache;
+              continue;
+            }
+            if (key === algo.CONVERSATION_CACHE_KEY) {
+              result[key] = conversationCache;
+              continue;
+            }
+            if (Object.prototype.hasOwnProperty.call(localStorageEntries, key)) {
+              result[key] = localStorageEntries[key];
+            }
+          }
+
+          callback(result);
         },
         set(value, callback) {
-          cache = { ...(value?.[algo.TWEET_CACHE_KEY] || {}) };
+          if (Object.prototype.hasOwnProperty.call(value || {}, algo.TWEET_CACHE_KEY)) {
+            cache = { ...(value?.[algo.TWEET_CACHE_KEY] || {}) };
+          }
+          if (Object.prototype.hasOwnProperty.call(value || {}, algo.CONVERSATION_CACHE_KEY)) {
+            conversationCache = { ...(value?.[algo.CONVERSATION_CACHE_KEY] || {}) };
+          }
+          for (const [key, entryValue] of Object.entries(value || {})) {
+            if (key === algo.TWEET_CACHE_KEY || key === algo.CONVERSATION_CACHE_KEY) {
+              continue;
+            }
+            localStorageEntries[key] = entryValue;
+          }
           callback();
         },
         remove(_keys, callback) {
           cache = {};
+          conversationCache = {};
           callback();
         }
       }
     },
     inspectCache() {
       return { ...cache };
+    },
+    inspectConversationCache() {
+      return { ...conversationCache };
     },
     triggerMessage(message, sender, sendResponse) {
       return listeners.message ? listeners.message(message, sender, sendResponse) : false;
@@ -54,20 +88,170 @@ function createChromeStub(initialCache = {}) {
   };
 }
 
-function createFetchStub(payloadById) {
+function createFetchStub(payloadById, options = {}) {
   const calls = [];
+  const userByUsername = new Map();
+  let nextUserId = 1;
+
+  function ensureUserFromPayload(payload) {
+    const username = String(payload?.user?.screen_name || "").trim();
+    if (!username) {
+      return null;
+    }
+    const normalizedUsername = username.replace(/^@+/, "");
+    if (!userByUsername.has(normalizedUsername)) {
+      userByUsername.set(normalizedUsername, {
+        id: `u${nextUserId}`,
+        username: normalizedUsername,
+        name: String(payload?.user?.name || "").trim(),
+        profile_image_url: String(payload?.user?.profile_image_url_https || payload?.user?.profile_image_url || "").trim()
+      });
+      nextUserId += 1;
+    }
+    return userByUsername.get(normalizedUsername);
+  }
+
+  Object.values(payloadById).forEach((payload) => {
+    ensureUserFromPayload(payload);
+  });
+
+  function resolveConversationId(tweetId, seen = new Set()) {
+    const normalizedId = String(tweetId || "");
+    if (!normalizedId || seen.has(normalizedId)) {
+      return normalizedId;
+    }
+    seen.add(normalizedId);
+    const payload = payloadById[normalizedId];
+    if (!payload) {
+      return normalizedId;
+    }
+    const explicitConversationId = String(payload.conversation_id_str || "").trim();
+    if (explicitConversationId) {
+      return explicitConversationId;
+    }
+    const parentId = String(payload.in_reply_to_status_id_str || "").trim();
+    if (!parentId) {
+      return normalizedId;
+    }
+    return resolveConversationId(parentId, seen);
+  }
+
+  function toApiTweet(payload) {
+    if (!payload?.id_str) {
+      return null;
+    }
+    const author = ensureUserFromPayload(payload);
+    const mentions = Array.isArray(payload?.entities?.user_mentions)
+      ? payload.entities.user_mentions.map((mention) => ({
+        id: `m:${String(mention?.screen_name || "").replace(/^@+/, "").toLowerCase()}`,
+        username: String(mention?.screen_name || "").replace(/^@+/, "")
+      }))
+      : [];
+    const urls = Array.isArray(payload?.entities?.urls)
+      ? payload.entities.urls.map((entry) => ({
+        expanded_url: entry?.expanded_url || entry?.url || "",
+        unwound_url: entry?.expanded_url || entry?.url || "",
+        url: entry?.url || entry?.expanded_url || ""
+      }))
+      : [];
+    const referenced_tweets = [];
+    if (payload?.in_reply_to_status_id_str) {
+      referenced_tweets.push({ type: "replied_to", id: String(payload.in_reply_to_status_id_str) });
+    }
+    if (payload?.quoted_tweet?.id_str) {
+      referenced_tweets.push({ type: "quoted", id: String(payload.quoted_tweet.id_str) });
+    }
+
+    return {
+      id: String(payload.id_str),
+      author_id: author?.id || "",
+      conversation_id: resolveConversationId(payload.id_str),
+      created_at: payload.created_at || "",
+      text: String(payload.text || ""),
+      entities: {
+        mentions,
+        urls
+      },
+      referenced_tweets
+    };
+  }
 
   async function fetchImpl(url) {
-    const match = String(url).match(/[?&]id=(\d+)/);
-    const id = match ? match[1] : "";
-    calls.push(id);
-    const payload = payloadById[id];
-    if (!payload) {
+    const parsed = new URL(String(url));
+    calls.push(parsed.pathname + parsed.search);
+
+    if (/\/2\/tweets\/[^/]+$/.test(parsed.pathname)) {
+      const id = parsed.pathname.split("/").pop();
+      const payload = payloadById[id];
+      if (!payload) {
+        return {
+          ok: false,
+          status: 404,
+          async json() {
+            return {};
+          }
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: toApiTweet(payload),
+            includes: {
+              users: [ensureUserFromPayload(payload)].filter(Boolean)
+            }
+          };
+        }
+      };
+    }
+
+    if (parsed.pathname === "/2/tweets") {
+      const ids = String(parsed.searchParams.get("ids") || "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      const payloads = ids.map((id) => payloadById[id]).filter(Boolean);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: payloads.map((payload) => toApiTweet(payload)),
+            includes: {
+              users: payloads.map((payload) => ensureUserFromPayload(payload)).filter(Boolean)
+            }
+          };
+        }
+      };
+    }
+
+    if (parsed.pathname === "/2/tweets/search/all" && Number(options.searchAllStatus || 200) !== 200) {
       return {
         ok: false,
-        status: 404,
+        status: Number(options.searchAllStatus || 403),
         async json() {
           return {};
+        }
+      };
+    }
+
+    if (parsed.pathname === "/2/tweets/search/recent" || parsed.pathname === "/2/tweets/search/all") {
+      const query = String(parsed.searchParams.get("query") || "");
+      const match = query.match(/^conversation_id:(.+)$/);
+      const conversationId = match ? match[1] : "";
+      const payloads = Object.values(payloadById).filter((payload) => resolveConversationId(payload.id_str) === conversationId);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            data: payloads.map((payload) => toApiTweet(payload)),
+            includes: {
+              users: payloads.map((payload) => ensureUserFromPayload(payload)).filter(Boolean)
+            },
+            meta: {}
+          };
         }
       };
     }
@@ -85,10 +269,17 @@ function createFetchStub(payloadById) {
   return fetchImpl;
 }
 
-test("buildSyndicationToken returns a stable token string", () => {
-  const token = algo.buildSyndicationToken("2035043544617168917");
-  assert.equal(typeof token, "string");
-  assert.ok(token.length > 0);
+function createClient(fetchImpl) {
+  return algo.createTweetClient(fetchImpl, { bearerToken: "test-token" });
+}
+
+test("buildApiUrl writes stable X API urls", () => {
+  const url = algo.buildApiUrl(algo.DEFAULT_API_BASE_URL, "/tweets/10", {
+    expansions: ["author_id"],
+    "tweet.fields": ["author_id", "conversation_id"]
+  });
+
+  assert.equal(url.toString(), "https://api.x.com/2/tweets/10?expansions=author_id&tweet.fields=author_id%2Cconversation_id");
 });
 
 test("normalizeTweet maps only the fields needed for v2", () => {
@@ -110,6 +301,8 @@ test("normalizeTweet maps only the fields needed for v2", () => {
 
   assert.deepEqual(tweet, {
     id: "10",
+    conversationId: "10",
+    createdAt: "",
     author: "alice",
     authorName: "Alice Example",
     authorAvatarUrl: "https://img.example/alice.jpg",
@@ -318,6 +511,39 @@ test("buildPeopleArtifact dedupes path authors and mentions by canonical handle"
   ]);
 });
 
+test("buildLocalReplyChains defaults required participation to the anchor author but allows override", () => {
+  const anchorTweet = {
+    id: "10",
+    author: "barenboim"
+  };
+  const conversationTweets = [
+    {
+      id: "11",
+      author: "stephen",
+      text: "first reply",
+      repliedToId: "10",
+      createdAt: "2026-03-20T10:00:00.000Z",
+      url: "https://x.com/stephen/status/11"
+    },
+    {
+      id: "12",
+      author: "barenboim",
+      text: "author follows up",
+      repliedToId: "11",
+      createdAt: "2026-03-20T11:00:00.000Z",
+      url: "https://x.com/barenboim/status/12"
+    }
+  ];
+
+  const defaultChains = algo.buildLocalReplyChains(anchorTweet, conversationTweets);
+  assert.deepEqual(defaultChains[0].tweets.map((entry) => entry.id), ["11", "12"]);
+
+  const overrideChains = algo.buildLocalReplyChains(anchorTweet, conversationTweets, {
+    participantHandle: "stephen"
+  });
+  assert.deepEqual(overrideChains[0].tweets.map((entry) => entry.id), ["11"]);
+});
+
 test("resolveParentId prioritizes quoted parent over reply parent", () => {
   assert.deepEqual(
     algo.resolveParentId({
@@ -349,15 +575,43 @@ test("fetchTweet hits the network only on cache miss and writes through", async 
   const fetchImpl = createFetchStub({
     10: { id_str: "10", text: "hello", user: { screen_name: "alice" } }
   });
-  const client = algo.createTweetClient(fetchImpl);
+  const client = createClient(fetchImpl);
 
   const first = await algo.fetchTweet("10", { storage, client });
   const second = await algo.fetchTweet("10", { storage, client });
 
   assert.equal(first.id_str, "10");
   assert.equal(second.id_str, "10");
-  assert.deepEqual(fetchImpl.calls, ["10"]);
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.match(fetchImpl.calls[0], /\/2\/tweets\/10\?/);
   assert.equal(chromeStub.inspectCache()["10"].id_str, "10");
+});
+
+test("fetchTweet coalesces concurrent requests for the same tweet id", async () => {
+  algo.inFlightTweetFetchById.clear();
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  let resolveFetch;
+  let callCount = 0;
+  const client = {
+    fetchTweetFromNetwork() {
+      callCount += 1;
+      return new Promise((resolve) => {
+        resolveFetch = resolve;
+      });
+    }
+  };
+
+  const firstPromise = algo.fetchTweet("10", { storage, client });
+  const secondPromise = algo.fetchTweet("10", { storage, client });
+  await new Promise((resolve) => setImmediate(resolve));
+  resolveFetch({ id_str: "10", text: "hello", user: { screen_name: "alice" } });
+
+  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+  assert.equal(callCount, 1);
+  assert.equal(first.id_str, "10");
+  assert.equal(second.id_str, "10");
 });
 
 test("fetchTweet rejects missing tweet ids before touching storage or network", async () => {
@@ -375,26 +629,167 @@ test("fetchTweet rejects missing tweet ids before touching storage or network", 
   await assert.rejects(() => algo.fetchTweet("", { storage, client }), /missing_tweet_id/);
 });
 
-test("createTweetClient requests the syndication endpoint with credentials omitted", async () => {
+test("fetchTweets reads cached tweet ids first and only fetches missing ids", async () => {
+  const chromeStub = createChromeStub({
+    10: { id_str: "10", text: "cached", user: { screen_name: "alice" } }
+  });
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({
+    20: { id_str: "20", text: "from network", user: { screen_name: "bob" } }
+  });
+  const client = createClient(fetchImpl);
+
+  const payloads = await algo.fetchTweets(["10", "20"], { storage, client });
+
+  assert.deepEqual(payloads.map((payload) => payload.id_str), ["10", "20"]);
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.match(fetchImpl.calls[0], /\/2\/tweets\?/);
+  assert.equal(chromeStub.inspectCache()["20"].id_str, "20");
+});
+
+test("fetchConversation reuses a fully indexed conversation without hitting the X API", async () => {
+  const chromeStub = createChromeStub({
+    10: { id_str: "10", text: "root", user: { screen_name: "alice" } },
+    20: { id_str: "20", text: "reply", user: { screen_name: "bob" }, in_reply_to_status_id_str: "10" }
+  }, {
+    10: { complete: true, tweetIds: ["10", "20"] }
+  });
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({});
+  const client = createClient(fetchImpl);
+
+  const payloads = await algo.fetchConversation("10", { storage, client });
+
+  assert.deepEqual(payloads.map((payload) => payload.id_str), ["10", "20"]);
+  assert.deepEqual(fetchImpl.calls, []);
+});
+
+test("fetchConversation indexes fetched conversations so the next read is cache-only", async () => {
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({
+    10: { id_str: "10", text: "root", user: { screen_name: "alice" } },
+    20: { id_str: "20", text: "reply", user: { screen_name: "bob" }, in_reply_to_status_id_str: "10" }
+  });
+  const client = createClient(fetchImpl);
+
+  const firstPayloads = await algo.fetchConversation("10", { storage, client });
+  const firstCallCount = fetchImpl.calls.length;
+  const secondPayloads = await algo.fetchConversation("10", { storage, client });
+
+  assert.deepEqual(firstPayloads.map((payload) => payload.id_str), ["10", "20"]);
+  assert.deepEqual(secondPayloads.map((payload) => payload.id_str), ["10", "20"]);
+  assert.equal(fetchImpl.calls.length, firstCallCount);
+  assert.deepEqual(chromeStub.inspectConversationCache(), {
+    10: { complete: true, tweetIds: ["10", "20"] }
+  });
+});
+
+test("fetchConversation falls back to recent search when full-archive search is unavailable", async () => {
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({
+    10: { id_str: "10", text: "root", user: { screen_name: "alice" } },
+    20: { id_str: "20", text: "reply", user: { screen_name: "bob" }, in_reply_to_status_id_str: "10" }
+  }, {
+    searchAllStatus: 403
+  });
+  const client = createClient(fetchImpl);
+
+  const payloads = await algo.fetchConversation("10", { storage, client });
+
+  assert.deepEqual(payloads.map((payload) => payload.id_str), ["10", "20"]);
+  assert.equal(fetchImpl.calls.some((entry) => entry.startsWith("/2/tweets/search/all?")), true);
+  assert.equal(fetchImpl.calls.some((entry) => entry.startsWith("/2/tweets/search/recent?")), true);
+});
+
+test("fetchConversation coalesces concurrent requests for the same conversation id", async () => {
+  algo.inFlightConversationFetchById.clear();
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  let resolveFetch;
+  let callCount = 0;
+  const client = createClient(async (url) => {
+    if (String(url).includes("/search/all") || String(url).includes("/search/recent")) {
+      callCount += 1;
+      return new Promise((resolve) => {
+        resolveFetch = () => resolve({
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              data: [
+                {
+                  id: "10",
+                  author_id: "u1",
+                  conversation_id: "10",
+                  text: "root",
+                  entities: {},
+                  referenced_tweets: []
+                }
+              ],
+              includes: {
+                users: [{ id: "u1", username: "alice", name: "Alice" }]
+              },
+              meta: {}
+            };
+          }
+        });
+      });
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { data: [], includes: { users: [] }, meta: {} };
+      }
+    };
+  });
+
+  const firstPromise = algo.fetchConversation("10", { storage, client });
+  const secondPromise = algo.fetchConversation("10", { storage, client });
+  await new Promise((resolve) => setImmediate(resolve));
+  resolveFetch();
+
+  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+  assert.equal(callCount, 1);
+  assert.deepEqual(first.map((payload) => payload.id_str), ["10"]);
+  assert.deepEqual(second.map((payload) => payload.id_str), ["10"]);
+});
+
+test("createTweetClient requests the X API endpoint with a bearer token", async () => {
   const calls = [];
-  const client = algo.createTweetClient(async (url, options) => {
+  const client = createClient(async (url, options) => {
     calls.push({ url, options });
     return {
       ok: true,
       async json() {
-        return { id_str: "10" };
+        return {
+          data: {
+            id: "10",
+            author_id: "u1",
+            conversation_id: "10",
+            text: "hello"
+          },
+          includes: {
+            users: [{ id: "u1", username: "alice", name: "Alice Example" }]
+          }
+        };
       }
     };
   });
 
   await client.fetchTweetFromNetwork("10");
 
-  assert.match(calls[0].url, /tweet-result\?id=10&token=/);
-  assert.deepEqual(calls[0].options, { credentials: "omit" });
+  assert.match(calls[0].url, /https:\/\/api\.x\.com\/2\/tweets\/10\?/);
+  assert.equal(calls[0].options.method, "GET");
+  assert.equal(calls[0].options.headers.Authorization, "Bearer test-token");
 });
 
 test("createTweetClient surfaces network failures with the response status", async () => {
-  const client = algo.createTweetClient(async () => ({
+  const client = createClient(async () => ({
     ok: false,
     status: 503,
     async json() {
@@ -452,7 +847,7 @@ test("resolveRootPath walks quote parent first and then reply ancestry", async (
       }
     }
   });
-  const client = algo.createTweetClient(fetchImpl);
+  const client = createClient(fetchImpl);
 
   const artifact = await algo.resolveRootPath("30", { storage, client });
 
@@ -489,13 +884,13 @@ test("resolveRootPath walks quote parent first and then reply ancestry", async (
     ["root", "Root Author"],
     ["quoted", "Quoted Author"],
     ["clicked", "Clicked Author"],
-    ["quoteguide", "Quote Guide"]
+    ["quoteguide", ""]
   ]);
   assert.deepEqual(artifact.people.map((entry) => [entry.handle, entry.avatarUrl]), [
     ["root", "https://img.example/root.jpg"],
     ["quoted", "https://img.example/quoted.jpg"],
     ["clicked", "https://img.example/clicked.jpg"],
-    ["quoteguide", "https://img.example/guide.jpg"]
+    ["quoteguide", ""]
   ]);
 });
 
@@ -515,7 +910,7 @@ test("resolveRootPath emits progress metadata for each phase", async () => {
       user: { screen_name: "root" }
     }
   });
-  const client = algo.createTweetClient(fetchImpl);
+  const client = createClient(fetchImpl);
   const progressEvents = [];
 
   await algo.resolveRootPath("20", {
@@ -546,6 +941,7 @@ test("resolveRootPath emits progress metadata for each phase", async () => {
       nextRelationType: ""
     },
     { phase: "canonicalizing_refs", tweetCount: 2 },
+    { phase: "collecting_local_reply_chains", conversationId: "10", conversationIds: ["10"] },
     { phase: "done", tweetCount: 2, referenceCount: 0 }
   ]);
 });
@@ -567,7 +963,7 @@ test("resolveRootPath stops at cycles", async () => {
       in_reply_to_status_id_str: "10"
     }
   });
-  const client = algo.createTweetClient(fetchImpl);
+  const client = createClient(fetchImpl);
 
   const artifact = await algo.resolveRootPath("10", { storage, client });
 
@@ -588,7 +984,8 @@ test("resolveRootPath stops cleanly when a fetched payload cannot be normalized"
   assert.deepEqual(artifact, {
     path: [],
     references: [],
-    people: []
+    people: [],
+    replyChains: []
   });
 });
 
@@ -615,12 +1012,272 @@ test("resolveRootPath reuses cache entries across a recursive walk", async () =>
       user: { screen_name: "root" }
     }
   });
-  const client = algo.createTweetClient(fetchImpl);
+  const client = createClient(fetchImpl);
 
   const artifact = await algo.resolveRootPath("30", { storage, client });
 
   assert.deepEqual(artifact.path.map((entry) => entry.id), ["10", "20", "30"]);
-  assert.deepEqual(fetchImpl.calls, ["30", "10"]);
+  assert.equal(fetchImpl.calls.length, 6);
+  assert.match(fetchImpl.calls[0], /\/2\/tweets\/30\?/);
+  assert.match(fetchImpl.calls[1], /\/2\/tweets\/10\?/);
+  assert.ok(fetchImpl.calls.filter((entry) => /\/2\/tweets\/search\/(all|recent)\?/.test(entry)).length >= 1);
+});
+
+test("resolveRootPath keeps only reply chains where the explored author participates", async () => {
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({
+    30: {
+      id_str: "30",
+      conversation_id_str: "30",
+      text: "clicked quote",
+      user: { screen_name: "quoted" },
+      quoted_tweet: { id_str: "20" }
+    },
+    20: {
+      id_str: "20",
+      conversation_id_str: "10",
+      text: "quoted reply",
+      user: { screen_name: "quoted" },
+      in_reply_to_status_id_str: "10"
+    },
+    10: {
+      id_str: "10",
+      conversation_id_str: "10",
+      text: "root",
+      user: { screen_name: "root" }
+    },
+    40: {
+      id_str: "40",
+      conversation_id_str: "30",
+      text: "direct reply",
+      user: { screen_name: "quoted" },
+      in_reply_to_status_id_str: "30"
+    },
+    50: {
+      id_str: "50",
+      conversation_id_str: "30",
+      text: "reply branch continues",
+      user: { screen_name: "eve" },
+      in_reply_to_status_id_str: "40"
+    },
+    60: {
+      id_str: "60",
+      conversation_id_str: "30",
+      text: "second direct reply",
+      user: { screen_name: "mallory" },
+      in_reply_to_status_id_str: "30"
+    },
+    70: {
+      id_str: "70",
+      conversation_id_str: "10",
+      text: "someone replies to root instead",
+      user: { screen_name: "trent" },
+      in_reply_to_status_id_str: "10"
+    }
+  });
+  const client = createClient(fetchImpl);
+
+  const artifact = await algo.resolveRootPath("30", { storage, client });
+
+  assert.equal(artifact.replyChains.length, 2);
+  const exploredChain = artifact.replyChains.find((chain) => chain.anchorTweetId === "30");
+  assert.deepEqual(exploredChain.participantHandles, ["quoted"]);
+  assert.deepEqual(exploredChain.tweets.map((entry) => entry.id), ["40"]);
+  const rootChain = artifact.replyChains.find((chain) => chain.anchorTweetId === "10");
+  assert.deepEqual(rootChain.participantHandles, ["quoted"]);
+  assert.deepEqual(rootChain.tweets.map((entry) => entry.id), ["20"]);
+});
+
+test("resolveRootPath trims each kept reply chain at the explored author's last tweet", async () => {
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({
+    30: {
+      id_str: "30",
+      conversation_id_str: "30",
+      text: "clicked quote",
+      user: { screen_name: "quoted" },
+      quoted_tweet: { id_str: "20" }
+    },
+    20: {
+      id_str: "20",
+      conversation_id_str: "10",
+      text: "quoted reply",
+      user: { screen_name: "quoted" },
+      in_reply_to_status_id_str: "10"
+    },
+    10: {
+      id_str: "10",
+      conversation_id_str: "10",
+      text: "root",
+      user: { screen_name: "root" }
+    },
+    40: {
+      id_str: "40",
+      conversation_id_str: "30",
+      text: "direct reply",
+      user: { screen_name: "alice" },
+      in_reply_to_status_id_str: "30"
+    },
+    50: {
+      id_str: "50",
+      conversation_id_str: "30",
+      text: "author joins",
+      user: { screen_name: "quoted" },
+      in_reply_to_status_id_str: "40"
+    },
+    60: {
+      id_str: "60",
+      conversation_id_str: "30",
+      text: "someone continues after author",
+      user: { screen_name: "bob" },
+      in_reply_to_status_id_str: "50"
+    },
+    70: {
+      id_str: "70",
+      conversation_id_str: "30",
+      text: "author answers again",
+      user: { screen_name: "quoted" },
+      in_reply_to_status_id_str: "60"
+    },
+    80: {
+      id_str: "80",
+      conversation_id_str: "30",
+      text: "extra tail after last author tweet",
+      user: { screen_name: "carol" },
+      in_reply_to_status_id_str: "70"
+    }
+  });
+  const client = createClient(fetchImpl);
+
+  const artifact = await algo.resolveRootPath("30", { storage, client });
+
+  assert.equal(artifact.replyChains.length, 2);
+  const exploredChain = artifact.replyChains.find((chain) => chain.anchorTweetId === "30");
+  assert.deepEqual(exploredChain.tweets.map((entry) => entry.id), ["40", "50", "60", "70"]);
+  assert.deepEqual(exploredChain.participantHandles, ["alice", "quoted", "bob"]);
+});
+
+test("resolveRootPath keeps all subtree tweets up to the explored author's last tweet", async () => {
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({
+    30: {
+      id_str: "30",
+      conversation_id_str: "30",
+      text: "clicked quote",
+      user: { screen_name: "quoted" },
+      quoted_tweet: { id_str: "20" }
+    },
+    20: {
+      id_str: "20",
+      conversation_id_str: "10",
+      text: "quoted reply",
+      user: { screen_name: "quoted" },
+      in_reply_to_status_id_str: "10"
+    },
+    10: {
+      id_str: "10",
+      conversation_id_str: "10",
+      text: "root",
+      user: { screen_name: "root" }
+    },
+    40: {
+      id_str: "40",
+      conversation_id_str: "30",
+      text: "direct reply",
+      user: { screen_name: "alice" },
+      in_reply_to_status_id_str: "30"
+    },
+    50: {
+      id_str: "50",
+      conversation_id_str: "30",
+      text: "side reply one",
+      user: { screen_name: "bob" },
+      in_reply_to_status_id_str: "40"
+    },
+    55: {
+      id_str: "55",
+      conversation_id_str: "30",
+      text: "side reply two",
+      user: { screen_name: "carol" },
+      in_reply_to_status_id_str: "40"
+    },
+    60: {
+      id_str: "60",
+      conversation_id_str: "30",
+      text: "author closes the thread",
+      user: { screen_name: "quoted" },
+      in_reply_to_status_id_str: "55"
+    },
+    70: {
+      id_str: "70",
+      conversation_id_str: "30",
+      text: "tail after author",
+      user: { screen_name: "dan" },
+      in_reply_to_status_id_str: "60"
+    }
+  });
+  const client = createClient(fetchImpl);
+
+  const artifact = await algo.resolveRootPath("30", { storage, client });
+
+  assert.equal(artifact.replyChains.length, 2);
+  const exploredChain = artifact.replyChains.find((chain) => chain.anchorTweetId === "30");
+  assert.deepEqual(exploredChain.tweets.map((entry) => entry.id), ["40", "50", "55", "60"]);
+  assert.deepEqual(exploredChain.participantHandles, ["alice", "bob", "carol", "quoted"]);
+});
+
+test("resolveRootPath aggregates reply chains across the full root-to-explored path", async () => {
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({
+    30: {
+      id_str: "30",
+      conversation_id_str: "30",
+      text: "clicked quote",
+      user: { screen_name: "quoted" },
+      quoted_tweet: { id_str: "20" }
+    },
+    20: {
+      id_str: "20",
+      conversation_id_str: "10",
+      text: "quoted reply",
+      user: { screen_name: "quoted" },
+      in_reply_to_status_id_str: "10"
+    },
+    10: {
+      id_str: "10",
+      conversation_id_str: "10",
+      text: "root",
+      user: { screen_name: "root" }
+    },
+    11: {
+      id_str: "11",
+      conversation_id_str: "10",
+      text: "reply to root",
+      user: { screen_name: "alice" },
+      in_reply_to_status_id_str: "10"
+    },
+    12: {
+      id_str: "12",
+      conversation_id_str: "10",
+      text: "root author responds",
+      user: { screen_name: "root" },
+      in_reply_to_status_id_str: "11"
+    }
+  });
+  const client = createClient(fetchImpl);
+
+  const artifact = await algo.resolveRootPath("30", { storage, client });
+
+  assert.equal(artifact.replyChains.length, 2);
+  const rootChain = artifact.replyChains.find((chain) => chain.anchorTweetId === "10");
+  assert.deepEqual(rootChain.tweets.map((entry) => entry.id), ["11", "12"]);
+  assert.deepEqual(rootChain.participantHandles, ["alice", "root"]);
+  const quotedParentChain = artifact.replyChains.find((chain) => chain.anchorTweetId === "20");
+  assert.equal(quotedParentChain, undefined);
 });
 
 test("createStorageAdapter surfaces chrome runtime errors for cache operations", async () => {
@@ -651,7 +1308,9 @@ test("createStorageAdapter surfaces chrome runtime errors for cache operations",
   const storage = algo.createStorageAdapter(chromeStub);
 
   await assert.rejects(() => storage.readCache(), /read failed/);
+  await assert.rejects(() => storage.readConversationCache(), /read failed/);
   await assert.rejects(() => storage.writeCache({ 10: { id_str: "10" } }), /write failed/);
+  await assert.rejects(() => storage.writeConversationCache({ 10: { complete: true, tweetIds: ["10"] } }), /write failed/);
   await assert.rejects(() => storage.clearCache(), /clear failed/);
 });
 
@@ -667,6 +1326,7 @@ test("background controller clears the stored tweet cache", async () => {
   await controller.clearCache();
 
   assert.deepEqual(chromeStub.inspectCache(), {});
+  assert.deepEqual(chromeStub.inspectConversationCache(), {});
 });
 
 test("background controller forwards progress events when resolving through the controller", async () => {
@@ -696,13 +1356,61 @@ test("background controller forwards progress events when resolving through the 
 
   const phases = [];
   const artifact = await controller.resolveRootPath("30", {
+    bearerToken: "test-token",
     onProgress(progress) {
       phases.push(progress.phase);
     }
   });
 
-  assert.deepEqual(phases, ["start", "path_walk", "path_walk", "path_walk", "canonicalizing_refs", "done"]);
+  assert.deepEqual(phases, ["start", "path_walk", "path_walk", "path_walk", "canonicalizing_refs", "collecting_local_reply_chains", "done"]);
   assert.deepEqual(artifact.path.map((entry) => entry.id), ["10", "20", "30"]);
+});
+
+test("background controller falls back to chrome storage when the request omits the bearer token", async () => {
+  const chromeStub = createChromeStub({}, {}, {
+    "ariadex.x_api_bearer_token": "storage-token"
+  });
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: createFetchStub({
+      10: {
+        id_str: "10",
+        text: "root",
+        user: { screen_name: "root" }
+      }
+    })
+  });
+
+  const artifact = await controller.resolveRootPath("10", {});
+
+  assert.deepEqual(artifact.path.map((entry) => entry.id), ["10"]);
+});
+
+test("background controller can hydrate the bearer token from the generated config loader", async () => {
+  const chromeStub = createChromeStub();
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: createFetchStub({
+      10: {
+        id_str: "10",
+        text: "root",
+        user: { screen_name: "root" }
+      }
+    })
+  });
+
+  const originalLoadGeneratedConfig = require("../extension/dev_env_loader.js").loadGeneratedConfig;
+  require("../extension/dev_env_loader.js").loadGeneratedConfig = async ({ chromeApi: currentChromeApi }) => {
+    currentChromeApi.storage.local.set({ "ariadex.x_api_bearer_token": "generated-token" }, () => {});
+    return { bearerToken: "generated-token" };
+  };
+
+  try {
+    const artifact = await controller.resolveRootPath("10", {});
+    assert.deepEqual(artifact.path.map((entry) => entry.id), ["10"]);
+  } finally {
+    require("../extension/dev_env_loader.js").loadGeneratedConfig = originalLoadGeneratedConfig;
+  }
 });
 
 test("background message handler resolves root-path requests and ignores unrelated messages", async () => {
@@ -721,7 +1429,7 @@ test("background message handler resolves root-path requests and ignores unrelat
 
   let response;
   const handled = chromeStub.triggerMessage(
-    { type: background.RESOLVE_ROOT_PATH_MESSAGE_TYPE, tweetId: "10" },
+    { type: background.RESOLVE_ROOT_PATH_MESSAGE_TYPE, tweetId: "10", bearerToken: "test-token" },
     {},
     (value) => {
       response = value;
@@ -740,6 +1448,7 @@ test("background message handler resolves root-path requests and ignores unrelat
           author: "root",
           authorName: "",
           authorAvatarUrl: "",
+          createdAt: "",
           text: "root",
           url: "https://x.com/root/status/10",
           referenceUrls: [],
@@ -760,7 +1469,8 @@ test("background message handler resolves root-path requests and ignores unrelat
           citedByTweetIds: ["10"],
           sourceTypes: ["author"]
         }
-      ]
+      ],
+      replyChains: []
     }
   });
   assert.equal(chromeStub.triggerMessage({ type: "UNRELATED" }, {}, () => {}), false);
@@ -828,12 +1538,14 @@ test("background port handler streams progress and final results back to the cal
   chromeStub.triggerConnect(port);
   onMessage({
     type: background.RESOLVE_ROOT_PATH_MESSAGE_TYPE,
-    tweetId: "20"
+    tweetId: "20",
+    bearerToken: "test-token"
   });
 
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(posted.map((message) => message.type), [
+    "progress",
     "progress",
     "progress",
     "progress",

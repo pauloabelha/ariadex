@@ -6,7 +6,7 @@ That file owns the pure logic for:
 
 - tweet-id normalization
 - cache adapter creation
-- syndication fetch client creation
+- X API fetch client creation
 - tweet payload normalization
 - person handle/display-name/avatar normalization
 - `quote > reply` parent selection
@@ -14,6 +14,7 @@ That file owns the pure logic for:
 - external reference canonicalization
 - per-path reference deduplication and numbering
 - per-path people deduplication by canonical X handle
+- reply-chain collection from `conversation_id`
 
 ## Why this split exists
 
@@ -42,7 +43,14 @@ Given a clicked tweet id:
 10. reverse into root-to-explored order
 11. canonicalize and dedupe references across that path
 12. dedupe path authors and mentions into canonical `people`
-13. emit `done`
+13. collect the canonical author set across the resolved path
+14. for each tweet on that path, fetch the matching X API conversation
+15. start from direct replies to that path tweet
+16. walk descendant reply branches below those direct replies
+17. keep only branches where any resolved-path author appears
+18. trim each kept branch at the last tweet by any resolved-path author
+19. annotate each kept branch with its anchor tweet metadata
+20. emit `done`
 
 ## Output artifact
 
@@ -59,6 +67,16 @@ The algorithm returns:
   collected from:
   - tweet authors on the path
   - explicit `user_mentions` on path tweets
+
+- `replyChains`
+  aggregated reply branches rooted in replies to tweets along the resolved path
+  filtered to branches containing at least one resolved-path author
+  trimmed at the last tweet by a resolved-path author
+  and annotated with:
+  - `anchorTweetId`
+    which root/ancestor/explored path node the branch replies to
+  - `anchorAuthor`
+    the canonical handle of that anchor tweet's author
 
 Each path tweet also carries:
 

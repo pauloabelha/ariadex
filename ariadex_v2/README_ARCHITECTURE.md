@@ -8,7 +8,11 @@ This prototype implements only one product slice:
 - recursively resolve its structural parent chain
 - collect canonical references cited along that path
 - collect canonical people found along that path
-- render the root path, references, and people
+- collect reply chains across every tweet on the resolved root-to-explored path
+- treat all authors on that path as valid participating responders
+- keep only branches where one of those path authors participates
+- trim each kept branch at the last tweet by any of those path authors
+- render the root path, references, people, and replies
 
 ## Parent Rule
 
@@ -26,27 +30,31 @@ This means a quote-of-a-reply walks:
 
 ## Data Source
 
-`extension/algo.js` uses X's public syndication payload:
+`extension/algo.js` now talks to the X API directly:
 
-- `https://cdn.syndication.twimg.com/tweet-result`
+- `GET /2/tweets/{id}`
+- `GET /2/tweets`
+- `GET /2/tweets/search/recent?query=conversation_id:<id>`
 
-Only the fields needed for this slice are used:
+The resolver requests only the fields needed for v2:
 
-- `id_str`
-- `user.screen_name`
-- `user.name`
-- `user.profile_image_url_https`
+- `author_id`
+- `conversation_id`
+- `created_at`
+- `entities`
+- `referenced_tweets`
 - `text`
-- `entities.urls[].expanded_url`
-- `entities.user_mentions[].screen_name`
-- `entities.user_mentions[].name`
-- `entities.user_mentions[].profile_image_url_https`
-- `quoted_tweet.id_str`
-- `in_reply_to_status_id_str`
+- `users.id`
+- `users.username`
+- `users.name`
+- `users.profile_image_url`
+
+The content script reads the bearer token from browser local storage and sends it to the background worker for each resolution request.
 
 ## Cache Rule
 
 Every tweet payload is cached by tweet id in `chrome.storage.local`.
+Conversation fetches are also cached by `conversation_id` as lists of tweet ids.
 
 Recursive lookup is:
 
@@ -57,6 +65,7 @@ Recursive lookup is:
 5. continue to parent
 
 So once a tweet id is seen, later path walks reuse it.
+Once a conversation id is seen, later reply fetches can reuse that membership too.
 
 ## Reference Rule
 
@@ -95,6 +104,26 @@ The UI renders a `People` tab listing:
 - profile URL
 - source types and path-tweet count
 
+## Reply Rule
+
+Replies are collected from the X API conversation graph.
+
+For the resolved root-to-explored path:
+
+1. resolve the whole structural path normally
+2. collect the canonical author set across every tweet on that path
+3. for each path tweet, read its `conversation_id`
+4. search `conversation_id:<id>` through the X API
+5. fetch any missing referenced tweets that are needed to close visible reply edges
+6. start from tweets that directly reply to that path tweet
+7. walk descendant reply branches below those direct replies
+8. keep only branches where any path author appears somewhere in the branch
+9. trim each kept branch at the last tweet by any path author
+10. store the branch together with its anchor tweet metadata in `replyChains`
+
+This keeps the feature grounded in explicit reply edges instead of DOM heuristics.
+It also means cached or API-visible tweets can differ from what the X UI is currently surfacing.
+
 ## Files
 
 - `extension/background.js`
@@ -103,11 +132,11 @@ The UI renders a `People` tab listing:
 
 - `extension/content.js`
   content script
-  injects button, requests root path, renders panel, and exports JSON
+  injects button, reads the bearer token, requests the artifact, renders panel, and exports JSON
 
 - `extension/algo.js`
   pure algorithm module
-  owns fetch client creation, cache adapters, root-path recursion, and reference canonicalization
+  owns X API fetch client creation, cache adapters, root-path recursion, reference canonicalization, and reply-chain collection
 
 - `extension/styles.css`
   minimal panel and button styling
@@ -125,4 +154,8 @@ The test suite should lock down:
 - per-tweet reference numbering
 - people aggregation across authors and mentions
 - person display names and avatars when present
+- reply-chain collection from the X API conversation graph
+- aggregation across every tweet on the resolved path
+- filtering to branches where any path author participates
+- trimming each kept branch at the last participating path-author tweet
 - panel tabs and export behavior

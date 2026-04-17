@@ -1,10 +1,11 @@
 # UX Notes
 
-The floating panel has three tabs:
+The floating panel has four tabs:
 
 - `Root Path`
 - `References`
 - `People`
+- `Replies`
 
 The panel header also exposes:
 
@@ -49,6 +50,23 @@ Each people card shows:
 - count of path tweets where that handle appeared
 
 Clicking a people card opens that X profile in a new tab.
+
+## Replies tab
+
+Each reply card shows:
+
+- the number of tweets collected into that reply chain
+- which path branch the chain belongs to, such as `Root`, `Ancestor 2`, or `Explored`
+- which anchor author that chain replies to
+- one card per tweet in the collected chain
+- the tweet ids included in that trimmed chain
+
+These chains are aggregated from the X API conversation graphs for tweets across
+the full root-to-explored path. A branch is shown only if one of the path
+authors participates somewhere in it, and the branch is trimmed at the last
+tweet by any of those path authors.
+
+Clicking a tweet card navigates to that specific tweet on X.
 
 ## Export
 

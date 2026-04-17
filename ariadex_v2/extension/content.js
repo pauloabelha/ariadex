@@ -9,10 +9,97 @@
   const RESOLVE_ROOT_PATH_PORT_NAME = "ARIADEx_V2_RESOLVE_ROOT_PATH_PORT";
   const DEFAULT_TAB = "path";
   const PANEL_MARGIN = 20;
+  const X_API_BEARER_STORAGE_KEYS = [
+    "ariadex.x_api_bearer_token",
+    "ariadex.xApiBearerToken"
+  ];
 
   // Keep UI strings compact and predictable before rendering them into the panel.
   function normalizeText(value) {
     return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function canonicalizeHandle(value) {
+    const normalized = String(value || "").trim().replace(/^@+/, "").toLowerCase();
+    return /^[a-z0-9_]{1,15}$/.test(normalized) ? normalized : "";
+  }
+
+  function readLocalStorageValue(key, view = globalThis.window) {
+    try {
+      return view?.localStorage?.getItem?.(key) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function readXApiBearerToken(view = globalThis.window) {
+    const settingsToken = String(view?.AriadexXApiSettings?.bearerToken || "").trim();
+    if (settingsToken) {
+      return settingsToken;
+    }
+
+    const windowToken = String(view?.AriadexXApiBearerToken || "").trim();
+    if (windowToken) {
+      return windowToken;
+    }
+
+    for (const key of X_API_BEARER_STORAGE_KEYS) {
+      const candidate = String(readLocalStorageValue(key, view) || "").trim();
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return "";
+  }
+
+  function readChromeStorageLocalValue(key, chromeApi = chrome) {
+    return new Promise((resolve) => {
+      const storageLocal = chromeApi?.storage?.local;
+      if (!storageLocal?.get) {
+        resolve("");
+        return;
+      }
+
+      storageLocal.get([key], (result) => {
+        const runtimeError = chromeApi?.runtime?.lastError;
+        if (runtimeError) {
+          resolve("");
+          return;
+        }
+
+        const value = result?.[key];
+        resolve(typeof value === "string" ? value : "");
+      });
+    });
+  }
+
+  async function readXApiBearerTokenWithFallbacks(chromeApi = chrome, view = globalThis.window) {
+    const directToken = readXApiBearerToken(view);
+    if (directToken) {
+      return directToken;
+    }
+
+    for (const key of X_API_BEARER_STORAGE_KEYS) {
+      const candidate = String(await readChromeStorageLocalValue(key, chromeApi) || "").trim();
+      if (candidate) {
+        return candidate;
+      }
+    }
+
+    return "";
+  }
+
+  async function awaitDevEnvHydration(globalObj = globalThis) {
+    const pending = globalObj?.AriadexV2DevEnvReady;
+    if (!pending || typeof pending.then !== "function") {
+      return;
+    }
+
+    try {
+      await pending;
+    } catch {
+      // Optional hydration should not block manual token entry or later fallbacks.
+    }
   }
 
   // Convert a path position into the label shown to the reader.
@@ -119,11 +206,38 @@
       return `Root path complete. Canonicalizing references across ${tweetCount} tweet${tweetCount === 1 ? "" : "s"}...`;
     }
 
+    if (phase === "collecting_local_reply_chains") {
+      return "Root path complete. Fetching replies to the explored tweet from the X API...";
+    }
+
     if (phase === "done") {
       return `Done. Resolved ${tweetCount} path tweet${tweetCount === 1 ? "" : "s"} and ${referenceCount} reference${referenceCount === 1 ? "" : "s"}.`;
     }
 
     return "Tracing the root path...";
+  }
+
+  function formatLookupErrorMessage(error) {
+    const rawMessage = normalizeText(error?.message || error || "");
+    if (!rawMessage) {
+      return "Path lookup failed.";
+    }
+
+    const normalized = rawMessage.toLowerCase();
+    if (
+      normalized.includes("missing_x_api_bearer_token")
+      || normalized.includes("missing x_api_token")
+      || normalized.includes("missing x api token")
+      || normalized.includes("missing bearer token")
+    ) {
+      return "Path lookup failed: missing X API bearer token. Set `ariadex.x_api_bearer_token` in page localStorage or chrome.storage.local, then reload X.";
+    }
+
+    if (normalized.includes("tweet_fetch_failed_401") || normalized.includes("tweet_fetch_failed_403")) {
+      return "Path lookup failed: X rejected the bearer token. Check that the token is valid and has access to the requested API endpoints.";
+    }
+
+    return `Path lookup failed: ${rawMessage}`;
   }
 
   // Discover tweet cards so we can attach the button to whatever X has rendered.
@@ -503,6 +617,92 @@
     return list;
   }
 
+  function renderReplyChainsTab(replyChains, path, clickedId, root) {
+    if (!Array.isArray(replyChains) || replyChains.length === 0) {
+      const empty = root.createElement("div");
+      empty.className = "ariadex-v2-empty";
+      empty.textContent = "No replies to the explored tweet were found.";
+      return empty;
+    }
+
+    const pathEntries = buildPathEntries(path, clickedId);
+    const labelById = new Map(pathEntries.map((tweet) => [tweet.id, tweet.label]));
+    const list = root.createElement("ol");
+    list.className = "ariadex-v2-list";
+
+    for (const chain of replyChains) {
+      const item = root.createElement("li");
+      item.className = "ariadex-v2-item";
+
+      const header = root.createElement("div");
+      header.className = "ariadex-v2-item-role";
+      const anchorLabel = labelById.get(String(chain.anchorTweetId || "")) || "Path Tweet";
+      header.textContent = `${anchorLabel} Reply Chain · ${Array.isArray(chain.tweets) ? chain.tweets.length : 0} tweet${Array.isArray(chain.tweets) && chain.tweets.length === 1 ? "" : "s"}`;
+
+      const participants = root.createElement("div");
+      participants.className = "ariadex-v2-item-author";
+      const anchorHandle = String(chain.anchorAuthor || "").replace(/^@/, "");
+      const participantText = (Array.isArray(chain.participantHandles) ? chain.participantHandles : [])
+        .map((handle) => `@${String(handle || "").replace(/^@/, "")}`)
+        .join(" · ");
+      participants.textContent = anchorHandle
+        ? `Reply to @${anchorHandle} · ${participantText}`
+        : participantText;
+
+      const meta = root.createElement("div");
+      meta.className = "ariadex-v2-item-id";
+      meta.textContent = (Array.isArray(chain.tweets) ? chain.tweets : [])
+        .map((tweet) => tweet.id)
+        .join(", ");
+
+      const tweetList = root.createElement("ol");
+      tweetList.className = "ariadex-v2-list";
+
+      for (const tweet of Array.isArray(chain.tweets) ? chain.tweets : []) {
+        const tweetItem = root.createElement("li");
+        tweetItem.className = "ariadex-v2-item";
+
+        const tweetRole = root.createElement("div");
+        tweetRole.className = "ariadex-v2-item-role";
+        tweetRole.textContent = "Reply Tweet";
+
+        const tweetAuthor = root.createElement("div");
+        tweetAuthor.className = "ariadex-v2-item-author";
+        tweetAuthor.textContent = `@${String(tweet.author || "").replace(/^@/, "")}`;
+
+        const tweetText = root.createElement("div");
+        tweetText.className = "ariadex-v2-item-text";
+        tweetText.textContent = String(tweet.text || "(no text)");
+
+        const tweetMeta = root.createElement("div");
+        tweetMeta.className = "ariadex-v2-item-id";
+        tweetMeta.textContent = String(tweet.id || "");
+
+        tweetItem.appendChild(tweetRole);
+        tweetItem.appendChild(tweetAuthor);
+        tweetItem.appendChild(tweetText);
+        tweetItem.appendChild(tweetMeta);
+
+        tweetItem.addEventListener("click", () => {
+          if (tweet.url) {
+            root.defaultView.location.href = tweet.url;
+          }
+        });
+
+        tweetList.appendChild(tweetItem);
+      }
+
+      item.appendChild(header);
+      item.appendChild(participants);
+      item.appendChild(meta);
+      item.appendChild(tweetList);
+
+      list.appendChild(item);
+    }
+
+    return list;
+  }
+
   // Render the full artifact and keep the active tab sticky across rerenders.
   function renderArtifact(artifact, clickedId, root = document) {
     const panel = ensurePanel(root);
@@ -510,7 +710,8 @@
     const path = Array.isArray(artifact?.path) ? artifact.path : [];
     const references = Array.isArray(artifact?.references) ? artifact.references : [];
     const people = Array.isArray(artifact?.people) ? artifact.people : [];
-    renderHeader(panel, root, `${path.length} path tweets · ${references.length} refs · ${people.length} people`);
+    const replyChains = Array.isArray(artifact?.replyChains) ? artifact.replyChains : [];
+    renderHeader(panel, root, `${path.length} path tweets · ${references.length} refs · ${people.length} people · ${replyChains.length} reply chains`);
 
     if (path.length === 0) {
       const empty = root.createElement("div");
@@ -527,7 +728,8 @@
     state.latestArtifact = {
       path,
       references,
-      people
+      people,
+      replyChains
     };
     state.latestClickedId = clickedId || "";
 
@@ -539,11 +741,16 @@
     const tabs = [
       { id: "path", label: "Root Path" },
       { id: "references", label: "References" },
-      { id: "people", label: "People" }
+      { id: "people", label: "People" },
+      { id: "replyChains", label: "Replies" }
     ];
 
     function paintTab(tabId) {
       content.innerHTML = "";
+      if (tabId === "replyChains") {
+        content.appendChild(renderReplyChainsTab(replyChains, path, clickedId, root));
+        return;
+      }
       if (tabId === "people") {
         content.appendChild(renderPeopleTab(people, root));
         return;
@@ -580,14 +787,15 @@
   // Ask the background worker for the root-path artifact; the content script never fetches directly.
   function resolveRootArtifact(clickedTweetId, chromeApi = chrome, onProgress = null) {
     if (!clickedTweetId) {
-      return Promise.resolve({ path: [], references: [] });
+      return Promise.resolve({ path: [], references: [], people: [], replyChains: [] });
     }
 
     if (!chromeApi?.runtime?.sendMessage) {
       return Promise.reject(new Error("extension_runtime_unavailable"));
     }
 
-    return new Promise((resolve, reject) => {
+    return awaitDevEnvHydration(globalThis).then(() => readXApiBearerTokenWithFallbacks(chromeApi, globalThis.window)).then((bearerToken) => {
+      return new Promise((resolve, reject) => {
       if (chromeApi?.runtime?.connect) {
         const port = chromeApi.runtime.connect({ name: RESOLVE_ROOT_PATH_PORT_NAME });
         port.onMessage.addListener((message) => {
@@ -606,7 +814,8 @@
             resolve({
               path: Array.isArray(artifact.path) ? artifact.path : [],
               references: Array.isArray(artifact.references) ? artifact.references : [],
-              people: Array.isArray(artifact.people) ? artifact.people : []
+              people: Array.isArray(artifact.people) ? artifact.people : [],
+              replyChains: Array.isArray(artifact.replyChains) ? artifact.replyChains : []
             });
             return;
           }
@@ -616,12 +825,20 @@
             reject(new Error(message?.error || "root_path_resolution_failed"));
           }
         });
-        port.postMessage({ type: MESSAGE_TYPE, tweetId: clickedTweetId });
+        port.postMessage({
+          type: MESSAGE_TYPE,
+          tweetId: clickedTweetId,
+          bearerToken
+        });
         return;
       }
 
       chromeApi.runtime.sendMessage(
-        { type: MESSAGE_TYPE, tweetId: clickedTweetId },
+        {
+          type: MESSAGE_TYPE,
+          tweetId: clickedTweetId,
+          bearerToken
+        },
         (response) => {
           const runtimeError = chromeApi.runtime?.lastError;
           if (runtimeError) {
@@ -640,10 +857,12 @@
           resolve({
             path: Array.isArray(artifact.path) ? artifact.path : [],
             references: Array.isArray(artifact.references) ? artifact.references : [],
-            people: Array.isArray(artifact.people) ? artifact.people : []
+            people: Array.isArray(artifact.people) ? artifact.people : [],
+            replyChains: Array.isArray(artifact.replyChains) ? artifact.replyChains : []
           });
         }
-      );
+        );
+      });
     });
   }
 
@@ -701,7 +920,7 @@
         });
         renderArtifact(artifact, clickedId, root);
       } catch (error) {
-        renderStatus(`Path lookup failed: ${error.message}`, root);
+        renderStatus(formatLookupErrorMessage(error), root);
       }
     });
 
@@ -749,7 +968,13 @@
       MESSAGE_TYPE,
       CLEAR_CACHE_MESSAGE_TYPE,
       normalizeText,
+      readLocalStorageValue,
+      readXApiBearerToken,
+      readChromeStorageLocalValue,
+      readXApiBearerTokenWithFallbacks,
+      awaitDevEnvHydration,
       formatProgressMessage,
+      formatLookupErrorMessage,
       baseLabelForIndex,
       relationLabel,
       buildPathEntries,
@@ -769,6 +994,7 @@
       renderPathTab,
       renderReferencesTab,
       renderPeopleTab,
+      renderReplyChainsTab,
       renderArtifact,
       resolveRootArtifact,
       clearTweetCache,

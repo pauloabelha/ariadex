@@ -2,6 +2,15 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const content = require("../extension/content.js");
+require("../extension/dev_env_loader.js");
+
+global.window = {
+  localStorage: {
+    getItem(key) {
+      return key === "ariadex.x_api_bearer_token" ? "test-token" : "";
+    }
+  }
+};
 
 test("baseLabelForIndex names root explored and ancestors", () => {
   assert.equal(content.baseLabelForIndex({ id: "1" }, 0, "3"), "Root");
@@ -107,6 +116,65 @@ test("formatProgressMessage writes compact path and reference progress", () => {
   assert.equal(
     content.formatProgressMessage({ phase: "mystery" }),
     "Tracing the root path..."
+  );
+});
+
+test("readXApiBearerToken prefers window-level settings before localStorage", () => {
+  assert.equal(content.readXApiBearerToken({
+    AriadexXApiSettings: {
+      bearerToken: "settings-token"
+    },
+    AriadexXApiBearerToken: "window-token",
+    localStorage: {
+      getItem() {
+        return "local-storage-token";
+      }
+    }
+  }), "settings-token");
+});
+
+test("readXApiBearerTokenWithFallbacks uses chrome storage when page storage is unavailable", async () => {
+  const chromeStub = {
+    runtime: {
+      lastError: null
+    },
+    storage: {
+      local: {
+        get(keys, callback) {
+          callback({
+            [keys[0]]: "extension-storage-token"
+          });
+        }
+      }
+    }
+  };
+
+  const token = await content.readXApiBearerTokenWithFallbacks(chromeStub, {
+    localStorage: {
+      getItem() {
+        return "";
+      }
+    }
+  });
+
+  assert.equal(token, "extension-storage-token");
+});
+
+test("formatLookupErrorMessage explains missing bearer-token setup errors", () => {
+  assert.match(
+    content.formatLookupErrorMessage(new Error("missing_x_api_bearer_token")),
+    /missing X API bearer token/i
+  );
+  assert.match(
+    content.formatLookupErrorMessage(new Error("missing X_api_token, or sth")),
+    /missing X API bearer token/i
+  );
+});
+
+test("formatLookupErrorMessage translates X auth rejections", () => {
+  assert.match(
+    content.formatLookupErrorMessage(new Error("tweet_fetch_failed_401")),
+    /X rejected the bearer token/i
   );
 });
 
@@ -262,7 +330,8 @@ test("resolveRootArtifact sends the expected extension message", async () => {
           artifact: {
             path: [{ id: "1" }, { id: "2" }],
             references: [{ number: 1 }],
-            people: [{ handle: "alice", displayName: "Alice Example" }]
+            people: [{ handle: "alice", displayName: "Alice Example" }],
+            replyChains: []
           }
         });
         chromeStub.sent = message;
@@ -274,11 +343,13 @@ test("resolveRootArtifact sends the expected extension message", async () => {
   assert.deepEqual(artifact, {
     path: [{ id: "1" }, { id: "2" }],
     references: [{ number: 1 }],
-    people: [{ handle: "alice", displayName: "Alice Example" }]
+    people: [{ handle: "alice", displayName: "Alice Example" }],
+    replyChains: []
   });
   assert.deepEqual(chromeStub.sent, {
     type: content.MESSAGE_TYPE,
-    tweetId: "2"
+    tweetId: "2",
+    bearerToken: "test-token"
   });
 });
 
@@ -286,7 +357,7 @@ test("resolveRootArtifact returns an empty artifact immediately when no tweet id
   const artifact = await content.resolveRootArtifact("", {
     runtime: {}
   });
-  assert.deepEqual(artifact, { path: [], references: [] });
+  assert.deepEqual(artifact, { path: [], references: [], people: [], replyChains: [] });
 });
 
 test("resolveRootArtifact rejects extension errors", async () => {
@@ -300,6 +371,99 @@ test("resolveRootArtifact rejects extension errors", async () => {
   };
 
   await assert.rejects(() => content.resolveRootArtifact("2", chromeStub), /boom/);
+});
+
+test("resolveRootArtifact falls back to chrome storage for the bearer token", async () => {
+  const chromeStub = {
+    runtime: {
+      lastError: null,
+      sendMessage(message, callback) {
+        chromeStub.sent = message;
+        callback({
+          ok: true,
+          artifact: {
+            path: [],
+            references: [],
+            people: [],
+            replyChains: []
+          }
+        });
+      }
+    },
+    storage: {
+      local: {
+        get(keys, callback) {
+          callback({
+            [keys[0]]: "storage-token"
+          });
+        }
+      }
+    }
+  };
+
+  const previousWindow = global.window;
+  global.window = {
+    localStorage: {
+      getItem() {
+        return "";
+      }
+    }
+  };
+
+  try {
+    await content.resolveRootArtifact("2", chromeStub);
+  } finally {
+    global.window = previousWindow;
+  }
+
+  assert.deepEqual(chromeStub.sent, {
+    type: content.MESSAGE_TYPE,
+    tweetId: "2",
+    bearerToken: "storage-token"
+  });
+});
+
+test("resolveRootArtifact still sends the request when the content script cannot read a bearer token", async () => {
+  const chromeStub = {
+    runtime: {
+      lastError: null,
+      sendMessage(message, callback) {
+        chromeStub.sent = message;
+        callback({
+          ok: false,
+          error: "missing_x_api_bearer_token"
+        });
+      }
+    },
+    storage: {
+      local: {
+        get(_keys, callback) {
+          callback({});
+        }
+      }
+    }
+  };
+
+  const previousWindow = global.window;
+  global.window = {
+    localStorage: {
+      getItem() {
+        return "";
+      }
+    }
+  };
+
+  try {
+    await assert.rejects(() => content.resolveRootArtifact("2", chromeStub), /missing_x_api_bearer_token/);
+  } finally {
+    global.window = previousWindow;
+  }
+
+  assert.deepEqual(chromeStub.sent, {
+    type: content.MESSAGE_TYPE,
+    tweetId: "2",
+    bearerToken: ""
+  });
 });
 
 test("resolveRootArtifact rejects when the extension runtime is unavailable", async () => {
@@ -324,7 +488,8 @@ test("resolveRootArtifact uses the streaming port when available and relays prog
           postMessage(message) {
             assert.deepEqual(message, {
               type: content.MESSAGE_TYPE,
-              tweetId: "2"
+              tweetId: "2",
+              bearerToken: "test-token"
             });
 
             // Simulate the worker's streaming contract in-order.
@@ -334,7 +499,8 @@ test("resolveRootArtifact uses the streaming port when available and relays prog
               artifact: {
                 path: [{ id: "1" }],
                 references: null,
-                people: [{ handle: "alice", displayName: "Alice Example" }]
+                people: [{ handle: "alice", displayName: "Alice Example" }],
+                replyChains: [{ id: "chain-1" }]
               }
             });
           },
@@ -354,7 +520,8 @@ test("resolveRootArtifact uses the streaming port when available and relays prog
   assert.deepEqual(artifact, {
     path: [{ id: "1" }],
     references: [],
-    people: [{ handle: "alice", displayName: "Alice Example" }]
+    people: [{ handle: "alice", displayName: "Alice Example" }],
+    replyChains: [{ id: "chain-1" }]
   });
   assert.equal(disconnected, true);
 });
@@ -480,6 +647,70 @@ test("renderPeopleTab shows an empty state when no people are available", () => 
 
   const empty = content.renderPeopleTab([], root);
   assert.equal(empty.textContent, "No people were collected on this root path.");
+});
+
+test("renderReplyChainsTab renders one card per tweet and labels the anchor branch", () => {
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        children: [],
+        listeners: {},
+        appendChild(child) {
+          this.children.push(child);
+        },
+        addEventListener(type, listener) {
+          this.listeners[type] = listener;
+        }
+      };
+    },
+    defaultView: {
+      location: {
+        href: "https://x.com/home"
+      }
+    }
+  };
+
+  const list = content.renderReplyChainsTab([{
+    id: "10__20",
+    anchorTweetId: "20",
+    anchorAuthor: "alice",
+    participantHandles: ["alice", "bob"],
+    tweets: [
+      { id: "10", author: "alice", text: "first", url: "https://x.com/alice/status/10" },
+      { id: "20", author: "bob", text: "second", url: "https://x.com/bob/status/20" }
+    ]
+  }], [{ id: "10" }, { id: "20" }], "20", root);
+
+  assert.equal(list.children.length, 1);
+  assert.match(list.children[0].children[0].textContent, /Explored Reply Chain/);
+  assert.match(list.children[0].children[1].textContent, /Reply to @alice/);
+  assert.equal(list.children[0].children[3].children.length, 2);
+  assert.equal(list.children[0].children[3].children[0].children[1].textContent, "@alice");
+  assert.equal(list.children[0].children[3].children[1].children[1].textContent, "@bob");
+  list.children[0].children[3].children[0].listeners.click();
+  assert.equal(root.defaultView.location.href, "https://x.com/alice/status/10");
+  list.children[0].children[3].children[1].listeners.click();
+  assert.equal(root.defaultView.location.href, "https://x.com/bob/status/20");
+});
+
+test("renderReplyChainsTab shows an empty state when no chains are available", () => {
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        appendChild() {},
+        addEventListener() {}
+      };
+    }
+  };
+
+  const empty = content.renderReplyChainsTab([], [], "", root);
+  assert.equal(empty.textContent, "No replies to the explored tweet were found.");
 });
 
 test("renderReferencesTab renders canonical references and opens them on click", () => {

@@ -6,9 +6,12 @@ References are collected only from tweets on the resolved root path.
 
 v2 currently reads:
 
-- `entities.urls[].expanded_url`
+- X API `entities.urls`
+- preferring `unwound_url`
+- then `expanded_url`
+- then `url`
 
-It does not yet inspect richer cards, media attachments, or free-text URL scraping beyond what the syndication payload exposes as URL entities.
+It does not yet inspect richer cards, media attachments, or free-text URL scraping beyond what the X API exposes as URL entities.
 
 ## Canonicalization rules
 
@@ -45,3 +48,8 @@ canonical reference list is preserved outside the panel together with:
 - `path`
 - `references`
 - `people`
+- `replyChains`
+
+Each exported reply chain also includes its anchor metadata so downstream tools
+can tell whether the chain belongs to the `Root`, an `Ancestor X`, or the
+`Explored` tweet after reconstructing labels from `path`.
