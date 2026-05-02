@@ -7,6 +7,7 @@
   const GRAPH_API_BY_ENV_STORAGE_KEY = "ariadex.graph_api_by_env";
   const RUNTIME_ENV_STORAGE_KEY = "ariadex.runtime_env";
   const ALLOW_CLIENT_DIRECT_API_STORAGE_KEY = "ariadex.allow_client_direct_api";
+  const BRANCH_NAME_STORAGE_KEY = "ariadex.branch_name";
 
   function isExtensionContextValid() {
     return (
@@ -85,11 +86,12 @@
       ? config.graphApiByEnv
       : null;
     const environment = typeof config.environment === "string" ? config.environment.trim().toLowerCase() : "";
+    const branchName = typeof config.branchName === "string" ? config.branchName.trim() : "";
     const allowClientDirectApi = typeof config.allowClientDirectApi === "boolean"
       ? config.allowClientDirectApi
       : false;
 
-    if (!bearerToken && followingIds.length === 0 && !graphApiUrl && !graphApiByEnv && !environment && !allowClientDirectApi) {
+    if (!bearerToken && followingIds.length === 0 && !graphApiUrl && !graphApiByEnv && !environment && !branchName && !allowClientDirectApi) {
       return;
     }
 
@@ -98,6 +100,7 @@
       ...(bearerToken ? { bearerToken } : {}),
       ...(followingIds.length > 0 ? { followingIds } : {}),
       ...(environment ? { environment } : {}),
+      ...(branchName ? { branchName } : {}),
       allowClientDirectApi,
       ...(graphApiByEnv ? { graphApiByEnv } : {}),
       ...(graphApiUrl ? { graphApiUrl } : {})
@@ -130,6 +133,12 @@
     if (environment) {
       try {
         window.localStorage.setItem(RUNTIME_ENV_STORAGE_KEY, environment);
+      } catch {}
+    }
+
+    if (branchName) {
+      try {
+        window.localStorage.setItem(BRANCH_NAME_STORAGE_KEY, branchName);
       } catch {}
     }
 

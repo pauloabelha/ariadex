@@ -3,7 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "sync:env": "node scripts/sync_env_to_generated_config.js",
+    "report:backend": "node scripts/start_report_backend.js"
   }
 }
-

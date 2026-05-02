@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const ENV_PATH = path.join(ROOT_DIR, ".env");
@@ -105,6 +106,24 @@ function buildEnvObject() {
   };
 }
 
+function resolveBranchName(env) {
+  const explicit = String(env?.ARIADEX_BRANCH_NAME || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  try {
+    const branchName = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: ROOT_DIR,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    return branchName || "";
+  } catch {
+    return "";
+  }
+}
+
 function buildGeneratedConfig(env) {
   const safeEnv = env || {};
   const bearerToken = (safeEnv.X_BEARER_TOKEN || safeEnv.X_API_BEARER_TOKEN || "").trim();
@@ -112,6 +131,7 @@ function buildGeneratedConfig(env) {
 
   const followingIds = parseFollowingIds(safeEnv.X_FOLLOWING_IDS || "");
   const environment = normalizeRuntimeEnvironment(safeEnv.ARIADEX_ENV || safeEnv.ARIADEX_RUNTIME_ENV || "dev");
+  const branchName = resolveBranchName(safeEnv);
   const graphApiByEnv = resolveGraphApiByEnv(safeEnv);
   const graphApiUrl = resolveGraphApiUrl(safeEnv, environment, graphApiByEnv);
   if (!graphApiUrl && !(allowClientDirectApi && bearerToken)) {
@@ -120,6 +140,7 @@ function buildGeneratedConfig(env) {
 
   return {
     environment,
+    ...(branchName ? { branchName } : {}),
     allowClientDirectApi,
     ...(allowClientDirectApi && bearerToken ? { bearerToken } : {}),
     ...(followingIds.length > 0 ? { followingIds } : {}),
@@ -161,6 +182,7 @@ module.exports = {
   resolveGraphApiByEnv,
   resolveGraphApiUrl,
   buildEnvObject,
+  resolveBranchName,
   buildGeneratedConfig,
   syncFromEnvironment
 };

@@ -6,7 +6,9 @@
   const ARTICLE_SELECTOR = 'article[data-testid="tweet"]';
   const MESSAGE_TYPE = "ARIADEx_V2_RESOLVE_ROOT_PATH";
   const CLEAR_CACHE_MESSAGE_TYPE = "ARIADEx_V2_CLEAR_CACHE";
+  const GENERATE_REPORT_MESSAGE_TYPE = "ARIADEx_V2_GENERATE_REPORT";
   const RESOLVE_ROOT_PATH_PORT_NAME = "ARIADEx_V2_RESOLVE_ROOT_PATH_PORT";
+  const GENERATE_REPORT_PORT_NAME = "ARIADEx_V2_GENERATE_REPORT_PORT";
   const DEFAULT_TAB = "path";
   const PANEL_MARGIN = 20;
   const X_API_BEARER_STORAGE_KEYS = [
@@ -102,6 +104,10 @@
     }
   }
 
+  function readConfiguredApiBaseUrl(view = globalThis.window) {
+    return String(view?.AriadexXApiSettings?.apiBaseUrl || "").trim();
+  }
+
   // Convert a path position into the label shown to the reader.
   function baseLabelForIndex(tweet, index, clickedId) {
     if (index === 0) {
@@ -158,6 +164,11 @@
     return `ariadex-v2-${normalizedId}.json`;
   }
 
+  function buildReportFilename(clickedId) {
+    const normalizedId = String(clickedId || "root-path").trim() || "root-path";
+    return `ariadex-v2-${normalizedId}-report.md`;
+  }
+
   function triggerJsonDownload(payload, filename, root = document) {
     const view = root?.defaultView;
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -174,6 +185,61 @@
     link.click();
     link.remove();
     view.URL.revokeObjectURL(objectUrl);
+  }
+
+  function triggerTextDownload(text, filename, root = document) {
+    const view = root?.defaultView;
+    const blob = new Blob([String(text || "")], { type: "text/markdown;charset=utf-8" });
+    const objectUrl = view?.URL?.createObjectURL?.(blob);
+    if (!objectUrl) {
+      throw new Error("download_unavailable");
+    }
+
+    const link = root.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    link.style.display = "none";
+    root.body.appendChild(link);
+    link.click();
+    link.remove();
+    view.URL.revokeObjectURL(objectUrl);
+  }
+
+  async function copyTextToClipboard(text, root = document) {
+    const value = String(text || "");
+    const view = root?.defaultView || globalThis;
+    const clipboard = view?.navigator?.clipboard;
+    if (!clipboard?.writeText) {
+      throw new Error("clipboard_unavailable");
+    }
+    await clipboard.writeText(value);
+  }
+
+  function setAccessibleLabel(element, label) {
+    if (!element) {
+      return;
+    }
+    element.title = label;
+    try {
+      element.setAttribute("aria-label", label);
+    } catch {
+      element.ariaLabel = label;
+    }
+  }
+
+  function createCopyIcon(root = document) {
+    const icon = root.createElement("span");
+    icon.className = "ariadex-v2-copy-icon";
+
+    const backSquare = root.createElement("span");
+    backSquare.className = "ariadex-v2-copy-icon-back";
+
+    const frontSquare = root.createElement("span");
+    frontSquare.className = "ariadex-v2-copy-icon-front";
+
+    icon.appendChild(backSquare);
+    icon.appendChild(frontSquare);
+    return icon;
   }
 
   // Turn low-level resolver progress into short UX copy that keeps moving.
@@ -237,7 +303,73 @@
       return "Path lookup failed: X rejected the bearer token. Check that the token is valid and has access to the requested API endpoints.";
     }
 
+    if (
+      normalized.includes("extension context invalidated")
+      || normalized.includes("receiving end does not exist")
+      || normalized.includes("message port closed before a response was received")
+      || normalized.includes("root_path_port_disconnected")
+    ) {
+      return "Path lookup failed: the extension background worker was unavailable. Reload the unpacked extension in chrome://extensions, refresh X, and try again.";
+    }
+
     return `Path lookup failed: ${rawMessage}`;
+  }
+
+  function formatReportErrorMessage(error) {
+    const rawMessage = normalizeText(error?.message || error || "");
+    if (!rawMessage) {
+      return "Report generation failed.";
+    }
+
+    const normalized = rawMessage.toLowerCase();
+    if (
+      normalized.includes("report_generation_failed_401")
+      || normalized.includes("report_generation_failed_403")
+    ) {
+      return "Report generation failed: the configured model API rejected the request. Check the API key, model, and endpoint.";
+    }
+    if (normalized.includes("report_generation_failed_429")) {
+      return "Report generation failed: the configured model API rate-limited the request. Check quota, billing, or retry later.";
+    }
+    if (
+      normalized.includes("failed to fetch")
+      || normalized.includes("networkerror")
+      || normalized.includes("report_generation_failed_404")
+      || normalized.includes("report_generation_failed_500")
+      || normalized.includes("report_generation_failed_502")
+      || normalized.includes("report_generation_failed_503")
+      || normalized.includes("report_generation_failed_504")
+    ) {
+      return "Report generation failed: the AriadeX report backend is unavailable. Start or reload the backend, then check local network access.";
+    }
+    if (normalized.includes("missing_openai_api_key")) {
+      return "Report generation failed: the backend is missing OPENAI_API_KEY.";
+    }
+    if (normalized.includes("empty_report_response")) {
+      return "Report generation failed: the model returned an empty response.";
+    }
+
+    return `Report generation failed: ${rawMessage}`;
+  }
+
+  function formatReportProgressMessage(progress) {
+    const phase = String(progress?.phase || "").trim();
+    if (phase === "loading_report_config") {
+      return "Generating report... preparing request.";
+    }
+    if (phase === "calling_report_backend") {
+      return "Generating report... packaging conversation context.";
+    }
+    if (phase === "awaiting_llm_response") {
+      return "Generating report... waiting for OpenAI.";
+    }
+    if (phase === "report_ready") {
+      const model = normalizeText(progress?.model || "");
+      return model
+        ? `Report ready. Generated with ${model}.`
+        : "Report ready.";
+    }
+    return "Generating report...";
   }
 
   // Discover tweet cards so we can attach the button to whatever X has rendered.
@@ -423,6 +555,47 @@
     });
     actions.appendChild(exportButton);
 
+    const reportButton = root.createElement("button");
+    reportButton.type = "button";
+    reportButton.className = "ariadex-v2-header-button";
+    reportButton.textContent = "Generate Report";
+    reportButton.addEventListener("click", async () => {
+      const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+        ? panel.__ariadexV2State
+        : null;
+      const latestArtifact = state?.latestArtifact;
+      if (!latestArtifact) {
+        meta.textContent = "Nothing to turn into a report yet.";
+        return;
+      }
+
+      meta.textContent = formatReportProgressMessage({ phase: "loading_report_config" });
+      try {
+        const report = await generateReportArtifact(
+          latestArtifact,
+          root.defaultView?.chrome || chrome,
+          (progress) => {
+            meta.textContent = formatReportProgressMessage(progress);
+          }
+        );
+        const nextState = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+          ? panel.__ariadexV2State
+          : {};
+        nextState.latestReport = {
+          text: String(report?.text || "").trim(),
+          model: String(report?.model || "").trim(),
+          apiBaseUrl: String(report?.apiBaseUrl || "").trim(),
+          generatedAt: new Date().toISOString()
+        };
+        nextState.activeTab = "report";
+        panel.__ariadexV2State = nextState;
+        renderArtifact(nextState.latestArtifact || latestArtifact, nextState.latestClickedId || "", root);
+      } catch (error) {
+        meta.textContent = formatReportErrorMessage(error);
+      }
+    });
+    actions.appendChild(reportButton);
+
     const clearButton = root.createElement("button");
     clearButton.type = "button";
     clearButton.className = "ariadex-v2-header-button";
@@ -518,7 +691,7 @@
     if (!Array.isArray(references) || references.length === 0) {
       const empty = root.createElement("div");
       empty.className = "ariadex-v2-empty";
-      empty.textContent = "No external references found on this root path.";
+      empty.textContent = "No external references found on this path or its reply chains.";
       return empty;
     }
 
@@ -539,7 +712,7 @@
 
       const meta = root.createElement("div");
       meta.className = "ariadex-v2-item-id";
-      meta.textContent = `${reference.domain} · cited by ${reference.citedByTweetIds.length} path tweet${reference.citedByTweetIds.length === 1 ? "" : "s"}`;
+      meta.textContent = `${reference.domain} · cited by ${reference.citedByTweetIds.length} tweet${reference.citedByTweetIds.length === 1 ? "" : "s"}`;
 
       item.appendChild(role);
       item.appendChild(url);
@@ -703,6 +876,93 @@
     return list;
   }
 
+  function renderReportTab(report, root = document) {
+    if (!report?.text) {
+      const empty = root.createElement("div");
+      empty.className = "ariadex-v2-empty";
+      empty.textContent = "No report has been generated yet.";
+      return empty;
+    }
+
+    const container = root.createElement("div");
+    container.className = "ariadex-v2-list";
+
+    const item = root.createElement("article");
+    item.className = "ariadex-v2-item";
+
+    const topRow = root.createElement("div");
+    topRow.className = "ariadex-v2-report-top";
+
+    const header = root.createElement("div");
+    header.className = "ariadex-v2-item-role";
+    header.textContent = "Generated Report";
+
+    const meta = root.createElement("div");
+    meta.className = "ariadex-v2-item-id";
+    const generatedAt = normalizeText(report?.generatedAt || "");
+    const reportMeta = [
+      generatedAt ? `Generated ${generatedAt}` : "",
+      report?.model ? `model ${report.model}` : ""
+    ].filter(Boolean).join(" · ");
+    meta.textContent = reportMeta;
+
+    const body = root.createElement("div");
+    body.className = "ariadex-v2-item-text";
+    body.style.whiteSpace = "pre-wrap";
+    body.textContent = String(report?.text || "");
+
+    const actions = root.createElement("div");
+    actions.className = "ariadex-v2-report-actions";
+
+    const copyButton = root.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "ariadex-v2-header-button ariadex-v2-report-icon-button";
+    setAccessibleLabel(copyButton, "Copy Markdown");
+
+    const copyIcon = createCopyIcon(root);
+    const copyLabel = root.createElement("span");
+    copyLabel.textContent = "Copy";
+    copyButton.appendChild(copyIcon);
+    copyButton.appendChild(copyLabel);
+    copyButton.addEventListener("click", async () => {
+      try {
+        await copyTextToClipboard(String(report?.text || ""), root);
+        copyLabel.textContent = "Copied";
+      } catch {
+        copyLabel.textContent = "Copy Failed";
+      }
+      const timerHost = root?.defaultView || globalThis;
+      timerHost.setTimeout(() => {
+        copyLabel.textContent = "Copy";
+      }, 1200);
+    });
+
+    const downloadButton = root.createElement("button");
+    downloadButton.type = "button";
+    downloadButton.className = "ariadex-v2-header-button";
+    downloadButton.textContent = "Download";
+    setAccessibleLabel(downloadButton, "Download Report");
+    downloadButton.addEventListener("click", () => {
+      const panel = root.getElementById(PANEL_ID);
+      const state = panel?.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+        ? panel.__ariadexV2State
+        : null;
+      triggerTextDownload(String(report?.text || ""), buildReportFilename(state?.latestClickedId || ""), root);
+    });
+
+    actions.appendChild(copyButton);
+    actions.appendChild(downloadButton);
+    topRow.appendChild(header);
+    topRow.appendChild(actions);
+    item.appendChild(topRow);
+    if (reportMeta) {
+      item.appendChild(meta);
+    }
+    item.appendChild(body);
+    container.appendChild(item);
+    return container;
+  }
+
   // Render the full artifact and keep the active tab sticky across rerenders.
   function renderArtifact(artifact, clickedId, root = document) {
     const panel = ensurePanel(root);
@@ -723,7 +983,7 @@
 
     const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
       ? panel.__ariadexV2State
-      : { activeTab: DEFAULT_TAB, position: null, latestArtifact: null, latestClickedId: "" };
+      : { activeTab: DEFAULT_TAB, position: null, latestArtifact: null, latestClickedId: "", latestReport: null };
     panel.__ariadexV2State = state;
     state.latestArtifact = {
       path,
@@ -744,9 +1004,16 @@
       { id: "people", label: "People" },
       { id: "replyChains", label: "Replies" }
     ];
+    if (state.latestReport?.text) {
+      tabs.push({ id: "report", label: "Report" });
+    }
 
     function paintTab(tabId) {
       content.innerHTML = "";
+      if (tabId === "report") {
+        content.appendChild(renderReportTab(state.latestReport || {}, root));
+        return;
+      }
       if (tabId === "replyChains") {
         content.appendChild(renderReplyChainsTab(replyChains, path, clickedId, root));
         return;
@@ -794,10 +1061,28 @@
       return Promise.reject(new Error("extension_runtime_unavailable"));
     }
 
-    return awaitDevEnvHydration(globalThis).then(() => readXApiBearerTokenWithFallbacks(chromeApi, globalThis.window)).then((bearerToken) => {
+    return awaitDevEnvHydration(globalThis).then(() => Promise.all([
+      readXApiBearerTokenWithFallbacks(chromeApi, globalThis.window),
+      Promise.resolve(readConfiguredApiBaseUrl(globalThis.window))
+    ])).then(([bearerToken, apiBaseUrl]) => {
       return new Promise((resolve, reject) => {
       if (chromeApi?.runtime?.connect) {
         const port = chromeApi.runtime.connect({ name: RESOLVE_ROOT_PATH_PORT_NAME });
+        let settled = false;
+        const finishResolve = (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve(value);
+        };
+        const finishReject = (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          reject(error);
+        };
         port.onMessage.addListener((message) => {
           if (message?.type === "progress") {
             if (typeof onProgress === "function") {
@@ -811,7 +1096,7 @@
             const artifact = message?.artifact && typeof message.artifact === "object"
               ? message.artifact
               : {};
-            resolve({
+            finishResolve({
               path: Array.isArray(artifact.path) ? artifact.path : [],
               references: Array.isArray(artifact.references) ? artifact.references : [],
               people: Array.isArray(artifact.people) ? artifact.people : [],
@@ -822,13 +1107,20 @@
 
           if (message?.type === "error") {
             port.disconnect();
-            reject(new Error(message?.error || "root_path_resolution_failed"));
+            finishReject(new Error(message?.error || "root_path_resolution_failed"));
           }
         });
+        if (port.onDisconnect?.addListener) {
+          port.onDisconnect.addListener(() => {
+            const runtimeMessage = chromeApi?.runtime?.lastError?.message || "";
+            finishReject(new Error(runtimeMessage || "root_path_port_disconnected"));
+          });
+        }
         port.postMessage({
           type: MESSAGE_TYPE,
           tweetId: clickedTweetId,
-          bearerToken
+          bearerToken,
+          apiBaseUrl
         });
         return;
       }
@@ -837,7 +1129,8 @@
         {
           type: MESSAGE_TYPE,
           tweetId: clickedTweetId,
-          bearerToken
+          bearerToken,
+          apiBaseUrl
         },
         (response) => {
           const runtimeError = chromeApi.runtime?.lastError;
@@ -863,6 +1156,85 @@
         }
         );
       });
+    });
+  }
+
+  function generateReportArtifact(artifact, chromeApi = chrome) {
+    if (!chromeApi?.runtime?.sendMessage) {
+      return Promise.reject(new Error("extension_runtime_unavailable"));
+    }
+
+    const onProgress = typeof arguments[2] === "function" ? arguments[2] : null;
+
+    return new Promise((resolve, reject) => {
+      if (chromeApi?.runtime?.connect) {
+        const port = chromeApi.runtime.connect({ name: GENERATE_REPORT_PORT_NAME });
+        let settled = false;
+        const finishResolve = (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve(value);
+        };
+        const finishReject = (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          reject(error);
+        };
+
+        port.onMessage.addListener((message) => {
+          if (message?.type === "progress") {
+            if (onProgress) {
+              onProgress(message.progress || {});
+            }
+            return;
+          }
+          if (message?.type === "result") {
+            finishResolve(message?.report && typeof message.report === "object" ? message.report : {});
+            port.disconnect();
+            return;
+          }
+          if (message?.type === "error") {
+            finishReject(new Error(message?.error || "report_generation_failed"));
+            port.disconnect();
+          }
+        });
+        if (port.onDisconnect?.addListener) {
+          port.onDisconnect.addListener(() => {
+            const runtimeMessage = chromeApi?.runtime?.lastError?.message || "";
+            finishReject(new Error(runtimeMessage || "report_generation_port_disconnected"));
+          });
+        }
+        port.postMessage({
+          type: GENERATE_REPORT_MESSAGE_TYPE,
+          artifact
+        });
+        return;
+      }
+
+      chromeApi.runtime.sendMessage(
+        {
+          type: GENERATE_REPORT_MESSAGE_TYPE,
+          artifact
+        },
+        (response) => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "extension_message_failed"));
+            return;
+          }
+
+          if (!response?.ok) {
+            reject(new Error(response?.error || "report_generation_failed"));
+            return;
+          }
+
+          resolve(response?.report && typeof response.report === "object" ? response.report : {});
+        }
+      );
     });
   }
 
@@ -967,6 +1339,8 @@
       ARTICLE_SELECTOR,
       MESSAGE_TYPE,
       CLEAR_CACHE_MESSAGE_TYPE,
+      GENERATE_REPORT_MESSAGE_TYPE,
+      GENERATE_REPORT_PORT_NAME,
       normalizeText,
       readLocalStorageValue,
       readXApiBearerToken,
@@ -975,6 +1349,8 @@
       awaitDevEnvHydration,
       formatProgressMessage,
       formatLookupErrorMessage,
+      formatReportErrorMessage,
+      formatReportProgressMessage,
       baseLabelForIndex,
       relationLabel,
       buildPathEntries,
@@ -990,13 +1366,20 @@
       renderStatus,
       buildReferenceBadgeText,
       buildExportFilename,
+      buildReportFilename,
       triggerJsonDownload,
+      triggerTextDownload,
+      copyTextToClipboard,
+      setAccessibleLabel,
+      createCopyIcon,
       renderPathTab,
       renderReferencesTab,
       renderPeopleTab,
       renderReplyChainsTab,
+      renderReportTab,
       renderArtifact,
       resolveRootArtifact,
+      generateReportArtifact,
       clearTweetCache,
       createExploreButton,
       injectButton,

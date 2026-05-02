@@ -15,7 +15,11 @@ function createChromeStub(initialCache = {}, initialConversationCache = {}, init
 
   return {
     runtime: {
+      id: "abc123",
       lastError: null,
+      getURL(path) {
+        return `chrome-extension://abc123/${path}`;
+      },
       onMessage: {
         addListener(listener) {
           listeners.message = listener;
@@ -1280,6 +1284,59 @@ test("resolveRootPath aggregates reply chains across the full root-to-explored p
   assert.equal(quotedParentChain, undefined);
 });
 
+test("resolveRootPath includes references cited only inside reply chains", async () => {
+  const chromeStub = createChromeStub();
+  const storage = algo.createStorageAdapter(chromeStub);
+  const fetchImpl = createFetchStub({
+    30: {
+      id_str: "30",
+      conversation_id_str: "30",
+      text: "clicked quote",
+      user: { screen_name: "quoted" },
+      quoted_tweet: { id_str: "20" }
+    },
+    20: {
+      id_str: "20",
+      conversation_id_str: "10",
+      text: "quoted reply",
+      user: { screen_name: "quoted" },
+      in_reply_to_status_id_str: "10"
+    },
+    10: {
+      id_str: "10",
+      conversation_id_str: "10",
+      text: "root",
+      user: { screen_name: "root" }
+    },
+    11: {
+      id_str: "11",
+      conversation_id_str: "10",
+      text: "reply with paper",
+      user: { screen_name: "alice" },
+      in_reply_to_status_id_str: "10",
+      entities: {
+        urls: [
+          { expanded_url: "https://example.com/reply-paper?utm_source=x" }
+        ]
+      }
+    },
+    12: {
+      id_str: "12",
+      conversation_id_str: "10",
+      text: "root replies",
+      user: { screen_name: "root" },
+      in_reply_to_status_id_str: "11"
+    }
+  });
+  const client = createClient(fetchImpl);
+
+  const artifact = await algo.resolveRootPath("30", { storage, client });
+
+  assert.ok(artifact.references.some((reference) => reference.canonicalUrl === "https://example.com/reply-paper"));
+  const replyReference = artifact.references.find((reference) => reference.canonicalUrl === "https://example.com/reply-paper");
+  assert.deepEqual(replyReference.citedByTweetIds, ["11"]);
+});
+
 test("createStorageAdapter surfaces chrome runtime errors for cache operations", async () => {
   const chromeStub = {
     runtime: {
@@ -1388,26 +1445,125 @@ test("background controller falls back to chrome storage when the request omits 
 
 test("background controller can hydrate the bearer token from the generated config loader", async () => {
   const chromeStub = createChromeStub();
+  const apiCalls = [];
   const controller = background.createBackgroundController({
     chromeApi: chromeStub,
-    fetchImpl: createFetchStub({
-      10: {
-        id_str: "10",
-        text: "root",
-        user: { screen_name: "root" }
-      }
-    })
+    fetchImpl: async (url) => {
+      apiCalls.push(String(url));
+      return {
+        ok: true,
+        async json() {
+          return {
+            data: {
+              id: "10",
+              author_id: "u1",
+              conversation_id: "10",
+              text: "root"
+            },
+            includes: {
+              users: [{
+                id: "u1",
+                username: "root",
+                name: "Root"
+              }]
+            }
+          };
+        }
+      };
+    }
   });
 
   const originalLoadGeneratedConfig = require("../extension/dev_env_loader.js").loadGeneratedConfig;
   require("../extension/dev_env_loader.js").loadGeneratedConfig = async ({ chromeApi: currentChromeApi }) => {
     currentChromeApi.storage.local.set({ "ariadex.x_api_bearer_token": "generated-token" }, () => {});
-    return { bearerToken: "generated-token" };
+    return {
+      bearerToken: "generated-token",
+      apiBaseUrl: "https://proxy.example.test/2"
+    };
   };
 
   try {
     const artifact = await controller.resolveRootPath("10", {});
     assert.deepEqual(artifact.path.map((entry) => entry.id), ["10"]);
+    assert.match(apiCalls[0], /^https:\/\/proxy\.example\.test\/2\/tweets\/10\?/);
+  } finally {
+    require("../extension/dev_env_loader.js").loadGeneratedConfig = originalLoadGeneratedConfig;
+  }
+});
+
+test("background controller generates a narrative report through the configured endpoint", async () => {
+  const chromeStub = createChromeStub();
+  const calls = [];
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: async (url, options = {}) => {
+      calls.push({
+        url: String(url),
+        method: options.method || "GET",
+        headers: options.headers || {},
+        body: options.body || ""
+      });
+
+      if (String(url).startsWith("chrome-extension://")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              bearerToken: "generated-token",
+              reportBackendBaseUrl: "http://127.0.0.1:8787"
+            };
+          }
+        };
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            ok: true,
+            report: {
+              text: "Generated report text.",
+              model: "gpt-4o-mini",
+              apiBaseUrl: "https://api.openai.com/v1",
+              provider: "openai"
+            }
+          };
+        }
+      };
+    }
+  });
+
+  const originalLoadGeneratedConfig = require("../extension/dev_env_loader.js").loadGeneratedConfig;
+  require("../extension/dev_env_loader.js").loadGeneratedConfig = async ({ chromeApi: currentChromeApi, fetchImpl, view }) => {
+    return originalLoadGeneratedConfig({ chromeApi: currentChromeApi, fetchImpl, view });
+  };
+
+  try {
+    const phases = [];
+    const report = await controller.generateReport({
+      path: [{ id: "1", text: "Root" }],
+      references: [],
+      people: [],
+      replyChains: []
+    }, {
+      onProgress(progress) {
+        phases.push(progress.phase);
+      }
+    });
+
+    assert.equal(report.text, "Generated report text.");
+    assert.equal(report.model, "gpt-4o-mini");
+    assert.equal(report.apiBaseUrl, "https://api.openai.com/v1");
+    assert.equal(report.provider, "openai");
+    assert.deepEqual(phases, [
+      "loading_report_config",
+      "calling_report_backend",
+      "awaiting_llm_response",
+      "report_ready"
+    ]);
+    assert.equal(calls[1].url, "http://127.0.0.1:8787/v1/report");
+    assert.equal(calls[1].method, "POST");
+    assert.match(String(calls[1].body), /"path"/);
   } finally {
     require("../extension/dev_env_loader.js").loadGeneratedConfig = originalLoadGeneratedConfig;
   }
@@ -1474,6 +1630,140 @@ test("background message handler resolves root-path requests and ignores unrelat
     }
   });
   assert.equal(chromeStub.triggerMessage({ type: "UNRELATED" }, {}, () => {}), false);
+});
+
+test("background message handler resolves report-generation requests", async () => {
+  const chromeStub = createChromeStub();
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: async (url) => {
+      if (String(url).startsWith("chrome-extension://")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              reportBackendBaseUrl: "http://127.0.0.1:8787"
+            };
+          }
+        };
+      }
+      return {
+        ok: true,
+        async json() {
+          return {
+            ok: true,
+            report: {
+              text: "Generated report text.",
+              model: "gpt-4o-mini",
+              apiBaseUrl: "https://api.openai.com/v1",
+              provider: "openai"
+            }
+          };
+        }
+      };
+    }
+  });
+  controller.registerMessageHandler();
+
+  let response;
+  const handled = chromeStub.triggerMessage(
+    {
+      type: background.GENERATE_REPORT_MESSAGE_TYPE,
+      artifact: {
+        path: [{ id: "1" }],
+        references: [],
+        people: [],
+        replyChains: []
+      }
+    },
+    {},
+    (value) => {
+      response = value;
+    }
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(handled, true);
+  assert.deepEqual(response, {
+    ok: true,
+    report: {
+      text: "Generated report text.",
+      model: "gpt-4o-mini",
+      apiBaseUrl: "https://api.openai.com/v1",
+      provider: "openai"
+    }
+  });
+});
+
+test("background port handler streams progress and report results for report generation", async () => {
+  const chromeStub = createChromeStub();
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: async (url) => {
+      if (String(url).startsWith("chrome-extension://")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              reportBackendBaseUrl: "http://127.0.0.1:8787"
+            };
+          }
+        };
+      }
+      return {
+        ok: true,
+        async json() {
+          return {
+            ok: true,
+            report: {
+              text: "Generated report text.",
+              model: "gpt-4o-mini",
+              apiBaseUrl: "https://api.openai.com/v1",
+              provider: "openai"
+            }
+          };
+        }
+      };
+    }
+  });
+  controller.registerPortHandler();
+
+  const sent = [];
+  let onMessageListener = null;
+  const port = {
+    name: background.GENERATE_REPORT_PORT_NAME,
+    onMessage: {
+      addListener(listener) {
+        onMessageListener = listener;
+      }
+    },
+    postMessage(message) {
+      sent.push(message);
+    }
+  };
+
+  chromeStub.triggerConnect(port);
+  onMessageListener({
+    type: background.GENERATE_REPORT_MESSAGE_TYPE,
+    artifact: {
+      path: [{ id: "1" }],
+      references: [],
+      people: [],
+      replyChains: []
+    }
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(sent.map((message) => message.type), [
+    "progress",
+    "progress",
+    "progress",
+    "progress",
+    "result"
+  ]);
+  assert.equal(sent.at(-1).report.text, "Generated report text.");
 });
 
 test("background message handler clears cache via runtime messages", async () => {

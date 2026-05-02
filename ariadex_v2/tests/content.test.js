@@ -80,6 +80,11 @@ test("buildExportFilename uses the clicked tweet id when available", () => {
   assert.equal(content.buildExportFilename(""), "ariadex-v2-root-path.json");
 });
 
+test("buildReportFilename uses the clicked tweet id when available", () => {
+  assert.equal(content.buildReportFilename("123"), "ariadex-v2-123-report.md");
+  assert.equal(content.buildReportFilename(""), "ariadex-v2-root-path-report.md");
+});
+
 test("formatProgressMessage writes compact path and reference progress", () => {
   assert.equal(
     content.formatProgressMessage({ phase: "start", clickedTweetId: "30" }),
@@ -176,6 +181,41 @@ test("formatLookupErrorMessage translates X auth rejections", () => {
     content.formatLookupErrorMessage(new Error("tweet_fetch_failed_401")),
     /X rejected the bearer token/i
   );
+});
+
+test("formatLookupErrorMessage explains background worker disconnects", () => {
+  assert.match(
+    content.formatLookupErrorMessage(new Error("root_path_port_disconnected")),
+    /background worker was unavailable/i
+  );
+});
+
+test("formatReportErrorMessage explains endpoint outages", () => {
+  assert.match(
+    content.formatReportErrorMessage(new Error("report_generation_failed_503")),
+    /report backend is unavailable/i
+  );
+});
+
+test("formatReportErrorMessage explains model api auth failures", () => {
+  assert.match(
+    content.formatReportErrorMessage(new Error("report_generation_failed_401")),
+    /configured model api rejected the request/i
+  );
+});
+
+test("formatReportErrorMessage explains missing backend OpenAI credentials", () => {
+  assert.match(
+    content.formatReportErrorMessage(new Error("missing_openai_api_key")),
+    /missing OPENAI_API_KEY/i
+  );
+});
+
+test("formatReportProgressMessage explains report phases", () => {
+  assert.match(content.formatReportProgressMessage({ phase: "loading_report_config" }), /preparing request/i);
+  assert.match(content.formatReportProgressMessage({ phase: "calling_report_backend" }), /packaging conversation context/i);
+  assert.match(content.formatReportProgressMessage({ phase: "awaiting_llm_response" }), /waiting for OpenAI/i);
+  assert.match(content.formatReportProgressMessage({ phase: "report_ready", model: "gpt-4o-mini" }), /gpt-4o-mini/i);
 });
 
 test("normalizeText trims and collapses whitespace", () => {
@@ -321,6 +361,9 @@ test("makePanelMovable updates the saved panel position while dragging the heade
 });
 
 test("resolveRootArtifact sends the expected extension message", async () => {
+  global.window.AriadexXApiSettings = {
+    apiBaseUrl: "https://proxy.example.test/2"
+  };
   const chromeStub = {
     runtime: {
       lastError: null,
@@ -349,8 +392,10 @@ test("resolveRootArtifact sends the expected extension message", async () => {
   assert.deepEqual(chromeStub.sent, {
     type: content.MESSAGE_TYPE,
     tweetId: "2",
-    bearerToken: "test-token"
+    bearerToken: "test-token",
+    apiBaseUrl: "https://proxy.example.test/2"
   });
+  delete global.window.AriadexXApiSettings;
 });
 
 test("resolveRootArtifact returns an empty artifact immediately when no tweet id is provided", async () => {
@@ -371,6 +416,177 @@ test("resolveRootArtifact rejects extension errors", async () => {
   };
 
   await assert.rejects(() => content.resolveRootArtifact("2", chromeStub), /boom/);
+});
+
+test("generateReportArtifact sends the expected extension message", async () => {
+  const chromeStub = {
+    runtime: {
+      lastError: null,
+      sendMessage(message, callback) {
+        chromeStub.sent = message;
+        callback({
+          ok: true,
+          report: {
+            text: "Narrative report.",
+            model: "gemma-test"
+          }
+        });
+      }
+    }
+  };
+
+  const report = await content.generateReportArtifact({
+    path: [{ id: "1" }],
+    references: [],
+    people: [],
+    replyChains: []
+  }, chromeStub);
+
+  assert.deepEqual(report, {
+    text: "Narrative report.",
+    model: "gemma-test"
+  });
+  assert.deepEqual(chromeStub.sent, {
+    type: content.GENERATE_REPORT_MESSAGE_TYPE,
+    artifact: {
+      path: [{ id: "1" }],
+      references: [],
+      people: [],
+      replyChains: []
+    }
+  });
+});
+
+test("generateReportArtifact uses the streaming port when available and relays progress", async () => {
+  const progressEvents = [];
+  let portListener = null;
+  let disconnectListener = null;
+  const chromeStub = {
+    runtime: {
+      lastError: null,
+      connect({ name }) {
+        assert.equal(name, content.GENERATE_REPORT_PORT_NAME);
+        return {
+          onMessage: {
+            addListener(listener) {
+              portListener = listener;
+            }
+          },
+          onDisconnect: {
+            addListener(listener) {
+              disconnectListener = listener;
+            }
+          },
+          postMessage(message) {
+            assert.deepEqual(message, {
+              type: content.GENERATE_REPORT_MESSAGE_TYPE,
+              artifact: {
+                path: [{ id: "1" }],
+                references: [],
+                people: [],
+                replyChains: []
+              }
+            });
+            portListener({ type: "progress", progress: { phase: "loading_report_config" } });
+            portListener({ type: "progress", progress: { phase: "awaiting_llm_response" } });
+            portListener({
+              type: "result",
+              report: {
+                text: "Generated report text.",
+                model: "gpt-4o-mini",
+                apiBaseUrl: "https://api.openai.com/v1",
+                provider: "openai"
+              }
+            });
+          },
+          disconnect() {
+            if (disconnectListener) {
+              disconnectListener();
+            }
+          }
+        };
+      },
+      sendMessage() {
+        throw new Error("sendMessage should not be called when connect is available");
+      }
+    }
+  };
+
+  const report = await content.generateReportArtifact({
+    path: [{ id: "1" }],
+    references: [],
+    people: [],
+    replyChains: []
+  }, chromeStub, (progress) => {
+    progressEvents.push(progress);
+  });
+
+  assert.deepEqual(progressEvents, [
+    { phase: "loading_report_config" },
+    { phase: "awaiting_llm_response" }
+  ]);
+  assert.equal(report.text, "Generated report text.");
+});
+
+test("renderReportTab shows generated report text and metadata", async () => {
+  const clipboardWrites = [];
+  const root = {
+    defaultView: {
+      navigator: {
+        clipboard: {
+          writeText(value) {
+            clipboardWrites.push(value);
+            return Promise.resolve();
+          }
+        }
+      },
+      setTimeout(callback) {
+        callback();
+      }
+    },
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        style: {},
+        children: [],
+        appendChild(child) {
+          this.children.push(child);
+        },
+        addEventListener(type, listener) {
+          this[`on${type}`] = listener;
+        }
+      };
+    },
+    getElementById() {
+      return {
+        __ariadexV2State: {
+          latestClickedId: "123"
+        }
+      };
+    }
+  };
+
+  const tab = content.renderReportTab({
+    text: "Narrative report.",
+    model: "gemma-test",
+    generatedAt: "2026-04-30T00:00:00.000Z"
+  }, root);
+
+  assert.equal(tab.children.length, 1);
+  const article = tab.children[0];
+  const topRow = article.children[0];
+  assert.equal(topRow.children[0].textContent, "Generated Report");
+  const actions = topRow.children[1];
+  assert.equal(actions.children[0].title, "Copy Markdown");
+  assert.equal(actions.children[1].textContent, "Download");
+  assert.equal(actions.children[1].title, "Download Report");
+  assert.match(article.children[1].textContent, /Generated 2026-04-30T00:00:00.000Z/);
+  assert.match(article.children[1].textContent, /model gemma-test/);
+  assert.equal(article.children[2].textContent, "Narrative report.");
+  await actions.children[0].onclick?.();
+  assert.deepEqual(clipboardWrites, ["Narrative report."]);
 });
 
 test("resolveRootArtifact falls back to chrome storage for the bearer token", async () => {
@@ -419,7 +635,8 @@ test("resolveRootArtifact falls back to chrome storage for the bearer token", as
   assert.deepEqual(chromeStub.sent, {
     type: content.MESSAGE_TYPE,
     tweetId: "2",
-    bearerToken: "storage-token"
+    bearerToken: "storage-token",
+    apiBaseUrl: ""
   });
 });
 
@@ -462,7 +679,8 @@ test("resolveRootArtifact still sends the request when the content script cannot
   assert.deepEqual(chromeStub.sent, {
     type: content.MESSAGE_TYPE,
     tweetId: "2",
-    bearerToken: ""
+    bearerToken: "",
+    apiBaseUrl: ""
   });
 });
 
@@ -474,6 +692,9 @@ test("resolveRootArtifact uses the streaming port when available and relays prog
   const progressEvents = [];
   let portListener;
   let disconnected = false;
+  global.window.AriadexXApiSettings = {
+    apiBaseUrl: "https://proxy.example.test/2"
+  };
   const chromeStub = {
     runtime: {
       sendMessage() {},
@@ -489,7 +710,8 @@ test("resolveRootArtifact uses the streaming port when available and relays prog
             assert.deepEqual(message, {
               type: content.MESSAGE_TYPE,
               tweetId: "2",
-              bearerToken: "test-token"
+              bearerToken: "test-token",
+              apiBaseUrl: "https://proxy.example.test/2"
             });
 
             // Simulate the worker's streaming contract in-order.
@@ -524,6 +746,7 @@ test("resolveRootArtifact uses the streaming port when available and relays prog
     replyChains: [{ id: "chain-1" }]
   });
   assert.equal(disconnected, true);
+  delete global.window.AriadexXApiSettings;
 });
 
 test("resolveRootArtifact rejects streaming port errors", async () => {
@@ -548,6 +771,37 @@ test("resolveRootArtifact rejects streaming port errors", async () => {
   };
 
   await assert.rejects(() => content.resolveRootArtifact("2", chromeStub), /boom/);
+});
+
+test("resolveRootArtifact rejects when the streaming port disconnects without a result", async () => {
+  let disconnectListener;
+  const chromeStub = {
+    runtime: {
+      lastError: { message: "The message port closed before a response was received." },
+      sendMessage() {},
+      connect() {
+        return {
+          onMessage: {
+            addListener() {}
+          },
+          onDisconnect: {
+            addListener(listener) {
+              disconnectListener = listener;
+            }
+          },
+          postMessage() {
+            disconnectListener();
+          },
+          disconnect() {}
+        };
+      }
+    }
+  };
+
+  await assert.rejects(
+    () => content.resolveRootArtifact("2", chromeStub),
+    /message port closed before a response was received/i
+  );
 });
 
 test("clearTweetCache sends the expected extension message", async () => {
@@ -748,7 +1002,7 @@ test("renderReferencesTab renders canonical references and opens them on click",
   assert.equal(list.children.length, 1);
   assert.equal(list.children[0].children[0].textContent, "Reference [1]");
   assert.equal(list.children[0].children[1].textContent, "https://example.com/paper");
-  assert.match(list.children[0].children[2].textContent, /2 path tweets/);
+  assert.match(list.children[0].children[2].textContent, /2 tweets/);
   list.children[0].listeners.click();
   assert.deepEqual(opened, [{
     url: "https://example.com/paper",
@@ -771,7 +1025,7 @@ test("renderReferencesTab shows an empty state when no references are available"
   };
 
   const empty = content.renderReferencesTab([], root);
-  assert.equal(empty.textContent, "No external references found on this root path.");
+  assert.equal(empty.textContent, "No external references found on this path or its reply chains.");
 });
 
 test("renderPathTab navigates to the tweet url on card click", () => {

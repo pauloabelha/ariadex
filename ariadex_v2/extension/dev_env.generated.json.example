@@ -1,0 +1,5 @@
+{
+  "bearerToken": "YOUR_X_BEARER_TOKEN",
+  "apiBaseUrl": "https://api.x.com/2",
+  "reportBackendBaseUrl": "http://127.0.0.1:8787"
+}

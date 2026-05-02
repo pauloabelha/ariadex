@@ -51,6 +51,7 @@
   margin-top: 10px;
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
 }
 
 .ariadex-v2-header-button {
@@ -65,6 +66,56 @@
 
 .ariadex-v2-header-button:hover {
   background: rgba(255, 255, 255, 0.09);
+}
+
+.ariadex-v2-report-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ariadex-v2-report-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ariadex-v2-report-icon-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ariadex-v2-copy-icon {
+  position: relative;
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
+.ariadex-v2-copy-icon-back,
+.ariadex-v2-copy-icon-front {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  background: rgba(15, 20, 25, 0.9);
+}
+
+.ariadex-v2-copy-icon-back {
+  top: 0;
+  left: 0;
+  opacity: 0.7;
+}
+
+.ariadex-v2-copy-icon-front {
+  right: 0;
+  bottom: 0;
 }
 
 .ariadex-v2-title {

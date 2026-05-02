@@ -40,3 +40,14 @@ test("buildGeneratedConfig defaults to server-only mode (no bearer in client con
   assert.equal(Object.prototype.hasOwnProperty.call(config, "bearerToken"), false);
   assert.equal(config.graphApiUrl, "http://127.0.0.1:8787");
 });
+
+test("buildGeneratedConfig includes explicit branch name override", () => {
+  const config = syncScript.buildGeneratedConfig({
+    X_BEARER_TOKEN: "token",
+    ARIADEX_ENV: "dev",
+    ARIADEX_GRAPH_API_URL_DEV: "http://127.0.0.1:8787",
+    ARIADEX_BRANCH_NAME: "codex/pristine-rebuild"
+  });
+
+  assert.equal(config.branchName, "codex/pristine-rebuild");
+});

@@ -424,6 +424,100 @@ test("panel renderer always includes explored and ancestor-path authors in peopl
   assert.deepEqual(authors, ["@peteflorence", "@chris_j_paxton", "@xiao_ted"]);
 });
 
+test("panel renderer falls back to artifact mandatoryPath and clicked/root ids for people", () => {
+  const viewModel = panelRenderer.buildDexViewModel({
+    nodes: [
+      {
+        id: "ROOT",
+        author_id: "u_root",
+        author: "@LeRobotHF",
+        text: "root post",
+        author_profile: { username: "LeRobotHF", name: "LeRobot", description: "robotics" }
+      },
+      {
+        id: "CLICKED",
+        author_id: "u_clicked",
+        author: "@pepijn2233",
+        text: "explored quote",
+        quote_of: "ROOT",
+        author_profile: { username: "pepijn2233", name: "Pepijn", description: "robotics" }
+      },
+      {
+        id: "A",
+        author_id: "u_a",
+        author: "@Thom_Wolf",
+        text: "branch reply",
+        reply_to: "ROOT",
+        author_profile: { username: "Thom_Wolf", name: "Thom Wolf", description: "robotics" }
+      }
+    ],
+    scoreById: new Map([
+      ["ROOT", 0.99],
+      ["CLICKED", 0.95],
+      ["A", 0.9]
+    ]),
+    followingSet: new Set(),
+    excludedTweetIds: new Set(["ROOT", "CLICKED"]),
+    networkLimit: 5,
+    topLimit: 10,
+    snapshotMeta: {
+      clickedTweetId: "CLICKED",
+      canonicalRootId: "ROOT",
+      pathAnchored: {
+        artifact: {
+          exploredTweetId: "CLICKED",
+          mandatoryPath: [
+            { id: "ROOT" },
+            { id: "CLICKED" }
+          ]
+        }
+      }
+    }
+  });
+
+  const authors = [...viewModel.people.followed, ...viewModel.people.others].map((entry) => entry.author);
+  assert.deepEqual(authors, ["@LeRobotHF", "@pepijn2233", "@Thom_Wolf"]);
+});
+
+test("panel renderer can build people cards from artifact mandatoryPath even when nodes omit root and clicked tweets", () => {
+  const viewModel = panelRenderer.buildDexViewModel({
+    nodes: [
+      {
+        id: "A",
+        author_id: "u_a",
+        author: "@Thom_Wolf",
+        text: "branch reply",
+        reply_to: "ROOT",
+        author_profile: { username: "Thom_Wolf", name: "Thom Wolf", description: "robotics" }
+      }
+    ],
+    scoreById: new Map([
+      ["A", 0.9]
+    ]),
+    followingSet: new Set(),
+    excludedTweetIds: new Set(["ROOT", "CLICKED"]),
+    networkLimit: 5,
+    topLimit: 10,
+    snapshotMeta: {
+      clickedTweetId: "CLICKED",
+      canonicalRootId: "ROOT",
+      pathAnchored: {
+        artifact: {
+          exploredTweetId: "CLICKED",
+          rootTweet: { id: "ROOT", author: "@LeRobotHF", text: "root post" },
+          mandatoryPath: [
+            { id: "ROOT", author: "@LeRobotHF", text: "root post" },
+            { id: "CLICKED", author: "@pepijn2233", text: "explored quote", quoteOf: "ROOT" }
+          ]
+        }
+      }
+    }
+  });
+
+  const authors = [...viewModel.people.followed, ...viewModel.people.others].map((entry) => entry.author);
+  assert.deepEqual(authors, ["@Thom_Wolf", "@LeRobotHF", "@pepijn2233"]);
+});
+
 test("panel renderer canonicalizes youtube shortlinks and arxiv pdf links", () => {
   assert.equal(
     panelRenderer.canonicalizeUrl("https://youtu.be/abc123?si=tracking"),
@@ -590,6 +684,68 @@ test("panel renderer renders log tab with structured snapshot summary", () => {
   assert.match(text, /Ancestor path/);
   assert.match(text, /References/);
   assert.match(text, /Warnings/);
+});
+
+test("panel renderer shows branch name in header meta and log tab when present", () => {
+  const dom = new JSDOM("<body></body>", { url: "https://x.com/home" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  panelRenderer.renderConversationPanel({
+    nodes: [
+      {
+        id: "ROOT",
+        author_id: "u1",
+        author: "@root",
+        text: "root",
+        author_profile: { username: "root", name: "Root", description: "" }
+      },
+      {
+        id: "A",
+        author_id: "u2",
+        author: "@u2",
+        text: "reply",
+        reply_to: "ROOT",
+        author_profile: { username: "u2", name: "U2", description: "" }
+      }
+    ],
+    scoreById: new Map([["A", 1]]),
+    relationshipById: new Map([["A", "reply"]]),
+    followingSet: new Set(),
+    snapshotMeta: {
+      clickedTweetId: "A",
+      canonicalRootId: "ROOT",
+      branchName: "codex/pristine-rebuild",
+      pathAnchored: {
+        mandatoryPathIds: ["ROOT", "A"],
+        diagnostics: {
+          selectedTweetCount: 2,
+          mandatoryPathLength: 2,
+          referenceCount: 0
+        },
+        artifact: {
+          exploredTweetId: "A",
+          expansions: []
+        }
+      },
+      cache: { hit: false },
+      warnings: []
+    },
+    root: dom.window.document
+  });
+
+  const meta = dom.window.document.querySelector(".ariadex-header-meta");
+  assert.ok(meta);
+  assert.match(meta.textContent, /codex\/pristine-rebuild/);
+
+  const tabs = [...dom.window.document.querySelectorAll(".ariadex-tab-button")];
+  const logTab = tabs.find((tab) => tab.textContent === "Log");
+  assert.ok(logTab);
+  logTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+
+  assert.match(dom.window.document.body.textContent, /Branch/);
+  assert.match(dom.window.document.body.textContent, /codex\/pristine-rebuild/);
 });
 
 test("panel renderer renders digest tab and triggers PDF action", () => {

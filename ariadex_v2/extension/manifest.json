@@ -10,7 +10,9 @@
     "storage"
   ],
   "host_permissions": [
-    "https://cdn.syndication.twimg.com/*"
+    "https://api.x.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
   ],
   "content_scripts": [
     {
@@ -19,6 +21,7 @@
         "https://twitter.com/*"
       ],
       "js": [
+        "dev_env_loader.js",
         "content.js"
       ],
       "css": [

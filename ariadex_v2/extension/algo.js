@@ -494,7 +494,7 @@ function canonicalizeReferenceUrl(rawUrl) {
   return normalized;
 }
 
-function buildReferenceArtifact(path) {
+function buildReferenceArtifact(path, replyChains = []) {
   const references = [];
   const referenceByUrl = new Map();
   const enrichedPath = [];
@@ -533,6 +533,34 @@ function buildReferenceArtifact(path) {
       ...tweet,
       referenceNumbers
     });
+  }
+
+  for (const chain of Array.isArray(replyChains) ? replyChains : []) {
+    for (const tweet of Array.isArray(chain?.tweets) ? chain.tweets : []) {
+      for (const rawUrl of Array.isArray(tweet?.referenceUrls) ? tweet.referenceUrls : []) {
+        const canonicalUrl = canonicalizeReferenceUrl(rawUrl);
+        if (!canonicalUrl) {
+          continue;
+        }
+
+        let reference = referenceByUrl.get(canonicalUrl);
+        if (!reference) {
+          const parsed = new URL(canonicalUrl);
+          reference = {
+            number: references.length + 1,
+            canonicalUrl,
+            domain: parsed.hostname,
+            citedByTweetIds: []
+          };
+          references.push(reference);
+          referenceByUrl.set(canonicalUrl, reference);
+        }
+
+        if (!reference.citedByTweetIds.includes(tweet.id)) {
+          reference.citedByTweetIds.push(tweet.id);
+        }
+      }
+    }
   }
 
   return {
@@ -877,7 +905,8 @@ function buildLocalReplyChains(anchorTweet, conversationTweets, options = {}) {
         text: entry.text,
         url: entry.url,
         createdAt: entry.createdAt,
-        repliedToId: entry.repliedToId || ""
+        repliedToId: entry.repliedToId || "",
+        referenceUrls: Array.isArray(entry.referenceUrls) ? [...entry.referenceUrls] : []
       }))
     });
   }
@@ -991,8 +1020,8 @@ async function resolveRootPath(tweetId, deps) {
     });
   }
 
-  const referenceArtifact = buildReferenceArtifact(path.reverse());
-  const peopleArtifact = buildPeopleArtifact(referenceArtifact.path);
+  const rootToExploredPath = path.reverse();
+  const peopleArtifact = buildPeopleArtifact(rootToExploredPath);
 
   const rootToExploredNormalizedPath = normalizedPath.reverse();
   const branchParticipantHandles = [...new Set(
@@ -1003,7 +1032,7 @@ async function resolveRootPath(tweetId, deps) {
     if (onProgress) {
       onProgress({
         phase: "collecting_local_reply_chains",
-        conversationId: normalizeTweetId(exploredTweet?.conversationId || rootTweet?.conversationId || ""),
+        conversationId: normalizeTweetId(exploredTweet?.conversationId || ""),
         conversationIds: [...new Set(
           rootToExploredNormalizedPath.map((tweet) => normalizeTweetId(tweet?.conversationId || "")).filter(Boolean)
         )]
@@ -1018,9 +1047,11 @@ async function resolveRootPath(tweetId, deps) {
     }
   }
 
+  const referenceArtifact = buildReferenceArtifact(peopleArtifact.path, replyChains);
+
   const artifact = {
     ...referenceArtifact,
-    ...peopleArtifact,
+    people: peopleArtifact.people,
     replyChains
   };
 

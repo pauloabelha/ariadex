@@ -1,0 +1,4 @@
+{
+  "bearerToken": "YOUR_X_BEARER_TOKEN",
+  "reportBackendBaseUrl": "http://127.0.0.1:8787"
+}

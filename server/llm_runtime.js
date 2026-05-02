@@ -76,7 +76,7 @@ function isLocalEnabled(explicitLocal) {
   const llmConfig = getLlmConfig();
   return toBoolean(
     explicitLocal,
-    toBoolean(process.env.ARIADEX_LOCAL, toBoolean(llmConfig.local, true))
+    toBoolean(process.env.USE_LOCAL_LLM, toBoolean(process.env.ARIADEX_LOCAL, toBoolean(llmConfig.local, true)))
   );
 }
 

@@ -130,12 +130,20 @@
     return "Conversation digest";
   }
 
-  function deriveConversationMeta(viewModel, nodes) {
+  function deriveConversationMeta(viewModel, nodes, snapshotMeta) {
     const nodeCount = Array.isArray(nodes) ? nodes.length : 0;
     const branchCount = Array.isArray(viewModel?.sections?.rankedEntries)
       ? Math.max(1, Math.min(9, viewModel.sections.rankedEntries.length))
       : 0;
-    return `${nodeCount} tweets${branchCount ? ` · ${branchCount} live threads` : ""}`;
+    const parts = [`${nodeCount} tweets`];
+    if (branchCount) {
+      parts.push(`${branchCount} live threads`);
+    }
+    const branchName = String(snapshotMeta?.branchName || "").trim();
+    if (branchName) {
+      parts.push(branchName);
+    }
+    return parts.join(" · ");
   }
 
   function navigateToTweet(root, targetTweetUrl, scrolled) {
@@ -579,7 +587,7 @@
     return entries;
   }
 
-  function buildPeopleEntries({ rankedEntries, nodes, scoreById, followingSet, alwaysIncludeTweetIds = [] } = {}) {
+  function buildPeopleEntries({ rankedEntries, nodes, scoreById, followingSet, alwaysIncludeTweetIds = [], alwaysIncludeTweets = [] } = {}) {
     const followed = normalizeFollowingSet(followingSet);
     const ranked = Array.isArray(rankedEntries) ? rankedEntries : [];
     const safeNodes = Array.isArray(nodes) ? nodes : [];
@@ -643,6 +651,21 @@
       });
     }
 
+    const supplementalTweets = Array.isArray(alwaysIncludeTweets) ? alwaysIncludeTweets : [];
+    for (const tweet of supplementalTweets) {
+      const tweetId = String(tweet?.id || "").trim();
+      const authorId = String(tweet?.author_id || "").trim();
+      const author = String(tweet?.author || "").trim();
+      if (!tweetId || (!authorId && !author)) {
+        continue;
+      }
+      addPersonEntry({
+        id: tweetId,
+        tweet,
+        score: readScore(scoreById, tweetId)
+      });
+    }
+
     const people = [...byAuthorId.values()];
     people.sort((a, b) => {
       const diff = b.aggregateScore - a.aggregateScore;
@@ -688,6 +711,57 @@
     };
   }
 
+  function resolveAlwaysIncludeTweetIds(snapshotMeta) {
+    const ids = new Set();
+    const push = (value) => {
+      const normalized = String(value || "").trim();
+      if (normalized) {
+        ids.add(normalized);
+      }
+    };
+
+    const pathAnchored = snapshotMeta?.pathAnchored || null;
+    const artifact = pathAnchored?.artifact || null;
+
+    for (const id of Array.isArray(pathAnchored?.mandatoryPathIds) ? pathAnchored.mandatoryPathIds : []) {
+      push(id);
+    }
+    for (const tweet of Array.isArray(artifact?.mandatoryPath) ? artifact.mandatoryPath : []) {
+      push(tweet?.id);
+    }
+    push(artifact?.exploredTweetId);
+    push(snapshotMeta?.clickedTweetId);
+    push(artifact?.canonicalRootId);
+    push(snapshotMeta?.canonicalRootId);
+
+    return [...ids];
+  }
+
+  function resolveAlwaysIncludeTweets(snapshotMeta) {
+    const tweets = [];
+    const seen = new Set();
+    const push = (tweet) => {
+      const id = String(tweet?.id || "").trim();
+      const authorId = String(tweet?.author_id || "").trim();
+      const author = String(tweet?.author || "").trim();
+      if (!id || seen.has(id) || (!authorId && !author)) {
+        return;
+      }
+      seen.add(id);
+      tweets.push(tweet);
+    };
+
+    const pathAnchored = snapshotMeta?.pathAnchored || null;
+    const artifact = pathAnchored?.artifact || null;
+
+    for (const tweet of Array.isArray(artifact?.mandatoryPath) ? artifact.mandatoryPath : []) {
+      push(tweet);
+    }
+    push(artifact?.rootTweet || null);
+
+    return tweets;
+  }
+
   function buildLogSummary({ snapshotMeta, nodes, rankedEntries } = {}) {
     const diagnostics = snapshotMeta?.diagnostics || {};
     const filter = diagnostics?.filter || {};
@@ -714,6 +788,7 @@
 
     return [
       { label: "Cache", value: cache?.hit ? "hit" : "miss" },
+      ...(snapshotMeta?.branchName ? [{ label: "Branch", value: String(snapshotMeta.branchName) }] : []),
       { label: "Explored tweet", value: artifact?.exploredTweetId || snapshotMeta?.clickedTweetId || "unknown" },
       { label: "Canonical root", value: snapshotMeta?.canonicalRootId || artifact?.canonicalRootId || "unknown" },
       { label: "Collected tweets", value: Number.isFinite(Number(filter?.inputTweetCount)) ? String(filter.inputTweetCount) : String(safeNodes.length) },
@@ -1339,12 +1414,15 @@
       scoreById,
       rankedEntries: sections.rankedEntries
     });
+    const alwaysIncludeTweetIds = resolveAlwaysIncludeTweetIds(snapshotMeta);
+    const alwaysIncludeTweets = resolveAlwaysIncludeTweets(snapshotMeta);
     const people = buildPeopleEntries({
       rankedEntries: sections.rankedEntries,
       nodes,
       scoreById,
       followingSet,
-      alwaysIncludeTweetIds: snapshotMeta?.pathAnchored?.mandatoryPathIds || []
+      alwaysIncludeTweetIds,
+      alwaysIncludeTweets
     });
     const context = buildContextSummary({
       nodes,
@@ -1618,7 +1696,7 @@
         titleNode.textContent = deriveConversationTitle(nodes, article);
       }
       if (metaNode) {
-        metaNode.textContent = deriveConversationMeta(viewModel, nodes);
+        metaNode.textContent = deriveConversationMeta(viewModel, nodes, snapshotMeta);
       }
     }
     if (statusMessage) {

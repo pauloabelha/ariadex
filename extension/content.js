@@ -342,6 +342,9 @@
     const runtimeEnv = typeof settings.environment === "string" && settings.environment.trim().length > 0
       ? settings.environment.trim().toLowerCase()
       : (readLocalStorageValue("ariadex.runtime_env") || "").trim().toLowerCase() || "dev";
+    const branchName = typeof settings.branchName === "string" && settings.branchName.trim().length > 0
+      ? settings.branchName.trim()
+      : (readLocalStorageValue("ariadex.branch_name") || "").trim() || null;
     const graphApiByEnv = settings.graphApiByEnv && typeof settings.graphApiByEnv === "object"
       ? settings.graphApiByEnv
       : (() => {
@@ -382,6 +385,7 @@
       apiBaseUrl,
       graphApiUrl,
       runtimeEnv,
+      branchName,
       graphApiByEnv,
       allowClientDirectApi: isTestRuntime ? true : allowClientDirectApi,
       followingSet: parseFollowingSet(followingSource),
@@ -1210,6 +1214,7 @@
             snapshotMeta: {
               clickedTweetId,
               canonicalRootId: snapshot?.canonicalRootId || null,
+              branchName: runtimeConfig.branchName || null,
               diagnostics: snapshot?.diagnostics || null,
               pathAnchored: snapshot?.pathAnchored || null,
               cache: snapshot?.cache || null,
