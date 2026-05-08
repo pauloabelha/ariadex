@@ -1,80 +1,50 @@
-# Goal: Promote Ariadex v2 To The Single Repo Version
+# Goal: AriadeX Root Promotion
 
-Make the current `ariadex_v2/` implementation become the actual Ariadex repository root, with no nested `v2` product folder and no parallel "old vs v2" identity inside the repo.
+Status: complete.
 
-This is a structural refactor only. Preserve behavior and avoid intentional code changes while moving the v2 project into the canonical top-level layout.
+AriadeX has been promoted from the former nested prototype layout into the repository root. The repo now has one active product version and no nested product folder.
 
-## Target State
+## Final State
 
-- The repository root is the current product version.
-- There is no `ariadex_v2/` directory.
-- Extension loading points at `extension/`, not `ariadex_v2/extension/`.
-- Tests run from the repository root.
-- Docs, scripts, package metadata, and backend entrypoints describe one Ariadex.
-- Historical v1 code is either removed, archived outside this repo, or explicitly preserved in git history only.
-- The project no longer uses "v2" language in filenames, package names, docs, scripts, or setup instructions unless it is historical context.
+- `extension/` is the loadable Chrome extension.
+- `server/` contains the local report and gist backend.
+- `scripts/` contains root-level developer commands.
+- `tests/` runs from the repository root.
+- `docs/` describes the current root product.
+- `README.md` is the user and developer entry point.
+- Old root experiments are removed from the active tree and remain available through git history.
+
+## Current Product Goal
+
+AriadeX should help a user understand one tweet by turning it into a compact, inspectable artifact:
+
+- the root-to-explored path
+- references cited on that path
+- people who authored or were mentioned on that path
+- reply chains where path authors participate
+- optional generated report and gist
 
 ## Non-Goals
 
-- Do not change runtime behavior.
-- Do not rewrite the algorithm.
-- Do not redesign the UI.
-- Do not change API contracts.
-- Do not merge old root functionality into v2 unless it is required to preserve current v2 behavior.
-- Do not clean up unrelated old experiments unless they block the single-version structure.
-
-## Refactor Plan
-
-1. Inventory the current root and `ariadex_v2/` trees.
-   - Identify files that belong to the current v2 product.
-   - Identify old root files that should be deleted, replaced, or consciously retained.
-   - Record any generated/local-only files that should not be promoted.
-
-2. Move v2 source to the root.
-   - `ariadex_v2/extension/` -> `extension/`
-   - `ariadex_v2/server/` -> `server/`
-   - `ariadex_v2/scripts/` -> `scripts/`
-   - `ariadex_v2/tests/` -> `tests/`
-   - `ariadex_v2/docs/` -> `docs/`
-   - `ariadex_v2/package.json` -> `package.json`
-   - `ariadex_v2/README.md` -> `README.md`
-   - `ariadex_v2/README_ARCHITECTURE.md` -> `README_ARCHITECTURE.md`
-
-3. Remove or archive old root implementation files.
-   - Remove old `core/`, `data/`, `research/`, old extension files, old server files, and old tests if they are not part of the promoted v2 product.
-   - Keep only what v2 actually needs.
-   - Let git history preserve the old version.
-
-4. Update paths and metadata without changing behavior.
-   - Replace setup instructions that mention `ariadex_v2/`.
-   - Update package name/version language if it says v2.
-   - Update extension manifest metadata if it identifies as v2.
-   - Update script paths so commands run from the repo root.
-   - Ensure generated config examples point to root paths.
-
-5. Verify the root project.
-   - Run `npm install` if dependencies need to be reconciled.
-   - Run `npm test` from the repository root.
-   - Run the report backend from the repository root.
-   - Load the unpacked extension from `extension/`.
-   - Confirm docs describe only the current Ariadex workflow.
+- Do not reintroduce parallel product folders.
+- Do not bring back old root architecture unless a specific feature needs to be deliberately rebuilt.
+- Do not hide generated text behind uninspectable model output.
+- Do not commit generated config or credentials.
 
 ## Acceptance Criteria
 
-- `ariadex_v2/` no longer exists.
 - `npm test` passes from `/home/pauloabelha/ariadex`.
-- The extension can be loaded from `/home/pauloabelha/ariadex/extension`.
-- The report backend starts using the root package scripts.
-- The README does not instruct users to `cd ariadex_v2`.
-- No runtime source imports or scripts reference `ariadex_v2`.
-- Any remaining old-root files are intentionally retained and documented.
+- The extension loads from `/home/pauloabelha/ariadex/extension`.
+- Runtime source and docs do not refer to a nested product version.
+- Report and gist prompts resolve from `/home/pauloabelha/ariadex/prompts`.
+- Generated runtime config remains local-only.
 
-## Suggested First Commit Shape
+## Next Product Direction
 
-Keep this as a single mechanical commit if possible:
+Keep AriadeX narrow and excellent:
 
-```text
-Promote v2 implementation to repository root
-```
-
-The commit should be easy to review as mostly file moves, deletions, and documentation/path updates. Behavioral edits should be avoided or split out if they become necessary.
+- make the root path unmistakably clear
+- keep references and people easy to scan
+- make reply chains feel anchored, not noisy
+- make report and gist generation useful but secondary
+- preserve exportable evidence at every step

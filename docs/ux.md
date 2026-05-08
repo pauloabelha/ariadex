@@ -1,120 +1,108 @@
 # UX Notes
 
-The floating panel has four primary artifact tabs:
+AriadeX should feel like a compact investigation panel, not a second feed.
 
-- `Root Path`
-- `References`
-- `People`
-- `Replies`
+The user has already found something interesting on X. The extension should help them preserve context, compare path evidence, and produce a readable explanation without pulling them away from the page.
 
-After report generation succeeds, a fifth tab appears:
+## Entry Point
 
-- `Report`
+The extension injects an `Explore Path` action into tweet cards.
 
-The panel header also exposes:
+The action should feel lightweight:
+
+- one click starts exploration
+- progress is visible
+- failures are plain and recoverable
+- the result appears in-place
+
+## Panel
+
+The floating panel is the main surface.
+
+It is:
+
+- draggable from the header
+- compact enough to sit beside the X timeline
+- stateful across rerenders
+- organized by artifact tabs
+
+Header actions:
 
 - `Export`
 - `Generate Report`
+- `Generate Gist`
 - `Clear Cache`
 
-The header itself is draggable, so the panel can be repositioned around the viewport.
+## Tabs
 
-## Root Path tab
+`Root Path`
 
-Each tweet card shows:
+Shows the resolved root-to-explored chain. Cards include structural labels, relation labels, author handles, tweet text, reference markers, and tweet ids.
 
-- structural label such as `Root`, `Ancestor 2`, `Explored`
-- relation to its parent such as `replied to Root` or `quoted Ancestor 3`
-- author handle
-- tweet text
-- inline reference markers like `[1] [2]`
-- tweet id
+`References`
 
-Clicking a tweet card navigates to that tweet on X.
+Shows canonical external URLs cited by path tweets. Each reference can be opened directly.
 
-## References tab
+`People`
 
-Each reference card shows:
+Shows path authors and mentioned users. Each person links to their X profile when the handle is valid.
 
-- internal reference number
-- canonical URL
-- host/domain
-- count of path tweets that cited it
+`Replies`
 
-Clicking a reference opens the canonical URL in a new tab.
+Shows anchored reply chains. Each chain names the path tweet it belongs to, the anchor author, and the collected tweets in that trimmed subtree.
 
-## People tab
+`Gist`
 
-Each people card shows:
+Appears after `Generate Gist`. The gist is meant to be portable, shorter, and easier to reuse elsewhere.
 
-- profile picture when available
-- handle
-- display name
-- profile URL
-- source types such as `author` or `mention`
-- count of path tweets where that handle appeared
+`Report`
 
-Clicking a people card opens that X profile in a new tab.
+Appears after `Generate Report`. The report is meant to be more narrative and explanatory.
 
-## Replies tab
+## Interaction Rules
 
-Each reply card shows:
+The panel should never hide the evidence behind the generated prose.
 
-- the number of tweets collected into that reply chain
-- which path node the chain belongs to, such as `Root`, `Ancestor 2`, or `Explored`
-- which anchor author that chain replies to
-- one card per tweet in the collected trimmed subtree
-- the tweet ids included in that trimmed chain
+Generated text is useful, but the artifact is the source of truth. The user should always be able to return to the path, references, people, and replies.
 
-These chains are aggregated from the X API conversation graphs for tweets across
-the full root-to-explored path. Each visible card represents one subtree that:
+Progress messages should describe real stages:
 
-- starts at one direct reply to one path tweet
-- includes descendants below that direct reply
-- is shown only if one of the path authors participates somewhere in that subtree
-- is trimmed at the last tweet by any of those path authors
-
-Clicking a tweet card navigates to that specific tweet on X.
-
-## Report tab
-
-The report tab appears after `Generate Report` succeeds.
-
-It shows:
-
-- the generated narrative text
-- the generation timestamp
-- the model used for generation
-- a `Copy Markdown` action for copying the report body to the clipboard
-- a `Download Report` action for saving the report as Markdown
-
-The report is generated from the current artifact, so if the path changes, the report should be regenerated.
+- loading generated config
+- resolving path
+- collecting references
+- collecting people
+- collecting replies
+- calling backend
+- waiting for model response
+- ready
 
 ## Export
 
-`Export` downloads a JSON snapshot containing:
+`Export` downloads a JSON snapshot:
 
-- `clickedTweetId`
-- `exportedAt`
-- `artifact`
+```json
+{
+  "clickedTweetId": "...",
+  "exportedAt": "...",
+  "artifact": {}
+}
+```
 
-## Generate Report
+The export is the best handoff format for debugging, notebooks, and future analysis.
 
-`Generate Report` sends the current artifact to the background worker, which forwards it to the local AriadeX report backend.
+## Report And Gist
 
-The extension only needs the backend URL from `dev_env.generated.json`. The backend itself owns prompt loading, the OpenAI API key, and the final model call.
+Both generated outputs come from the same artifact.
 
-While the request is running, the panel header now shows staged progress messages for:
+The extension sends the artifact to the background service worker. The service worker calls the local backend. The backend loads a prompt and calls OpenAI.
 
-- loading report settings
-- sending the artifact to the AriadeX report backend
-- waiting for OpenAI
-- report ready
+This keeps the browser extension free of OpenAI credentials.
 
-For now the backend is OpenAI-only:
+## UX Principles
 
-- set `OPENAI_API_KEY`
-- optional: set `OPENAI_MODEL`
-- optional: set `OPENAI_BASE_URL`
-
-By default, the extension calls `http://127.0.0.1:8787/v1/report`. Start that backend with `npm run report:backend`.
+- Keep the artifact visible.
+- Prefer deterministic labels over clever prose.
+- Make generated text optional.
+- Use stable numbering for references.
+- Preserve user agency with export, copy, and download actions.
+- Make stale data easy to clear.

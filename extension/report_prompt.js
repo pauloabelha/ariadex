@@ -68,5 +68,5 @@ if (typeof module !== "undefined" && module.exports) {
     GENERATE_REPORT_PROMPT
   };
 } else {
-  globalThis.AriadexV2GenerateReportPrompt = GENERATE_REPORT_PROMPT;
+  globalThis.AriadexGenerateReportPrompt = GENERATE_REPORT_PROMPT;
 }

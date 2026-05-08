@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 
-const REPO_ROOT_DIR = path.resolve(__dirname, "..", "..");
+const REPO_ROOT_DIR = path.resolve(__dirname, "..");
 const REPORT_PROMPT_PATH = path.join(REPO_ROOT_DIR, "prompts", "generate_report.md");
 const GIST_PROMPT_PATH = path.join(REPO_ROOT_DIR, "prompts", "generate_gist.md");
 const DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:8787";

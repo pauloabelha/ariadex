@@ -1,139 +1,137 @@
 # AriadeX Algorithm
 
-The AriadeX algorithm now lives in `extension/algo.js`.
+The algorithm lives in `extension/algo.js`. It is the heart of AriadeX and is designed to be testable without Chrome.
 
-That file owns the pure logic for:
+## Inputs
 
-- tweet-id normalization
-- cache adapter creation
-- X API fetch client creation
-- tweet payload normalization
-- person handle/display-name/avatar normalization
-- `quote > reply` parent selection
-- recursive root-path walking
-- external reference canonicalization
-- per-path reference deduplication and numbering
-- per-path people deduplication by canonical X handle
-- reply-chain collection from `conversation_id`
-- artifact assembly for on-demand report generation
+The resolver needs:
 
-## Why this split exists
+- clicked tweet id
+- X API bearer token
+- optional X API base URL
+- cache adapter
+- progress callback
 
-`extension/background.js` is now just the Chrome runtime shell:
+The content script obtains the clicked tweet id from the page and sends it to the background service worker. The service worker loads runtime config and calls the algorithm.
 
-- receive messages and ports from the content script
-- call the algorithm module
-- stream progress back to the panel
-- expose cache clearing
+## Tweet Fetching
 
-This keeps the important logic easy to test under Node without Chrome runtime setup.
+The X API client uses:
 
-## Resolver flow
+- `GET /2/tweets/{id}` for single tweet lookup
+- `GET /2/tweets` for batch lookup
+- `GET /2/tweets/search/recent?query=conversation_id:<id>` for reply collection
 
-Given a clicked tweet id:
+Requested tweet fields include:
 
-1. normalize the tweet id
-2. emit `start`
-3. fetch the tweet from cache or network
-4. normalize it into the small Ariadex shape
-5. choose the parent with `quote > reply`
-6. append the current tweet to the raw path
-7. emit `path_walk`
-8. repeat until no parent or a cycle is found
-9. emit `canonicalizing_refs`
-10. reverse into root-to-explored order
-11. canonicalize and dedupe references across that path
-12. dedupe path authors and mentions into canonical `people`
-13. collect the canonical author set across the resolved path
-14. for each tweet on that path, fetch the matching X API conversation
-15. start from each direct reply to that path tweet
-16. walk the full descendant subtree below that direct reply
-17. treat that direct-reply subtree as one candidate reply chain
-18. keep only candidate chains where any resolved-path author appears
-19. trim each kept chain at the last tweet by any resolved-path author
-20. annotate each kept chain with its anchor tweet metadata
-21. emit `done`
+- `author_id`
+- `conversation_id`
+- `created_at`
+- `entities`
+- `in_reply_to_user_id`
+- `referenced_tweets`
+- `text`
 
-In other words:
+Requested user fields include:
 
-- the root path is a single structural chain
-- the reply side is a set of anchored subtrees hanging off tweets in that chain
-- each kept subtree becomes one `replyChain`
+- `id`
+- `username`
+- `name`
+- `profile_image_url`
 
-## Report generation flow
+## Root Path Resolution
 
-The report is not part of root-path resolution itself.
+For each tweet:
 
-After the artifact exists:
+1. Normalize the tweet id.
+2. Fetch from cache or network.
+3. Normalize the tweet payload into the AriadeX shape.
+4. Choose the parent:
+   - quoted tweet first
+   - replied-to tweet second
+   - stop otherwise
+5. Append the tweet to the raw path.
+6. Continue until the root is reached.
+7. Stop early if a cycle is detected.
+8. Reverse the raw path so it reads root-to-explored.
 
-1. the content script sends the current artifact to the background worker
-2. the background worker loads `reportBackendBaseUrl` from generated config
-3. the worker emits report-progress events back to the panel
-4. the worker posts the artifact to the local AriadeX report backend
-5. the backend loads the saved prompt and calls OpenAI
-6. the returned text is stored in panel state and rendered in the `Report` tab with copy/download actions
+The parent rule is deliberately simple. Quote edges carry stronger context than reply edges, so they win when both are present.
 
-This keeps the resolver deterministic while making the narrative layer optional.
+## Reference Pass
 
-## Output artifact
+After path resolution, the algorithm reads external URLs from every path tweet.
 
-The algorithm returns:
+For each URL:
 
-- `path`
-  ordered root-to-explored tweets
+1. Select the best X API URL field.
+2. Canonicalize the URL.
+3. Ignore internal X, Twitter, and `t.co` links.
+4. Deduplicate across the full path.
+5. Assign a stable 1-based reference number.
+6. Store local reference numbers on each path tweet.
 
-- `references`
-  canonical deduped references cited anywhere on that path
+This lets the path tab show compact markers such as `[1] [3]` while the references tab holds the canonical URL list.
 
-- `people`
-  canonical deduped people found anywhere on that path
-  collected from:
-  - tweet authors on the path
-  - explicit `user_mentions` on path tweets
+## People Pass
 
-- `replyChains`
-  aggregated anchored reply subtrees rooted in direct replies to tweets along the resolved path
-  where each chain represents:
-  - one anchor path tweet
-  - one direct reply to that anchor
-  - all descendants reachable below that direct reply
-  filtered to branches containing at least one resolved-path author
-  trimmed at the last tweet by a resolved-path author
-  and annotated with:
-  - `anchorTweetId`
-    which root/ancestor/explored path node the chain replies to
-  - `anchorAuthor`
-    the canonical handle of that anchor tweet's author
+The people pass collects:
 
-Each path tweet also carries:
+- each path tweet author
+- each explicit `entities.user_mentions` entry
 
-- `outboundRelation`
-  how that tweet points to its parent
+People are deduped by canonical handle. For each handle, AriadeX keeps the best available display name, avatar URL, profile URL, source types, and path-tweet count.
 
-- `referenceNumbers`
-  the numbered references cited by that tweet
+## Reply Chain Pass
 
-- `peopleHandles`
-  canonical X handles collected from that tweet
+Reply chains are collected after the root path is known.
 
-## Example shape
+For each path tweet:
 
-If the path is:
+1. Read its `conversation_id`.
+2. Fetch the conversation search results.
+3. Build reply edges from referenced tweet metadata.
+4. Find direct replies to the path tweet.
+5. Treat each direct reply as the root of one candidate subtree.
+6. Walk descendants under that candidate root.
+7. Keep the subtree only if at least one path author appears inside it.
+8. Trim the subtree at the last tweet by any path author.
+9. Store anchor metadata:
+   - `anchorTweetId`
+   - `anchorAuthor`
 
-`Root -> Ancestor 1 -> Explored`
+This produces reply pockets that are local to the explored path instead of a huge unranked conversation dump.
 
-and `Ancestor 1` has three direct replies:
+## Progress Events
 
-- reply `A`
-- reply `B`
-- reply `C`
+The algorithm emits progress so the panel can explain what is happening:
 
-then the algorithm evaluates three separate candidate reply chains under `Ancestor 1`:
+- start
+- path walking
+- reference canonicalization
+- people aggregation
+- reply collection
+- done
 
-- subtree rooted at `A`
-- subtree rooted at `B`
-- subtree rooted at `C`
+Report and gist generation emit their own backend progress events from the background service worker.
 
-If only the subtree under `B` contains a tweet by any author from the resolved path,
-only that subtree is kept. If the last such participating tweet in subtree `B` is halfway
-down the subtree, everything after that point is trimmed away.
+## Failure Behavior
+
+AriadeX prefers explicit failure over silent invention.
+
+- Missing bearer token stops X API resolution.
+- Network errors surface in the panel.
+- Missing OpenAI key stops report or gist generation.
+- Empty model output is treated as an error.
+- Cache can be cleared from the panel when API state looks stale.
+
+## Example
+
+Suppose the path is:
+
+```text
+Root -> Ancestor 1 -> Explored
+```
+
+If `Ancestor 1` has three direct replies, AriadeX evaluates three candidate reply chains. A candidate is kept only when one of the path authors appears somewhere in that subtree. If the path author appears halfway down the subtree, the chain is trimmed there.
+
+The result stays compact, grounded, and explainable.

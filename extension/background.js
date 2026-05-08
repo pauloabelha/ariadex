@@ -8,13 +8,13 @@ if (typeof importScripts === "function") {
 
 const algo = typeof module !== "undefined" && module.exports
   ? require("./algo.js")
-  : globalThis.AriadeXV2Algo;
+  : globalThis.AriadexAlgo;
 const devEnvLoader = typeof module !== "undefined" && module.exports
   ? require("./dev_env_loader.js")
   : globalThis;
 const reportGeneration = typeof module !== "undefined" && module.exports
   ? require("./report_generation.js")
-  : globalThis.AriadexV2ReportGeneration;
+  : globalThis.AriadexReportGeneration;
 
 const RESOLVE_ROOT_PATH_MESSAGE_TYPE = "ARIADEX_RESOLVE_ROOT_PATH";
 const CLEAR_CACHE_MESSAGE_TYPE = "ARIADEX_CLEAR_CACHE";
@@ -84,9 +84,9 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
             view: typeof window !== "undefined" ? window : null
           });
         } catch {}
-      } else if (globalThis?.AriadexV2DevEnvReady && typeof globalThis.AriadexV2DevEnvReady.then === "function") {
+      } else if (globalThis?.AriadexDevEnvReady && typeof globalThis.AriadexDevEnvReady.then === "function") {
         try {
-          await globalThis.AriadexV2DevEnvReady;
+          await globalThis.AriadexDevEnvReady;
         } catch {}
       }
 

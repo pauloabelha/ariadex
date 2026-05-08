@@ -137,7 +137,7 @@ if (typeof module !== "undefined" && module.exports) {
     generateGist
   };
 } else {
-  globalThis.AriadexV2ReportGeneration = {
+  globalThis.AriadexReportGeneration = {
     DEFAULT_REPORT_BACKEND_BASE_URL,
     normalizeReportSettings,
     extractChatCompletionText,

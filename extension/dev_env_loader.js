@@ -139,6 +139,6 @@
       loadGeneratedConfig
     };
   } else {
-    globalThis.AriadexV2DevEnvReady = loadGeneratedConfig();
+    globalThis.AriadexDevEnvReady = loadGeneratedConfig();
   }
 })();

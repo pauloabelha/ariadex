@@ -1,68 +1,172 @@
 # AriadeX
 
-Minimal clean-room prototype.
+AriadeX is a Chrome extension for making sense of a tweet by reconstructing the path that brought it into view.
 
-Current scope:
-- inject `Explore Path` into tweet cards on `x.com`
-- recursively resolve the clicked tweet's root path
-- collect and canonicalize references cited along that root path
-- collect deduped people from path authors and mentions
-- collect `replyChains` for every tweet on the resolved root-to-explored path
-- define each reply chain as one direct-reply subtree anchored under one path tweet
-- treat every author on that root-to-explored path as a valid participant when filtering those chains
-- keep only anchored reply subtrees where one of those path authors appears somewhere in the subtree
-- trim each kept subtree at the last tweet by any of those path authors
-- render the path, references, people, and replies in separate tabs
-- export the current artifact as JSON from the panel
-- generate a narrative report from the current artifact through a local AriadeX report backend
+Click `Explore Path` on X and AriadeX builds a compact artifact around that tweet:
 
-Important limitation:
-- this version uses the X API directly and requires a bearer token in local storage
-- report generation requires a reachable local AriadeX report backend
-- the report backend is OpenAI-only for now and requires `OPENAI_API_KEY`
-- parent rule is deterministic: `quote > reply`
-- references are deduped and numbered globally for the current explored path
-- people are deduped globally for the current explored path by canonical X handle
-- reply chains depend on `conversation_id` search, so the reply view is bounded by what the X API returns for each conversation touched by the resolved path
-- replies can differ from the visible X UI because the API may return deleted, hidden, or otherwise non-prominent conversation tweets, especially until cache is cleared
-- each path tweet shows its local reference numbers like `[1] [2]`
-- the generated report is only as good as the configured model and the current artifact quality
-- report generation status is streamed in phases, so the panel can distinguish config loading, backend call, OpenAI wait time, and final success
+- the structural root-to-tweet path
+- the references cited along that path
+- the people who authored or were mentioned on that path
+- the reply subtrees where path authors re-enter the conversation
+- an optional generated report and portable gist through a local backend
 
-Code health:
-- the root-path algorithm lives in its own module and is testable under Node
-- background and content scripts stay thin around that core logic
-- recursive resolution, X-API reply-chain collection, report generation, export, and panel rendering are covered by unit tests
-- tweet payloads and conversation membership are cached in `chrome.storage.local`
+The product is intentionally narrow. It does not try to rank the whole conversation, summarize every branch, or replace the X interface. It gives you a clean thread through one messy public exchange.
 
-Run:
-1. Open `chrome://extensions`
-2. Enable Developer mode
-3. Click `Load unpacked`
-4. Select `ariadex/extension`
-5. Open a tweet thread on `https://x.com`
-6. Click `Explore Path`
-7. In a terminal, run `npm run report:backend`
-8. Click `Generate Report` after the artifact loads if you want a narrative summary
-9. Use `Copy Markdown` or `Download Report` from the `Report` tab once generation succeeds
+## What It Does
 
-Configuration notes:
-- the extension only reads `reportBackendBaseUrl` from `extension/dev_env.generated.json`
-- set `REPORT_BACKEND_BASE_URL` if you want the extension to call a backend somewhere other than `http://127.0.0.1:8787`
-- set `OPENAI_API_KEY` for the backend
-- optional: set `OPENAI_MODEL` to override the default `gpt-4o-mini`
-- optional: set `OPENAI_BASE_URL` if you need a non-default OpenAI-compatible URL
+AriadeX starts from the clicked tweet and walks backward through explicit X API relationships:
 
-Tests:
+1. Prefer the quoted tweet as the parent.
+2. Otherwise use the replied-to tweet as the parent.
+3. Stop when no parent exists or a cycle is detected.
+
+After the root path is resolved, AriadeX enriches it:
+
+- References are canonicalized, deduped, and numbered.
+- People are deduped by canonical X handle.
+- Replies are collected from X API conversation search and grouped into anchored subtrees.
+- Reports and gists are generated only when requested, using the current artifact.
+
+## Repository Layout
+
+```text
+ariadex/
+  extension/
+    algo.js                  root-path, references, people, reply-chain logic
+    background.js            Chrome service worker and progress streams
+    content.js               button injection and panel UI
+    report_generation.js     report/gist backend client
+    dev_env_loader.js        generated config loader
+    styles.css               panel styling
+    manifest.json            Chrome extension manifest
+  server/
+    report_backend.js        local OpenAI-backed report and gist API
+  scripts/
+    sync_env_to_generated_config.js
+    start_report_backend.js
+  prompts/
+    generate_report.md
+    generate_gist.md
+  tests/
+    *.test.js
+  docs/
+    overview.md
+    algorithm.md
+    references.md
+    ux.md
+```
+
+## Quick Start
+
+Install dependencies:
 
 ```bash
 cd /home/pauloabelha/ariadex
+npm install
+```
+
+Create `.env`:
+
+```bash
+X_BEARER_TOKEN=your_x_api_bearer_token
+OPENAI_API_KEY=your_openai_api_key
+REPORT_BACKEND_BASE_URL=http://127.0.0.1:8787
+```
+
+Generate the extension runtime config:
+
+```bash
+npm run sync:env
+```
+
+Start the local report backend:
+
+```bash
+npm run report:backend
+```
+
+Load the extension:
+
+1. Open `chrome://extensions`.
+2. Enable Developer mode.
+3. Click `Load unpacked`.
+4. Select `/home/pauloabelha/ariadex/extension`.
+5. Open a tweet thread on `https://x.com`.
+6. Click `Explore Path`.
+
+## Using AriadeX
+
+The floating panel opens with the resolved artifact.
+
+- `Root Path` shows the root, ancestors, and explored tweet.
+- `References` lists the canonical external URLs found on the path.
+- `People` lists authors and mentioned users found on the path.
+- `Replies` shows anchored reply chains where a path author participates.
+- `Gist` appears after `Generate Gist`.
+- `Report` appears after `Generate Report`.
+
+The panel can export the current artifact as JSON. Reports and gists can be copied or downloaded as Markdown.
+
+## Configuration
+
+The extension reads `extension/dev_env.generated.json`, which is generated from `.env` by `npm run sync:env`.
+
+Supported `.env` values:
+
+- `X_BEARER_TOKEN` or `X_API_BEARER_TOKEN`
+- `ARIADEX_X_API_BASE_URL` or `X_API_BASE_URL`
+- `REPORT_BACKEND_BASE_URL`
+- `OPENAI_API_KEY` or `ARIADEX_OPENAI_API_KEY`
+- `OPENAI_MODEL`, `REPORT_MODEL_NAME`, `ARIADEX_OPENAI_ARTICLE_MODEL`, or `ARIADEX_OPENAI_MODEL`
+- `OPENAI_BASE_URL` or `ARIADEX_OPENAI_BASE_URL`
+
+Defaults:
+
+- X API base URL: `https://api.x.com/2`
+- Report backend: `http://127.0.0.1:8787`
+- OpenAI API base URL: `https://api.openai.com/v1`
+- OpenAI model: `gpt-4o-mini`
+
+Do not commit `extension/dev_env.generated.json`. It may contain secrets.
+
+## Commands
+
+```bash
+npm test
+npm run sync:env
+npm run report:backend
+```
+
+## Development Notes
+
+The core algorithm is written so it can run under Node tests without a Chrome runtime. The Chrome-specific work stays in `background.js` and `content.js`.
+
+Run the full suite:
+
+```bash
 npm test
 ```
 
-More detail:
-- [`README_ARCHITECTURE.md`](/home/pauloabelha/ariadex/README_ARCHITECTURE.md)
-- [`docs/overview.md`](/home/pauloabelha/ariadex/docs/overview.md)
-- [`docs/algorithm.md`](/home/pauloabelha/ariadex/docs/algorithm.md)
-- [`docs/references.md`](/home/pauloabelha/ariadex/docs/references.md)
-- [`docs/ux.md`](/home/pauloabelha/ariadex/docs/ux.md)
+Current coverage focuses on:
+
+- parent selection and root-path resolution
+- cache behavior
+- reference canonicalization
+- people aggregation
+- reply-chain construction and trimming
+- panel rendering helpers
+- report backend request shape
+- environment config sync
+
+## Documentation
+
+- [Architecture](README_ARCHITECTURE.md)
+- [Overview](docs/overview.md)
+- [Algorithm](docs/algorithm.md)
+- [Reference Handling](docs/references.md)
+- [UX Notes](docs/ux.md)
+- [Promotion Goal](goal)
+
+## Project Status
+
+AriadeX is a focused local prototype. The current version is the single root version of the repository. Older root experiments were removed from the active tree and remain available through git history.

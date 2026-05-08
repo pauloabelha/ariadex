@@ -3,6 +3,24 @@ const assert = require("node:assert/strict");
 
 const loader = require("../extension/dev_env_loader.js");
 
+test("generated config URL helpers reject invalid extension contexts", () => {
+  assert.equal(loader.isExtensionContextValid(null), false);
+  assert.equal(loader.isExtensionContextValid({ runtime: { id: "invalid" } }), false);
+  assert.equal(loader.getGeneratedConfigUrl({ runtime: { id: "invalid" } }), "");
+  assert.equal(loader.isGeneratedConfigUrlSafe("https://example.com/dev_env.generated.json"), false);
+  assert.equal(loader.isGeneratedConfigUrlSafe("chrome-extension://abc123/dev_env.generated.json"), true);
+});
+
+test("normalizeConfig drops blank and non-string values", () => {
+  assert.deepEqual(loader.normalizeConfig({
+    bearerToken: " token ",
+    apiBaseUrl: "",
+    reportBackendBaseUrl: 123
+  }), {
+    bearerToken: "token"
+  });
+});
+
 test("persistBearerToken hydrates window state, localStorage, and chrome storage", () => {
   const localValues = {};
   let chromeValues = null;
@@ -95,4 +113,25 @@ test("loadGeneratedConfig reads and persists the generated config", async () => 
     "ariadex.x_api_bearer_token": "token-abc",
     "ariadex.xApiBearerToken": "token-abc"
   });
+});
+
+test("loadGeneratedConfig quietly returns null when config cannot be loaded", async () => {
+  assert.equal(await loader.loadGeneratedConfig({
+    chromeApi: { runtime: { id: "invalid" } },
+    fetchImpl: async () => {
+      assert.fail("fetch should not run for invalid extension contexts");
+    }
+  }), null);
+
+  assert.equal(await loader.loadGeneratedConfig({
+    chromeApi: {
+      runtime: {
+        id: "abc123",
+        getURL() {
+          return "chrome-extension://abc123/dev_env.generated.json";
+        }
+      }
+    },
+    fetchImpl: async () => ({ ok: false })
+  }), null);
 });

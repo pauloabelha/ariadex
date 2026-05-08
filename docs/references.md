@@ -1,21 +1,22 @@
 # Reference Handling
 
-References are collected only from tweets on the resolved root path.
+AriadeX treats references as part of the evidence trail.
 
-## Source field
+References are collected only from tweets on the resolved root path. Reply-chain references are not promoted into the main reference list yet, because the current artifact is organized around the path itself.
 
-Ariadex currently reads:
+## Source Fields
 
-- X API `entities.urls`
-- preferring `unwound_url`
-- then `expanded_url`
-- then `url`
+AriadeX reads X API URL entities in this order:
 
-It does not yet inspect richer cards, media attachments, or free-text URL scraping beyond what the X API exposes as URL entities.
+1. `unwound_url`
+2. `expanded_url`
+3. `url`
 
-## Canonicalization rules
+It does not scrape free text, inspect media cards, or fetch destination pages.
 
-The current canonicalizer does the following:
+## Canonicalization
+
+The canonicalizer:
 
 - trims whitespace
 - rejects invalid URLs
@@ -23,33 +24,47 @@ The current canonicalizer does the following:
 - removes fragments
 - removes embedded credentials
 - strips `www.`
-- ignores internal `x.com`, `twitter.com`, and `t.co` links
-- strips most query params
-- keeps `v` for YouTube watch URLs
+- ignores `x.com`, `twitter.com`, and `t.co`
+- strips most query parameters
+- keeps `v` on YouTube watch URLs
 - normalizes `youtu.be/<id>` to `youtube.com/watch?v=<id>`
 - removes trailing slashes
 
+The goal is stable identity, not perfect archival fidelity.
+
 ## Numbering
 
-References are numbered in first-seen order across the resolved root path:
+References are numbered in first-seen order across the root path:
 
-- first unique canonical reference is `[1]`
-- next new canonical reference is `[2]`
-- repeated references reuse the existing number
+```text
+[1] first unique canonical URL
+[2] second unique canonical URL
+[3] third unique canonical URL
+```
 
-Each tweet stores the numbers it cites so the path tab can show markers like:
+Repeated references reuse the same number.
 
-- `[1]`
-- `[1] [3]`
+Each path tweet stores its own local `referenceNumbers` array, so the path view can show inline markers beside the tweet that cited them.
 
-The current export feature writes the full current artifact as JSON, so the same
-canonical reference list is preserved outside the panel together with:
+## Reference Artifact
 
-- `path`
-- `references`
-- `people`
-- `replyChains`
+Each reference entry is shaped for UI and export use:
 
-Each exported reply chain also includes its anchor metadata so downstream tools
-can tell whether the chain belongs to the `Root`, an `Ancestor X`, or the
-`Explored` tweet after reconstructing labels from `path`.
+- canonical URL
+- display URL or host
+- reference number
+- count of path tweets that cited it
+- tweet ids that cited it when available
+
+The JSON export preserves the same canonical list, making it suitable for downstream analysis or report generation.
+
+## Practical Caveats
+
+X URL entities are only as complete as the X API response. A link may be missing when:
+
+- X did not expose it in `entities.urls`
+- the tweet is inaccessible
+- the link is only visible through a card
+- the URL appears as plain text without an entity
+
+When precision matters, use the reference tab as a strong starting point, not as a legal archive.

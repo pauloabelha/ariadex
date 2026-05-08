@@ -94,7 +94,7 @@
   }
 
   async function awaitDevEnvHydration(globalObj = globalThis) {
-    const pending = globalObj?.AriadexV2DevEnvReady;
+    const pending = globalObj?.AriadexDevEnvReady;
     if (!pending || typeof pending.then !== "function") {
       return;
     }
