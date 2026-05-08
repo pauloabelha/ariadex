@@ -1,1416 +1,1578 @@
 (() => {
   "use strict";
 
-  const globalScope = typeof globalThis !== "undefined" ? globalThis : {};
+  const BUTTON_ATTR = "data-ariadex-button";
+  const PANEL_ID = "ariadex-panel";
+  const ARTICLE_SELECTOR = 'article[data-testid="tweet"]';
+  const MESSAGE_TYPE = "ARIADEX_RESOLVE_ROOT_PATH";
+  const CLEAR_CACHE_MESSAGE_TYPE = "ARIADEX_CLEAR_CACHE";
+  const GENERATE_REPORT_MESSAGE_TYPE = "ARIADEX_GENERATE_REPORT";
+  const GENERATE_GIST_MESSAGE_TYPE = "ARIADEX_GENERATE_GIST";
+  const RESOLVE_ROOT_PATH_PORT_NAME = "ARIADEX_RESOLVE_ROOT_PATH_PORT";
+  const GENERATE_REPORT_PORT_NAME = "ARIADEX_GENERATE_REPORT_PORT";
+  const GENERATE_GIST_PORT_NAME = "ARIADEX_GENERATE_GIST_PORT";
+  const DEFAULT_TAB = "path";
+  const PANEL_MARGIN = 20;
+  const X_API_BEARER_STORAGE_KEYS = [
+    "ariadex.x_api_bearer_token",
+    "ariadex.xApiBearerToken"
+  ];
 
-  const domCollectorApi = typeof module !== "undefined" && module.exports
-    ? require("./dom_collector.js")
-    : (globalScope.AriadexDataDomCollector || {});
-  const xApiClientApi = typeof module !== "undefined" && module.exports
-    ? require("./x_api_client.js")
-    : (globalScope.AriadexDataXApiClient || {});
-  const conversationEngineApi = typeof module !== "undefined" && module.exports
-    ? require("./conversation_engine.js")
-    : (globalScope.AriadexConversationEngine || {});
-  const panelRendererApi = typeof module !== "undefined" && module.exports
-    ? require("./panel_renderer.js")
-    : (globalScope.AriadexUIPanelRenderer || {});
-  const rootResolutionApi = typeof module !== "undefined" && module.exports
-    ? require("./root_resolution.js")
-    : (globalScope.AriadexRootResolution || {});
+  // Keep UI strings compact and predictable before rendering them into the panel.
+  function normalizeText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
 
-  // Compatibility exports for legacy tests/integration points.
-  const replyInferenceApi = typeof module !== "undefined" && module.exports
-    ? require("./reply_inference.js")
-    : (globalScope.AriadexReplyInference || {});
-  const conversationGraphApi = typeof module !== "undefined" && module.exports
-    ? require("./conversation_graph.js")
-    : (globalScope.AriadexConversationGraph || {});
-  const threadCollapseApi = typeof module !== "undefined" && module.exports
-    ? require("./thread_collapse.js")
-    : (globalScope.AriadexThreadCollapse || {});
-  const conversationRankApi = typeof module !== "undefined" && module.exports
-    ? require("./conversation_rank.js")
-    : (globalScope.AriadexConversationRank || {});
+  function canonicalizeHandle(value) {
+    const normalized = String(value || "").trim().replace(/^@+/, "").toLowerCase();
+    return /^[a-z0-9_]{1,15}$/.test(normalized) ? normalized : "";
+  }
 
-  const EXTENSION_ROOT_ATTR = "data-ariadex-initialized";
-  const BUTTON_CLASS = "ariadex-explore-button";
-  const BUTTON_ATTR = "data-ariadex-explore-button";
-  const BUTTON_TWEET_ID_ATTR = "data-ariadex-tweet-id";
-  const INJECTED_ATTR = "data-ariadex-injected";
-  const EXPLORE_MODE = "deep";
-  const DEFAULT_GRAPH_API_URL_BY_ENV = {
-    dev: "http://127.0.0.1:8787"
-  };
-  const buttonTweetElementByButton = new WeakMap();
+  function readLocalStorageValue(key, view = globalThis.window) {
+    try {
+      return view?.localStorage?.getItem?.(key) || "";
+    } catch {
+      return "";
+    }
+  }
 
-  const extractTweetData = typeof domCollectorApi.extractTweetData === "function"
-    ? domCollectorApi.extractTweetData
-    : () => ({ id: null, author: null, text: null, url: null, replies: null, reposts: null, likes: null, reply_to: null, quote_of: null, repost_of: null });
-  const collectConversationBundle = typeof domCollectorApi.collectConversationBundle === "function"
-    ? domCollectorApi.collectConversationBundle
-    : () => ({ tweetElements: [], tweets: [] });
-  const collectConversationTweets = typeof domCollectorApi.collectConversationTweets === "function"
-    ? domCollectorApi.collectConversationTweets
-    : () => [];
-  const findClosestTweetContainer = typeof domCollectorApi.findClosestTweetContainer === "function"
-    ? domCollectorApi.findClosestTweetContainer
-    : () => null;
-  const getTweetCandidates = typeof domCollectorApi.getTweetCandidates === "function"
-    ? domCollectorApi.getTweetCandidates
-    : () => [];
-  const locateActionBar = typeof domCollectorApi.locateActionBar === "function"
-    ? domCollectorApi.locateActionBar
-    : () => null;
-  const collectFollowedAuthorHints = typeof domCollectorApi.collectFollowedAuthorHints === "function"
-    ? domCollectorApi.collectFollowedAuthorHints
-    : () => new Set();
-  const collectViewerHandleHints = typeof domCollectorApi.collectViewerHandleHints === "function"
-    ? domCollectorApi.collectViewerHandleHints
-    : () => new Set();
+  function readXApiBearerToken(view = globalThis.window) {
+    const settingsToken = String(view?.AriadexXApiSettings?.bearerToken || "").trim();
+    if (settingsToken) {
+      return settingsToken;
+    }
 
-  const resolveConversationRoot = typeof rootResolutionApi.resolveConversationRoot === "function"
-    ? rootResolutionApi.resolveConversationRoot
-    : (tweetElement) => tweetElement;
+    const windowToken = String(view?.AriadexXApiBearerToken || "").trim();
+    if (windowToken) {
+      return windowToken;
+    }
 
-  const buildConversationDataset = typeof xApiClientApi.buildConversationDataset === "function"
-    ? xApiClientApi.buildConversationDataset
-    : null;
-  const runConversationEngine = typeof conversationEngineApi.runConversationEngine === "function"
-    ? conversationEngineApi.runConversationEngine
-    : () => ({ rootId: null, root: null, nodes: [], edges: [], ranking: [], rankingMeta: { scoreById: new Map() } });
+    for (const key of X_API_BEARER_STORAGE_KEYS) {
+      const candidate = String(readLocalStorageValue(key, view) || "").trim();
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return "";
+  }
 
-  const renderConversationPanel = typeof panelRendererApi.renderConversationPanel === "function"
-    ? panelRendererApi.renderConversationPanel
-    : null;
-  const renderTopThreads = typeof panelRendererApi.renderTopThreads === "function"
-    ? panelRendererApi.renderTopThreads
-    : () => {};
+  function readChromeStorageLocalValue(key, chromeApi = chrome) {
+    return new Promise((resolve) => {
+      const storageLocal = chromeApi?.storage?.local;
+      if (!storageLocal?.get) {
+        resolve("");
+        return;
+      }
 
-  const inferReplyStructure = typeof replyInferenceApi.inferReplyStructure === "function"
-    ? replyInferenceApi.inferReplyStructure
-    : (_elements, tweets) => tweets;
-  const indexTweetsById = typeof conversationGraphApi.indexTweetsById === "function"
-    ? conversationGraphApi.indexTweetsById
-    : () => ({});
-  const attachReplies = typeof conversationGraphApi.attachReplies === "function"
-    ? conversationGraphApi.attachReplies
-    : () => ({ tweets: [], index: {}, roots: [] });
-  const buildTypedEdges = typeof conversationGraphApi.buildTypedEdges === "function"
-    ? conversationGraphApi.buildTypedEdges
-    : () => [];
-  const buildConversationGraph = typeof conversationGraphApi.buildConversationGraph === "function"
-    ? conversationGraphApi.buildConversationGraph
-    : () => ({ rootId: null, nodes: [], edges: [], root: null, children: [] });
-  const collapseAuthorThread = typeof threadCollapseApi.collapseAuthorThread === "function"
-    ? threadCollapseApi.collapseAuthorThread
-    : (graph) => graph;
-  const rankConversationGraph = typeof conversationRankApi.rankConversationGraph === "function"
-    ? conversationRankApi.rankConversationGraph
-    : () => ({ scores: [], scoreById: new Map(), topTweetIds: [], iterations: 0, converged: true });
+      storageLocal.get([key], (result) => {
+        const runtimeError = chromeApi?.runtime?.lastError;
+        if (runtimeError) {
+          resolve("");
+          return;
+        }
 
-  function readLocalStorageValue(key) {
-    if (!key || typeof globalScope.window === "undefined" || !globalScope.window.localStorage) {
-      return null;
+        const value = result?.[key];
+        resolve(typeof value === "string" ? value : "");
+      });
+    });
+  }
+
+  async function readXApiBearerTokenWithFallbacks(chromeApi = chrome, view = globalThis.window) {
+    const directToken = readXApiBearerToken(view);
+    if (directToken) {
+      return directToken;
+    }
+
+    for (const key of X_API_BEARER_STORAGE_KEYS) {
+      const candidate = String(await readChromeStorageLocalValue(key, chromeApi) || "").trim();
+      if (candidate) {
+        return candidate;
+      }
+    }
+
+    return "";
+  }
+
+  async function awaitDevEnvHydration(globalObj = globalThis) {
+    const pending = globalObj?.AriadexV2DevEnvReady;
+    if (!pending || typeof pending.then !== "function") {
+      return;
     }
 
     try {
-      return globalScope.window.localStorage.getItem(key);
+      await pending;
     } catch {
-      return null;
+      // Optional hydration should not block manual token entry or later fallbacks.
     }
   }
 
-  function normalizeExploreMode(value) {
-    return EXPLORE_MODE;
+  function readConfiguredApiBaseUrl(view = globalThis.window) {
+    return String(view?.AriadexXApiSettings?.apiBaseUrl || "").trim();
   }
 
-  function readExploreMode() {
-    return EXPLORE_MODE;
+  // Convert a path position into the label shown to the reader.
+  function baseLabelForIndex(tweet, index, clickedId) {
+    if (index === 0) {
+      return "Root";
+    }
+    if (tweet?.id === clickedId) {
+      return "Explored";
+    }
+    return `Ancestor ${index}`;
   }
 
-  function writeExploreMode(mode) {
-    return EXPLORE_MODE;
+  // Describe how the current tweet attaches to its structural parent in the path.
+  function relationLabel(tweet, parentTweet, parentIndex, clickedId) {
+    if (!tweet || !parentTweet || !tweet.outboundRelation) {
+      return "";
+    }
+
+    const parentLabel = baseLabelForIndex(parentTweet, parentIndex, clickedId);
+    if (tweet.outboundRelation === "quote") {
+      return `quoted ${parentLabel}`;
+    }
+    if (tweet.outboundRelation === "reply") {
+      return `replied to ${parentLabel}`;
+    }
+    return `${tweet.outboundRelation} ${parentLabel}`;
   }
 
-  function parseFollowingSet(rawValue) {
-    if (!rawValue) {
-      return new Set();
-    }
-
-    if (rawValue instanceof Set) {
-      const normalized = new Set();
-      for (const value of rawValue) {
-        if (value == null) {
-          continue;
-        }
-        const parsed = String(value).trim();
-        if (parsed) {
-          normalized.add(parsed);
-        }
-      }
-      return normalized;
-    }
-
-    if (Array.isArray(rawValue)) {
-      const normalized = new Set();
-      for (const value of rawValue) {
-        if (value == null) {
-          continue;
-        }
-        const parsed = String(value).trim();
-        if (parsed) {
-          normalized.add(parsed);
-        }
-      }
-      return normalized;
-    }
-
-    if (typeof rawValue === "string") {
-      const trimmed = rawValue.trim();
-      if (!trimmed) {
-        return new Set();
-      }
-
-      try {
-        return parseFollowingSet(JSON.parse(trimmed));
-      } catch {
-        const normalized = new Set();
-        for (const part of trimmed.split(",")) {
-          const token = part.trim();
-          if (token) {
-            normalized.add(token);
-          }
-        }
-        return normalized;
-      }
-    }
-
-    return new Set();
+  // Add UI-friendly labels and titles without mutating the background artifact.
+  function buildPathEntries(path, clickedId) {
+    return (Array.isArray(path) ? path : []).map((tweet, index, list) => {
+      const parentTweet = index > 0 ? list[index - 1] : null;
+      const label = baseLabelForIndex(tweet, index, clickedId);
+      const relation = relationLabel(tweet, parentTweet, index - 1, clickedId);
+      return {
+        ...tweet,
+        label,
+        relation,
+        title: relation ? `${label} (${relation})` : label
+      };
+    });
   }
 
-  function mergeFollowingSets(...sets) {
-    const merged = new Set();
-    for (const input of sets) {
-      const parsed = parseFollowingSet(input);
-      for (const value of parsed) {
-        merged.add(value);
-      }
+  // Render inline reference markers like [1] [2] for a path tweet.
+  function buildReferenceBadgeText(referenceNumbers) {
+    const numbers = Array.isArray(referenceNumbers) ? referenceNumbers : [];
+    if (numbers.length === 0) {
+      return "";
     }
-    return merged;
+    return numbers.map((number) => `[${number}]`).join(" ");
   }
 
-  function buildExcludedTweetIds(...ids) {
-    const excluded = new Set();
-    for (const id of ids) {
-      if (id == null) {
-        continue;
-      }
-      const normalized = String(id).trim();
-      if (normalized) {
-        excluded.add(normalized);
-      }
-    }
-    return excluded;
+  function buildExportFilename(clickedId) {
+    const normalizedId = String(clickedId || "root-path").trim() || "root-path";
+    return `ariadex-${normalizedId}.json`;
   }
 
-  function buildRelationshipByIdFromTweets({ tweets, clickedTweetId, canonicalRootId, rootId }) {
-    const map = new Map();
-    const safeTweets = Array.isArray(tweets) ? tweets : [];
-    const clicked = clickedTweetId ? String(clickedTweetId) : "";
-    const canonicalRoot = canonicalRootId ? String(canonicalRootId) : "";
-    const resolvedRoot = rootId ? String(rootId) : "";
-
-    for (const tweet of safeTweets) {
-      if (!tweet?.id) {
-        continue;
-      }
-
-      const id = String(tweet.id);
-      const replyTo = tweet.reply_to ? String(tweet.reply_to) : "";
-      const quoteOf = tweet.quote_of ? String(tweet.quote_of) : "";
-
-      if (quoteOf) {
-        map.set(id, "quote");
-        continue;
-      }
-
-      if (replyTo && (replyTo === clicked || replyTo === canonicalRoot || replyTo === resolvedRoot)) {
-        map.set(id, "reply");
-        continue;
-      }
-
-      map.set(id, "cousin");
-    }
-
-    return map;
+  function buildReportFilename(clickedId) {
+    const normalizedId = String(clickedId || "root-path").trim() || "root-path";
+    return `ariadex-${normalizedId}-report.md`;
   }
 
-  function buildRelationshipByIdFromGraph({ nodes, edges, clickedTweetId, canonicalRootId, rootId }) {
-    const map = new Map();
-    const safeNodes = Array.isArray(nodes) ? nodes : [];
-    const safeEdges = Array.isArray(edges) ? edges : [];
-    const clicked = clickedTweetId ? String(clickedTweetId) : "";
-    const canonicalRoot = canonicalRootId ? String(canonicalRootId) : "";
-    const resolvedRoot = rootId ? String(rootId) : "";
-
-    const replyChildrenByParent = new Map();
-    const quoteParentByChild = new Map();
-
-    for (const edge of safeEdges) {
-      if (!edge?.source || !edge?.target) {
-        continue;
-      }
-      const source = String(edge.source);
-      const target = String(edge.target);
-      const type = String(edge.type || "").toLowerCase();
-
-      if (type === "reply") {
-        if (!replyChildrenByParent.has(target)) {
-          replyChildrenByParent.set(target, []);
-        }
-        replyChildrenByParent.get(target).push(source);
-      } else if (type === "quote") {
-        quoteParentByChild.set(source, target);
-      }
-    }
-
-    const replyBranchFromClicked = new Set();
-    if (clicked) {
-      const queue = [clicked];
-      let head = 0;
-      while (head < queue.length) {
-        const current = queue[head];
-        head += 1;
-        const children = replyChildrenByParent.get(current) || [];
-        for (const child of children) {
-          if (replyBranchFromClicked.has(child)) {
-            continue;
-          }
-          replyBranchFromClicked.add(child);
-          queue.push(child);
-        }
-      }
-    }
-
-    for (const tweet of safeNodes) {
-      if (!tweet?.id) {
-        continue;
-      }
-      const id = String(tweet.id);
-
-      const quoteParent = quoteParentByChild.get(id) || (tweet.quote_of ? String(tweet.quote_of) : "");
-      if (quoteParent) {
-        map.set(id, "quote");
-        continue;
-      }
-
-      const replyParent = tweet.reply_to ? String(tweet.reply_to) : "";
-      if (
-        replyBranchFromClicked.has(id)
-        || (replyParent && (replyParent === clicked || replyParent === canonicalRoot || replyParent === resolvedRoot))
-      ) {
-        map.set(id, "reply");
-        continue;
-      }
-
-      map.set(id, "cousin");
-    }
-
-    return map;
+  function buildGistFilename(clickedId) {
+    const normalizedId = String(clickedId || "root-path").trim() || "root-path";
+    return `ariadex-${normalizedId}-gist.md`;
   }
 
-  function readXApiRuntimeConfig() {
-    const isTestRuntime = typeof module !== "undefined" && module.exports;
-    const settings = typeof globalScope.window !== "undefined" && globalScope.window.AriadexXApiSettings && typeof globalScope.window.AriadexXApiSettings === "object"
-      ? globalScope.window.AriadexXApiSettings
-      : {};
+  function triggerJsonDownload(payload, filename, root = document) {
+    const view = root?.defaultView;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const objectUrl = view?.URL?.createObjectURL?.(blob);
+    if (!objectUrl) {
+      throw new Error("download_unavailable");
+    }
 
-    const tokenCandidates = [
-      { source: "settings.bearerToken", value: settings.bearerToken },
-      { source: "window.AriadexXApiBearerToken", value: typeof globalScope.window !== "undefined" ? globalScope.window.AriadexXApiBearerToken : null },
-      { source: "localStorage.ariadex.x_api_bearer_token", value: readLocalStorageValue("ariadex.x_api_bearer_token") },
-      { source: "localStorage.ariadex.xApiBearerToken", value: readLocalStorageValue("ariadex.xApiBearerToken") }
-    ];
+    const link = root.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    link.style.display = "none";
+    root.body.appendChild(link);
+    link.click();
+    link.remove();
+    view.URL.revokeObjectURL(objectUrl);
+  }
 
-    const selectedToken = tokenCandidates.find((candidate) => typeof candidate.value === "string" && candidate.value.trim().length > 0) || null;
-    const bearerToken = selectedToken ? selectedToken.value : null;
-    const tokenSource = selectedToken ? selectedToken.source : null;
-    const apiBaseUrl = typeof settings.apiBaseUrl === "string" && settings.apiBaseUrl.trim().length > 0
-      ? settings.apiBaseUrl.trim()
-      : null;
-    const runtimeEnv = typeof settings.environment === "string" && settings.environment.trim().length > 0
-      ? settings.environment.trim().toLowerCase()
-      : (readLocalStorageValue("ariadex.runtime_env") || "").trim().toLowerCase() || "dev";
-    const branchName = typeof settings.branchName === "string" && settings.branchName.trim().length > 0
-      ? settings.branchName.trim()
-      : (readLocalStorageValue("ariadex.branch_name") || "").trim() || null;
-    const graphApiByEnv = settings.graphApiByEnv && typeof settings.graphApiByEnv === "object"
-      ? settings.graphApiByEnv
-      : (() => {
-        const raw = readLocalStorageValue("ariadex.graph_api_by_env");
-        if (!raw) {
-          return null;
-        }
-        try {
-          const parsed = JSON.parse(raw);
-          return parsed && typeof parsed === "object" ? parsed : null;
-        } catch {
-          return null;
-        }
-      })();
-    const graphApiFromEnvMap = graphApiByEnv && typeof graphApiByEnv[runtimeEnv] === "string"
-      ? graphApiByEnv[runtimeEnv].trim()
-      : "";
-    const graphApiFromLocalStorage = (readLocalStorageValue("ariadex.graph_api_url") || "").trim();
-    const graphApiDefault = typeof DEFAULT_GRAPH_API_URL_BY_ENV[runtimeEnv] === "string"
-      ? DEFAULT_GRAPH_API_URL_BY_ENV[runtimeEnv]
-      : "";
-    const graphApiUrl = typeof settings.graphApiUrl === "string" && settings.graphApiUrl.trim().length > 0
-      ? settings.graphApiUrl.trim()
-      : (graphApiFromEnvMap || graphApiFromLocalStorage || graphApiDefault || null);
+  function triggerTextDownload(text, filename, root = document) {
+    const view = root?.defaultView;
+    const blob = new Blob([String(text || "")], { type: "text/markdown;charset=utf-8" });
+    const objectUrl = view?.URL?.createObjectURL?.(blob);
+    if (!objectUrl) {
+      throw new Error("download_unavailable");
+    }
 
-    const followingSource = settings.followingSet
-      || settings.followingIds
-      || (typeof globalScope.window !== "undefined" ? globalScope.window.AriadexFollowingSet : null)
-      || readLocalStorageValue("ariadex.following_ids")
-      || readLocalStorageValue("ariadex.x_api_following_ids");
-    const allowClientDirectApi = typeof settings.allowClientDirectApi === "boolean"
-      ? settings.allowClientDirectApi
-      : ((readLocalStorageValue("ariadex.allow_client_direct_api") || "").trim().toLowerCase() === "true");
+    const link = root.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    link.style.display = "none";
+    root.body.appendChild(link);
+    link.click();
+    link.remove();
+    view.URL.revokeObjectURL(objectUrl);
+  }
 
+  async function copyTextToClipboard(text, root = document) {
+    const value = String(text || "");
+    const view = root?.defaultView || globalThis;
+    const clipboard = view?.navigator?.clipboard;
+    if (!clipboard?.writeText) {
+      throw new Error("clipboard_unavailable");
+    }
+    await clipboard.writeText(value);
+  }
+
+  function setAccessibleLabel(element, label) {
+    if (!element) {
+      return;
+    }
+    element.title = label;
+    try {
+      element.setAttribute("aria-label", label);
+    } catch {
+      element.ariaLabel = label;
+    }
+  }
+
+  function createCopyIcon(root = document) {
+    const icon = root.createElement("span");
+    icon.className = "ariadex-copy-icon";
+
+    const backSquare = root.createElement("span");
+    backSquare.className = "ariadex-copy-icon-back";
+
+    const frontSquare = root.createElement("span");
+    frontSquare.className = "ariadex-copy-icon-front";
+
+    icon.appendChild(backSquare);
+    icon.appendChild(frontSquare);
+    return icon;
+  }
+
+  // Turn low-level resolver progress into short UX copy that keeps moving.
+  function formatProgressMessage(progress) {
+    const phase = String(progress?.phase || "").trim();
+    const ancestorCount = Number(progress?.ancestorCount || 0);
+    const tweetCount = Number(progress?.tweetCount || 0);
+    const referenceCount = Number(progress?.referenceCount || 0);
+    const nextRelationType = String(progress?.nextRelationType || "").trim();
+
+    if (phase === "start") {
+      return "Tracing the root path from the explored tweet...";
+    }
+
+    if (phase === "path_walk") {
+      if (ancestorCount <= 0) {
+        return nextRelationType
+          ? `Found the explored tweet. Following its ${nextRelationType} parent...`
+          : "Found the explored tweet. Checking whether it has a parent...";
+      }
+
+      if (nextRelationType) {
+        return `Tracing the root path... ${ancestorCount} ancestor${ancestorCount === 1 ? "" : "s"} found so far. Next hop is a ${nextRelationType}.`;
+      }
+
+      return `Tracing the root path... ${ancestorCount} ancestor${ancestorCount === 1 ? "" : "s"} found so far.`;
+    }
+
+    if (phase === "canonicalizing_refs") {
+      return `Root path complete. Canonicalizing references across ${tweetCount} tweet${tweetCount === 1 ? "" : "s"}...`;
+    }
+
+    if (phase === "collecting_local_reply_chains") {
+      return "Root path complete. Fetching replies to the explored tweet from the X API...";
+    }
+
+    if (phase === "done") {
+      return `Done. Resolved ${tweetCount} path tweet${tweetCount === 1 ? "" : "s"} and ${referenceCount} reference${referenceCount === 1 ? "" : "s"}.`;
+    }
+
+    return "Tracing the root path...";
+  }
+
+  function formatLookupErrorMessage(error) {
+    const rawMessage = normalizeText(error?.message || error || "");
+    if (!rawMessage) {
+      return "Path lookup failed.";
+    }
+
+    const normalized = rawMessage.toLowerCase();
+    if (
+      normalized.includes("missing_x_api_bearer_token")
+      || normalized.includes("missing x_api_token")
+      || normalized.includes("missing x api token")
+      || normalized.includes("missing bearer token")
+    ) {
+      return "Path lookup failed: missing X API bearer token. Set `ariadex.x_api_bearer_token` in page localStorage or chrome.storage.local, then reload X.";
+    }
+
+    if (normalized.includes("tweet_fetch_failed_401") || normalized.includes("tweet_fetch_failed_403")) {
+      return "Path lookup failed: X rejected the bearer token. Check that the token is valid and has access to the requested API endpoints.";
+    }
+
+    if (
+      normalized.includes("extension context invalidated")
+      || normalized.includes("receiving end does not exist")
+      || normalized.includes("message port closed before a response was received")
+      || normalized.includes("root_path_port_disconnected")
+    ) {
+      return "Path lookup failed: the extension background worker was unavailable. Reload the unpacked extension in chrome://extensions, refresh X, and try again.";
+    }
+
+    return `Path lookup failed: ${rawMessage}`;
+  }
+
+  function formatReportErrorMessage(error) {
+    const rawMessage = normalizeText(error?.message || error || "");
+    if (!rawMessage) {
+      return "Generation failed.";
+    }
+
+    const normalized = rawMessage.toLowerCase();
+    if (
+      normalized.includes("report_generation_failed_401")
+      || normalized.includes("report_generation_failed_403")
+    ) {
+      return "Generation failed: the configured model API rejected the request. Check the API key, model, and endpoint.";
+    }
+    if (normalized.includes("report_generation_failed_429")) {
+      return "Generation failed: the configured model API rate-limited the request. Check quota, billing, or retry later.";
+    }
+    if (
+      normalized.includes("failed to fetch")
+      || normalized.includes("networkerror")
+      || normalized.includes("report_generation_failed_404")
+      || normalized.includes("report_generation_failed_500")
+      || normalized.includes("report_generation_failed_502")
+      || normalized.includes("report_generation_failed_503")
+      || normalized.includes("report_generation_failed_504")
+    ) {
+      return "Generation failed: the AriadeX report backend is unavailable. Start or reload the backend, then check local network access.";
+    }
+    if (normalized.includes("missing_openai_api_key")) {
+      return "Generation failed: the backend is missing OPENAI_API_KEY.";
+    }
+    if (normalized.includes("empty_report_response")) {
+      return "Generation failed: the model returned an empty response.";
+    }
+
+    return `Generation failed: ${rawMessage}`;
+  }
+
+  function formatReportProgressMessage(progress) {
+    const phase = String(progress?.phase || "").trim();
+    if (phase === "loading_report_config") {
+      return "Generating report... preparing request.";
+    }
+    if (phase === "calling_report_backend") {
+      return "Generating report... packaging conversation context.";
+    }
+    if (phase === "awaiting_llm_response") {
+      return "Generating report... waiting for OpenAI.";
+    }
+    if (phase === "report_ready") {
+      const model = normalizeText(progress?.model || "");
+      return model
+        ? `Report ready. Generated with ${model}.`
+        : "Report ready.";
+    }
+    return "Generating report...";
+  }
+
+  function formatGistProgressMessage(progress) {
+    const phase = String(progress?.phase || "").trim();
+    if (phase === "loading_report_config") {
+      return "Generating gist... preparing request.";
+    }
+    if (phase === "calling_gist_backend") {
+      return "Generating gist... distilling the thread.";
+    }
+    if (phase === "awaiting_llm_response") {
+      return "Generating gist... waiting for OpenAI.";
+    }
+    if (phase === "gist_ready") {
+      const model = normalizeText(progress?.model || "");
+      return model
+        ? `Gist ready. Generated with ${model}.`
+        : "Gist ready.";
+    }
+    return "Generating gist...";
+  }
+
+  // Discover tweet cards so we can attach the button to whatever X has rendered.
+  function findTweetArticles(root = document) {
+    return [...root.querySelectorAll(ARTICLE_SELECTOR)];
+  }
+
+  // Resolve the containing tweet card even if the click lands on a nested child element.
+  function findClosestTweetArticle(node) {
+    return node?.closest?.(ARTICLE_SELECTOR) || null;
+  }
+
+  // Pull the tweet id from the tweet's status link in the DOM.
+  function extractTweetId(article) {
+    const statusLink = article?.querySelector?.('a[href*="/status/"]');
+    if (!statusLink) {
+      return "";
+    }
+    const href = statusLink.getAttribute("href") || "";
+    const match = href.match(/\/status\/(\d+)/);
+    return match ? match[1] : "";
+  }
+
+  // Create the floating panel once and reuse it across repeated explore clicks.
+  function ensurePanel(root = document) {
+    let panel = root.getElementById(PANEL_ID);
+    if (panel) {
+      return panel;
+    }
+
+    panel = root.createElement("aside");
+    panel.id = PANEL_ID;
+    panel.className = "ariadex-panel";
+    panel.__ariadexV2State = {
+      activeTab: DEFAULT_TAB,
+      position: null,
+      latestArtifact: null,
+      latestClickedId: "",
+      latestReport: null,
+      latestGist: null
+    };
+    root.body.appendChild(panel);
+    return panel;
+  }
+
+  function getViewportBounds(root = document) {
+    const view = root?.defaultView || globalThis;
     return {
-      bearerToken: bearerToken ? bearerToken.trim() : null,
-      tokenSource,
-      apiBaseUrl,
-      graphApiUrl,
-      runtimeEnv,
-      branchName,
-      graphApiByEnv,
-      allowClientDirectApi: isTestRuntime ? true : allowClientDirectApi,
-      followingSet: parseFollowingSet(followingSource),
-      tokenDiagnostics: tokenCandidates.map((candidate) => ({
-        source: candidate.source,
-        present: typeof candidate.value === "string" && candidate.value.trim().length > 0
-      }))
+      width: Number(view?.innerWidth || 0),
+      height: Number(view?.innerHeight || 0)
     };
   }
 
-  async function hydrateRuntimeConfigFromGeneratedConfig(runtimeConfig) {
-    // Do not fetch extension resources during click handling.
-    // This avoids noisy chrome-extension://invalid fetch failures in stale contexts.
-    return runtimeConfig;
+  function getPanelSize(panel) {
+    const rect = panel?.getBoundingClientRect?.();
+    const width = Number(rect?.width || panel?.offsetWidth || 420);
+    const height = Number(rect?.height || panel?.offsetHeight || 320);
+    return { width, height };
   }
 
-  function normalizeApiBaseUrl(url) {
-    if (!url || typeof url !== "string") {
-      return null;
-    }
+  function clampPanelPosition(position, panel, root = document) {
+    const nextLeft = Number(position?.left || 0);
+    const nextTop = Number(position?.top || 0);
+    const { width: viewportWidth, height: viewportHeight } = getViewportBounds(root);
+    const { width: panelWidth, height: panelHeight } = getPanelSize(panel);
+    const maxLeft = Math.max(PANEL_MARGIN, viewportWidth - panelWidth - PANEL_MARGIN);
+    const maxTop = Math.max(PANEL_MARGIN, viewportHeight - panelHeight - PANEL_MARGIN);
 
-    const trimmed = url.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+    return {
+      left: Math.min(Math.max(PANEL_MARGIN, nextLeft), maxLeft),
+      top: Math.min(Math.max(PANEL_MARGIN, nextTop), maxTop)
+    };
   }
 
-  function resolveScoreByIdFromSnapshot(snapshot) {
-    const meta = snapshot?.rankingMeta && typeof snapshot.rankingMeta === "object"
-      ? snapshot.rankingMeta
-      : {};
-
-    if (meta.scoreById instanceof Map) {
-      return meta.scoreById;
+  function applyPanelPosition(panel, position, root = document) {
+    if (!panel || !position) {
+      return;
     }
 
-    if (meta.scoreByIdObject && typeof meta.scoreByIdObject === "object") {
-      const keys = Object.keys(meta.scoreByIdObject);
-      if (keys.length > 0) {
-        return meta.scoreByIdObject;
+    const clamped = clampPanelPosition(position, panel, root);
+    panel.style.left = `${clamped.left}px`;
+    panel.style.top = `${clamped.top}px`;
+    panel.style.right = "auto";
+  }
+
+  function makePanelMovable(panel, handle, root = document) {
+    if (!panel || !handle) {
+      return;
+    }
+
+    if (typeof panel.__ariadexV2DragCleanup === "function") {
+      panel.__ariadexV2DragCleanup();
+    }
+
+    const view = root?.defaultView;
+    if (!view?.addEventListener || !view?.removeEventListener) {
+      return;
+    }
+
+    const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+      ? panel.__ariadexV2State
+      : { activeTab: DEFAULT_TAB, position: null, latestArtifact: null, latestClickedId: "" };
+    panel.__ariadexV2State = state;
+
+    function onMouseDown(event) {
+      if (event.button !== 0) {
+        return;
       }
-    }
-
-    if (meta.scoreById && typeof meta.scoreById === "object") {
-      const keys = Object.keys(meta.scoreById);
-      if (keys.length > 0) {
-        return meta.scoreById;
+      if (event.target?.closest?.("button, a, input, textarea, select")) {
+        return;
       }
-    }
 
-    const fromRanking = {};
-    const ranking = Array.isArray(snapshot?.ranking) ? snapshot.ranking : [];
-    for (const entry of ranking) {
-      const id = entry?.id;
-      const score = Number(entry?.score);
-      if (!id || !Number.isFinite(score)) {
-        continue;
+      const rect = panel.getBoundingClientRect();
+      const dragOffsetX = Number(event.clientX) - Number(rect.left || 0);
+      const dragOffsetY = Number(event.clientY) - Number(rect.top || 0);
+
+      function onMouseMove(moveEvent) {
+        const nextPosition = clampPanelPosition({
+          left: Number(moveEvent.clientX) - dragOffsetX,
+          top: Number(moveEvent.clientY) - dragOffsetY
+        }, panel, root);
+        state.position = nextPosition;
+        applyPanelPosition(panel, nextPosition, root);
       }
-      fromRanking[id] = score;
+
+      function onMouseUp() {
+        view.removeEventListener("mousemove", onMouseMove);
+        view.removeEventListener("mouseup", onMouseUp);
+        handle.classList.remove("ariadex-panel-header-dragging");
+      }
+
+      handle.classList.add("ariadex-panel-header-dragging");
+      view.addEventListener("mousemove", onMouseMove);
+      view.addEventListener("mouseup", onMouseUp);
+      event.preventDefault();
     }
 
-    return fromRanking;
+    handle.classList.add("ariadex-panel-header-draggable");
+    handle.addEventListener("mousedown", onMouseDown);
+    panel.__ariadexV2DragCleanup = () => {
+      handle.removeEventListener("mousedown", onMouseDown);
+    };
   }
 
-  function canUseExtensionMessageBridge() {
-    return Boolean(
-      typeof chrome !== "undefined"
-      && chrome.runtime
-      && chrome.runtime.id
-      && chrome.runtime.id !== "invalid"
-      && typeof chrome.runtime.sendMessage === "function"
-    );
-  }
+  // Shared header renderer for loading, error, and resolved artifact states.
+  function renderHeader(panel, root, metaText) {
+    const header = root.createElement("div");
+    header.className = "ariadex-panel-header";
 
-  function sendGraphApiRequestViaExtension(request) {
-    if (!canUseExtensionMessageBridge()) {
-      return Promise.resolve(null);
-    }
+    const title = root.createElement("div");
+    title.className = "ariadex-title";
+    title.textContent = "AriadeX · Root Path";
 
-    return new Promise((resolve, reject) => {
+    const meta = root.createElement("div");
+    meta.className = "ariadex-meta";
+    meta.textContent = normalizeText(metaText || "Tracing root path...");
+
+    const actions = root.createElement("div");
+    actions.className = "ariadex-header-actions";
+
+    const exportButton = root.createElement("button");
+    exportButton.type = "button";
+    exportButton.className = "ariadex-header-button";
+    exportButton.textContent = "Export";
+    exportButton.addEventListener("click", () => {
+      const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+        ? panel.__ariadexV2State
+        : null;
+      const latestArtifact = state?.latestArtifact;
+      if (!latestArtifact) {
+        meta.textContent = "Nothing to export yet.";
+        return;
+      }
+
       try {
-        chrome.runtime.sendMessage(request, (response) => {
-          const runtimeError = chrome.runtime?.lastError;
+        triggerJsonDownload({
+          clickedTweetId: state?.latestClickedId || "",
+          exportedAt: new Date().toISOString(),
+          artifact: latestArtifact
+        }, buildExportFilename(state?.latestClickedId || ""), root);
+        meta.textContent = "Exported JSON snapshot.";
+      } catch (error) {
+        meta.textContent = `Export failed: ${error.message}`;
+      }
+    });
+    actions.appendChild(exportButton);
+
+    const reportButton = root.createElement("button");
+    reportButton.type = "button";
+    reportButton.className = "ariadex-header-button";
+    reportButton.textContent = "Generate Report";
+    reportButton.addEventListener("click", async () => {
+      const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+        ? panel.__ariadexV2State
+        : null;
+      const latestArtifact = state?.latestArtifact;
+      if (!latestArtifact) {
+        meta.textContent = "Nothing to turn into a report yet.";
+        return;
+      }
+
+      meta.textContent = formatReportProgressMessage({ phase: "loading_report_config" });
+      try {
+        const report = await generateReportArtifact(
+          latestArtifact,
+          root.defaultView?.chrome || chrome,
+          (progress) => {
+            meta.textContent = formatReportProgressMessage(progress);
+          }
+        );
+        const nextState = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+          ? panel.__ariadexV2State
+          : {};
+        nextState.latestReport = {
+          text: String(report?.text || "").trim(),
+          model: String(report?.model || "").trim(),
+          apiBaseUrl: String(report?.apiBaseUrl || "").trim(),
+          generatedAt: new Date().toISOString()
+        };
+        nextState.activeTab = "report";
+        panel.__ariadexV2State = nextState;
+        renderArtifact(nextState.latestArtifact || latestArtifact, nextState.latestClickedId || "", root);
+      } catch (error) {
+        meta.textContent = formatReportErrorMessage(error);
+      }
+    });
+    actions.appendChild(reportButton);
+
+    const gistButton = root.createElement("button");
+    gistButton.type = "button";
+    gistButton.className = "ariadex-header-button";
+    gistButton.textContent = "Generate Gist";
+    gistButton.addEventListener("click", async () => {
+      const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+        ? panel.__ariadexV2State
+        : null;
+      const latestArtifact = state?.latestArtifact;
+      if (!latestArtifact) {
+        meta.textContent = "Nothing to turn into a gist yet.";
+        return;
+      }
+
+      meta.textContent = formatGistProgressMessage({ phase: "loading_report_config" });
+      try {
+        const gist = await generateGistArtifact(
+          latestArtifact,
+          root.defaultView?.chrome || chrome,
+          (progress) => {
+            meta.textContent = formatGistProgressMessage(progress);
+          }
+        );
+        const nextState = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+          ? panel.__ariadexV2State
+          : {};
+        nextState.latestGist = {
+          text: String(gist?.text || "").trim(),
+          model: String(gist?.model || "").trim(),
+          apiBaseUrl: String(gist?.apiBaseUrl || "").trim(),
+          generatedAt: new Date().toISOString()
+        };
+        nextState.activeTab = "gist";
+        panel.__ariadexV2State = nextState;
+        renderArtifact(nextState.latestArtifact || latestArtifact, nextState.latestClickedId || "", root);
+      } catch (error) {
+        meta.textContent = formatReportErrorMessage(error);
+      }
+    });
+    actions.appendChild(gistButton);
+
+    const clearButton = root.createElement("button");
+    clearButton.type = "button";
+    clearButton.className = "ariadex-header-button";
+    clearButton.textContent = "Clear Cache";
+    clearButton.addEventListener("click", async () => {
+      meta.textContent = "Clearing cache...";
+      try {
+        await clearTweetCache(root.defaultView?.chrome || chrome);
+        meta.textContent = "Cache cleared.";
+      } catch (error) {
+        meta.textContent = `Cache clear failed: ${error.message}`;
+      }
+    });
+    actions.appendChild(clearButton);
+
+    header.appendChild(title);
+    header.appendChild(meta);
+    header.appendChild(actions);
+    panel.appendChild(header);
+    makePanelMovable(panel, header, root);
+
+    const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+      ? panel.__ariadexV2State
+      : null;
+    if (state?.position) {
+      applyPanelPosition(panel, state.position, root);
+    }
+  }
+
+  // Minimal single-message view used while loading or when resolution fails.
+  function renderStatus(message, root = document) {
+    const panel = ensurePanel(root);
+    panel.innerHTML = "";
+    renderHeader(panel, root, message);
+  }
+
+  // Build the path tab with relation labels, tweet text, and inline reference markers.
+  function renderPathTab(path, clickedId, root) {
+    const list = root.createElement("ol");
+    list.className = "ariadex-list";
+
+    for (const entry of buildPathEntries(path, clickedId)) {
+      const item = root.createElement("li");
+      item.className = "ariadex-item";
+
+      const role = root.createElement("div");
+      role.className = "ariadex-item-role";
+      role.textContent = entry.title;
+
+      const author = root.createElement("div");
+      author.className = "ariadex-item-author";
+      author.textContent = `@${String(entry.author || "unknown").replace(/^@/, "")}`;
+
+      const text = root.createElement("div");
+      text.className = "ariadex-item-text";
+      text.textContent = entry.text || "(no text)";
+
+      const badgeText = buildReferenceBadgeText(entry.referenceNumbers);
+      if (badgeText) {
+        const refs = root.createElement("div");
+        refs.className = "ariadex-item-refs";
+        refs.textContent = badgeText;
+        item.appendChild(role);
+        item.appendChild(author);
+        item.appendChild(text);
+        item.appendChild(refs);
+      } else {
+        item.appendChild(role);
+        item.appendChild(author);
+        item.appendChild(text);
+      }
+
+      const id = root.createElement("div");
+      id.className = "ariadex-item-id";
+      id.textContent = entry.id;
+
+      item.appendChild(id);
+
+      item.addEventListener("click", () => {
+        if (entry.url) {
+          root.defaultView.location.href = entry.url;
+        }
+      });
+
+      list.appendChild(item);
+    }
+
+    return list;
+  }
+
+  // Build the deduped references tab from the canonical reference list.
+  function renderReferencesTab(references, root) {
+    if (!Array.isArray(references) || references.length === 0) {
+      const empty = root.createElement("div");
+      empty.className = "ariadex-empty";
+      empty.textContent = "No external references found on this path or its reply chains.";
+      return empty;
+    }
+
+    const list = root.createElement("ol");
+    list.className = "ariadex-list";
+
+    for (const reference of references) {
+      const item = root.createElement("li");
+      item.className = "ariadex-item";
+
+      const role = root.createElement("div");
+      role.className = "ariadex-item-role";
+      role.textContent = `Reference [${reference.number}]`;
+
+      const url = root.createElement("div");
+      url.className = "ariadex-item-text";
+      url.textContent = reference.canonicalUrl;
+
+      const meta = root.createElement("div");
+      meta.className = "ariadex-item-id";
+      meta.textContent = `${reference.domain} · cited by ${reference.citedByTweetIds.length} tweet${reference.citedByTweetIds.length === 1 ? "" : "s"}`;
+
+      item.appendChild(role);
+      item.appendChild(url);
+      item.appendChild(meta);
+
+      item.addEventListener("click", () => {
+        root.defaultView.open(reference.canonicalUrl, "_blank", "noopener,noreferrer");
+      });
+
+      list.appendChild(item);
+    }
+
+    return list;
+  }
+
+  // Build the deduped people tab from canonical root-path participants and mentions.
+  function renderPeopleTab(people, root) {
+    if (!Array.isArray(people) || people.length === 0) {
+      const empty = root.createElement("div");
+      empty.className = "ariadex-empty";
+      empty.textContent = "No people were collected on this root path.";
+      return empty;
+    }
+
+    const list = root.createElement("ol");
+    list.className = "ariadex-list";
+
+    for (const person of people) {
+      const item = root.createElement("li");
+      item.className = "ariadex-item";
+
+      if (person.avatarUrl) {
+        const avatar = root.createElement("img");
+        avatar.className = "ariadex-person-avatar";
+        avatar.src = person.avatarUrl;
+        avatar.alt = person.displayName
+          ? `${person.displayName} profile picture`
+          : `@${String(person.handle || "").replace(/^@/, "")} profile picture`;
+        avatar.loading = "lazy";
+        item.appendChild(avatar);
+      }
+
+      const role = root.createElement("div");
+      role.className = "ariadex-item-role";
+      role.textContent = `@${String(person.handle || "").replace(/^@/, "")}`;
+
+      const displayName = root.createElement("div");
+      displayName.className = "ariadex-item-author";
+      displayName.textContent = person.displayName || "(no display name)";
+
+      const profile = root.createElement("div");
+      profile.className = "ariadex-item-text";
+      profile.textContent = person.profileUrl || "";
+
+      const sourceTypes = Array.isArray(person.sourceTypes) ? person.sourceTypes : [];
+      const citedByTweetIds = Array.isArray(person.citedByTweetIds) ? person.citedByTweetIds : [];
+      const meta = root.createElement("div");
+      meta.className = "ariadex-item-id";
+      meta.textContent = `${sourceTypes.join(", ") || "person"} · seen in ${citedByTweetIds.length} path tweet${citedByTweetIds.length === 1 ? "" : "s"}`;
+
+      item.appendChild(role);
+      item.appendChild(displayName);
+      item.appendChild(profile);
+      item.appendChild(meta);
+
+      item.addEventListener("click", () => {
+        if (person.profileUrl) {
+          root.defaultView.open(person.profileUrl, "_blank", "noopener,noreferrer");
+        }
+      });
+
+      list.appendChild(item);
+    }
+
+    return list;
+  }
+
+  function renderReplyChainsTab(replyChains, path, clickedId, root) {
+    if (!Array.isArray(replyChains) || replyChains.length === 0) {
+      const empty = root.createElement("div");
+      empty.className = "ariadex-empty";
+      empty.textContent = "No replies to the explored tweet were found.";
+      return empty;
+    }
+
+    const pathEntries = buildPathEntries(path, clickedId);
+    const labelById = new Map(pathEntries.map((tweet) => [tweet.id, tweet.label]));
+    const list = root.createElement("ol");
+    list.className = "ariadex-list";
+
+    for (const chain of replyChains) {
+      const item = root.createElement("li");
+      item.className = "ariadex-item";
+
+      const header = root.createElement("div");
+      header.className = "ariadex-item-role";
+      const anchorLabel = labelById.get(String(chain.anchorTweetId || "")) || "Path Tweet";
+      header.textContent = `${anchorLabel} Reply Chain · ${Array.isArray(chain.tweets) ? chain.tweets.length : 0} tweet${Array.isArray(chain.tweets) && chain.tweets.length === 1 ? "" : "s"}`;
+
+      const participants = root.createElement("div");
+      participants.className = "ariadex-item-author";
+      const anchorHandle = String(chain.anchorAuthor || "").replace(/^@/, "");
+      const participantText = (Array.isArray(chain.participantHandles) ? chain.participantHandles : [])
+        .map((handle) => `@${String(handle || "").replace(/^@/, "")}`)
+        .join(" · ");
+      participants.textContent = anchorHandle
+        ? `Reply to @${anchorHandle} · ${participantText}`
+        : participantText;
+
+      const meta = root.createElement("div");
+      meta.className = "ariadex-item-id";
+      meta.textContent = (Array.isArray(chain.tweets) ? chain.tweets : [])
+        .map((tweet) => tweet.id)
+        .join(", ");
+
+      const tweetList = root.createElement("ol");
+      tweetList.className = "ariadex-list";
+
+      for (const tweet of Array.isArray(chain.tweets) ? chain.tweets : []) {
+        const tweetItem = root.createElement("li");
+        tweetItem.className = "ariadex-item";
+
+        const tweetRole = root.createElement("div");
+        tweetRole.className = "ariadex-item-role";
+        tweetRole.textContent = "Reply Tweet";
+
+        const tweetAuthor = root.createElement("div");
+        tweetAuthor.className = "ariadex-item-author";
+        tweetAuthor.textContent = `@${String(tweet.author || "").replace(/^@/, "")}`;
+
+        const tweetText = root.createElement("div");
+        tweetText.className = "ariadex-item-text";
+        tweetText.textContent = String(tweet.text || "(no text)");
+
+        const tweetMeta = root.createElement("div");
+        tweetMeta.className = "ariadex-item-id";
+        tweetMeta.textContent = String(tweet.id || "");
+
+        tweetItem.appendChild(tweetRole);
+        tweetItem.appendChild(tweetAuthor);
+        tweetItem.appendChild(tweetText);
+        tweetItem.appendChild(tweetMeta);
+
+        tweetItem.addEventListener("click", () => {
+          if (tweet.url) {
+            root.defaultView.location.href = tweet.url;
+          }
+        });
+
+        tweetList.appendChild(tweetItem);
+      }
+
+      item.appendChild(header);
+      item.appendChild(participants);
+      item.appendChild(meta);
+      item.appendChild(tweetList);
+
+      list.appendChild(item);
+    }
+
+    return list;
+  }
+
+  function renderGeneratedTextTab(entry, options = {}, root = document) {
+    if (!entry?.text) {
+      const empty = root.createElement("div");
+      empty.className = "ariadex-empty";
+      empty.textContent = String(options?.emptyText || "Nothing has been generated yet.");
+      return empty;
+    }
+
+    const container = root.createElement("div");
+    container.className = "ariadex-list";
+
+    const item = root.createElement("article");
+    item.className = "ariadex-item";
+
+    const topRow = root.createElement("div");
+    topRow.className = "ariadex-report-top";
+
+    const header = root.createElement("div");
+    header.className = "ariadex-item-role";
+    header.textContent = String(options?.headerText || "Generated Text");
+
+    const meta = root.createElement("div");
+    meta.className = "ariadex-item-id";
+    const generatedAt = normalizeText(entry?.generatedAt || "");
+    const reportMeta = [
+      generatedAt ? `Generated ${generatedAt}` : "",
+      entry?.model ? `model ${entry.model}` : ""
+    ].filter(Boolean).join(" · ");
+    meta.textContent = reportMeta;
+
+    const body = root.createElement("div");
+    body.className = "ariadex-item-text";
+    body.style.whiteSpace = "pre-wrap";
+    body.textContent = String(entry?.text || "");
+
+    const actions = root.createElement("div");
+    actions.className = "ariadex-report-actions";
+
+    const copyButton = root.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "ariadex-header-button ariadex-report-icon-button";
+    setAccessibleLabel(copyButton, String(options?.copyLabel || "Copy Markdown"));
+
+    const copyIcon = createCopyIcon(root);
+    const copyLabel = root.createElement("span");
+    copyLabel.textContent = "Copy";
+    copyButton.appendChild(copyIcon);
+    copyButton.appendChild(copyLabel);
+    copyButton.addEventListener("click", async () => {
+      try {
+        await copyTextToClipboard(String(entry?.text || ""), root);
+        copyLabel.textContent = "Copied";
+      } catch {
+        copyLabel.textContent = "Copy Failed";
+      }
+      const timerHost = root?.defaultView || globalThis;
+      timerHost.setTimeout(() => {
+        copyLabel.textContent = "Copy";
+      }, 1200);
+    });
+
+    const downloadButton = root.createElement("button");
+    downloadButton.type = "button";
+    downloadButton.className = "ariadex-header-button";
+    downloadButton.textContent = "Download";
+    setAccessibleLabel(downloadButton, String(options?.downloadLabel || "Download Markdown"));
+    downloadButton.addEventListener("click", () => {
+      const panel = root.getElementById(PANEL_ID);
+      const state = panel?.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+        ? panel.__ariadexV2State
+        : null;
+      const filename = typeof options?.filenameBuilder === "function"
+        ? options.filenameBuilder(state?.latestClickedId || "")
+        : "ariadex.md";
+      triggerTextDownload(String(entry?.text || ""), filename, root);
+    });
+
+    actions.appendChild(copyButton);
+    actions.appendChild(downloadButton);
+    topRow.appendChild(header);
+    topRow.appendChild(actions);
+    item.appendChild(topRow);
+    if (reportMeta) {
+      item.appendChild(meta);
+    }
+    item.appendChild(body);
+    container.appendChild(item);
+    return container;
+  }
+
+  function renderReportTab(report, root = document) {
+    return renderGeneratedTextTab(report, {
+      emptyText: "No report has been generated yet.",
+      headerText: "Generated Report",
+      copyLabel: "Copy Markdown",
+      downloadLabel: "Download Report",
+      filenameBuilder: buildReportFilename
+    }, root);
+  }
+
+  function renderGistTab(gist, root = document) {
+    return renderGeneratedTextTab(gist, {
+      emptyText: "No gist has been generated yet.",
+      headerText: "Portable Gist",
+      copyLabel: "Copy Gist",
+      downloadLabel: "Download Gist",
+      filenameBuilder: buildGistFilename
+    }, root);
+  }
+
+  // Render the full artifact and keep the active tab sticky across rerenders.
+  function renderArtifact(artifact, clickedId, root = document) {
+    const panel = ensurePanel(root);
+    panel.innerHTML = "";
+    const path = Array.isArray(artifact?.path) ? artifact.path : [];
+    const references = Array.isArray(artifact?.references) ? artifact.references : [];
+    const people = Array.isArray(artifact?.people) ? artifact.people : [];
+    const replyChains = Array.isArray(artifact?.replyChains) ? artifact.replyChains : [];
+    renderHeader(panel, root, `${path.length} path tweets · ${references.length} refs · ${people.length} people · ${replyChains.length} reply chains`);
+
+    if (path.length === 0) {
+      const empty = root.createElement("div");
+      empty.className = "ariadex-empty";
+      empty.textContent = "No path could be resolved.";
+      panel.appendChild(empty);
+      return panel;
+    }
+
+    const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+      ? panel.__ariadexV2State
+      : { activeTab: DEFAULT_TAB, position: null, latestArtifact: null, latestClickedId: "", latestReport: null, latestGist: null };
+    panel.__ariadexV2State = state;
+    state.latestArtifact = {
+      path,
+      references,
+      people,
+      replyChains
+    };
+    state.latestClickedId = clickedId || "";
+
+    const tabBar = root.createElement("div");
+    tabBar.className = "ariadex-tab-bar";
+    const content = root.createElement("div");
+    content.className = "ariadex-tab-content";
+
+    const tabs = [
+      { id: "path", label: "Root Path" },
+      { id: "references", label: "References" },
+      { id: "people", label: "People" },
+      { id: "replyChains", label: "Replies" }
+    ];
+    if (state.latestGist?.text) {
+      tabs.push({ id: "gist", label: "Gist" });
+    }
+    if (state.latestReport?.text) {
+      tabs.push({ id: "report", label: "Report" });
+    }
+
+    function paintTab(tabId) {
+      content.innerHTML = "";
+      if (tabId === "gist") {
+        content.appendChild(renderGistTab(state.latestGist || {}, root));
+        return;
+      }
+      if (tabId === "report") {
+        content.appendChild(renderReportTab(state.latestReport || {}, root));
+        return;
+      }
+      if (tabId === "replyChains") {
+        content.appendChild(renderReplyChainsTab(replyChains, path, clickedId, root));
+        return;
+      }
+      if (tabId === "people") {
+        content.appendChild(renderPeopleTab(people, root));
+        return;
+      }
+      if (tabId === "references") {
+        content.appendChild(renderReferencesTab(references, root));
+        return;
+      }
+      content.appendChild(renderPathTab(path, clickedId, root));
+    }
+
+    for (const tab of tabs) {
+      const button = root.createElement("button");
+      button.type = "button";
+      button.className = `ariadex-tab-button${state.activeTab === tab.id ? " ariadex-tab-button-active" : ""}`;
+      button.textContent = tab.label;
+      button.addEventListener("click", () => {
+        state.activeTab = tab.id;
+        for (const candidate of tabBar.querySelectorAll(".ariadex-tab-button")) {
+          candidate.classList.remove("ariadex-tab-button-active");
+        }
+        button.classList.add("ariadex-tab-button-active");
+        paintTab(tab.id);
+      });
+      tabBar.appendChild(button);
+    }
+
+    panel.appendChild(tabBar);
+    panel.appendChild(content);
+    paintTab(state.activeTab);
+    return panel;
+  }
+
+  // Ask the background worker for the root-path artifact; the content script never fetches directly.
+  function resolveRootArtifact(clickedTweetId, chromeApi = chrome, onProgress = null) {
+    if (!clickedTweetId) {
+      return Promise.resolve({ path: [], references: [], people: [], replyChains: [] });
+    }
+
+    if (!chromeApi?.runtime?.sendMessage) {
+      return Promise.reject(new Error("extension_runtime_unavailable"));
+    }
+
+    return awaitDevEnvHydration(globalThis).then(() => Promise.all([
+      readXApiBearerTokenWithFallbacks(chromeApi, globalThis.window),
+      Promise.resolve(readConfiguredApiBaseUrl(globalThis.window))
+    ])).then(([bearerToken, apiBaseUrl]) => {
+      return new Promise((resolve, reject) => {
+      if (chromeApi?.runtime?.connect) {
+        const port = chromeApi.runtime.connect({ name: RESOLVE_ROOT_PATH_PORT_NAME });
+        let settled = false;
+        const finishResolve = (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve(value);
+        };
+        const finishReject = (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          reject(error);
+        };
+        port.onMessage.addListener((message) => {
+          if (message?.type === "progress") {
+            if (typeof onProgress === "function") {
+              onProgress(message.progress || {});
+            }
+            return;
+          }
+
+          if (message?.type === "result") {
+            port.disconnect();
+            const artifact = message?.artifact && typeof message.artifact === "object"
+              ? message.artifact
+              : {};
+            finishResolve({
+              path: Array.isArray(artifact.path) ? artifact.path : [],
+              references: Array.isArray(artifact.references) ? artifact.references : [],
+              people: Array.isArray(artifact.people) ? artifact.people : [],
+              replyChains: Array.isArray(artifact.replyChains) ? artifact.replyChains : []
+            });
+            return;
+          }
+
+          if (message?.type === "error") {
+            port.disconnect();
+            finishReject(new Error(message?.error || "root_path_resolution_failed"));
+          }
+        });
+        if (port.onDisconnect?.addListener) {
+          port.onDisconnect.addListener(() => {
+            const runtimeMessage = chromeApi?.runtime?.lastError?.message || "";
+            finishReject(new Error(runtimeMessage || "root_path_port_disconnected"));
+          });
+        }
+        port.postMessage({
+          type: MESSAGE_TYPE,
+          tweetId: clickedTweetId,
+          bearerToken,
+          apiBaseUrl
+        });
+        return;
+      }
+
+      chromeApi.runtime.sendMessage(
+        {
+          type: MESSAGE_TYPE,
+          tweetId: clickedTweetId,
+          bearerToken,
+          apiBaseUrl
+        },
+        (response) => {
+          const runtimeError = chromeApi.runtime?.lastError;
           if (runtimeError) {
             reject(new Error(runtimeError.message || "extension_message_failed"));
             return;
           }
-          resolve(response || null);
-        });
-      } catch (error) {
-        reject(error);
-      }
-    });
-  }
 
-  async function sendGraphApiJsonRequest({ url, method = "GET", body = null }) {
-    const bridgeResponse = await sendGraphApiRequestViaExtension({
-      type: "ariadex_graph_api_request",
-      url,
-      method,
-      headers: {
-        "content-type": "application/json"
-      },
-      body: body == null ? undefined : JSON.stringify(body)
-    });
+          if (!response?.ok) {
+            reject(new Error(response?.error || "root_path_resolution_failed"));
+            return;
+          }
 
-    if (bridgeResponse) {
-      if (!bridgeResponse.ok) {
-        const reason = bridgeResponse.error
-          ? String(bridgeResponse.error)
-          : `${bridgeResponse.status || 500} ${bridgeResponse.statusText || "Graph API request failed"}`;
-        throw new Error(`Graph API request failed (${reason})`);
-      }
-      return bridgeResponse.body;
-    }
-
-    if (typeof globalScope.window === "undefined" || typeof globalScope.window.fetch !== "function") {
-      return null;
-    }
-
-    const response = await globalScope.window.fetch(url, {
-      method,
-      headers: {
-        "content-type": "application/json"
-      },
-      ...(body == null ? {} : { body: JSON.stringify(body) })
-    });
-    if (!response.ok) {
-      throw new Error(`Graph API request failed (${response.status} ${response.statusText})`);
-    }
-    return response.json();
-  }
-
-  async function fetchSnapshotFromGraphApi(options = {}) {
-    const baseUrl = normalizeApiBaseUrl(options.graphApiUrl);
-    if (!baseUrl) {
-      return null;
-    }
-
-    const followingSet = options?.rankOptions?.followingSet instanceof Set
-      ? options.rankOptions.followingSet
-      : new Set();
-    const followingIds = [...followingSet];
-
-    const requestPayload = {
-      clickedTweetId: options.clickedTweetId,
-      rootHintTweetId: options.rootHintTweetId || null,
-      mode: options.mode || "fast",
-      force: Boolean(options.forceRefresh),
-      incremental: options.incremental !== false,
-      followingIds,
-      viewerHandles: Array.isArray(options.viewerHandles) ? options.viewerHandles : []
-    };
-    const payloadBody = JSON.stringify(requestPayload);
-    const snapshotUrl = `${baseUrl}/v1/conversation-snapshot`;
-    const jobsUrl = `${snapshotUrl}/jobs`;
-
-    let payload = null;
-
-    try {
-      const started = await sendGraphApiJsonRequest({
-        url: jobsUrl,
-        method: "POST",
-        body: requestPayload
-      });
-      const jobId = started && started.jobId ? String(started.jobId) : "";
-      if (jobId) {
-        const deadline = Date.now() + 120000;
-        let lastMessage = "";
-        while (Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 600));
-          const polled = await sendGraphApiJsonRequest({
-            url: `${jobsUrl}/${jobId}`,
-            method: "GET"
+          const artifact = response?.artifact && typeof response.artifact === "object"
+            ? response.artifact
+            : {};
+          resolve({
+            path: Array.isArray(artifact.path) ? artifact.path : [],
+            references: Array.isArray(artifact.references) ? artifact.references : [],
+            people: Array.isArray(artifact.people) ? artifact.people : [],
+            replyChains: Array.isArray(artifact.replyChains) ? artifact.replyChains : []
           });
-          const progress = Array.isArray(polled?.progress) ? polled.progress : [];
-          const lastProgress = progress.length > 0 ? progress[progress.length - 1] : null;
-          const message = lastProgress && typeof lastProgress.message === "string"
-            ? lastProgress.message.trim()
-            : "";
-          if (message && message !== lastMessage && typeof options.onProgress === "function") {
-            lastMessage = message;
-            options.onProgress({
-              phase: "server_progress",
-              statusMessage: message
-            });
-          }
-
-          if (polled?.status === "completed" && polled?.snapshot) {
-            payload = polled.snapshot;
-            break;
-          }
-          if (polled?.status === "failed") {
-            throw new Error(polled?.error?.message || "Graph API async job failed");
-          }
         }
-      }
-    } catch {}
-
-    if (!payload) {
-      payload = await sendGraphApiJsonRequest({
-        url: snapshotUrl,
-        method: "POST",
-        body: requestPayload
+        );
       });
-    }
-
-    if (!payload || typeof payload !== "object") {
-      throw new Error("Graph API returned invalid payload");
-    }
-
-    return {
-      canonicalRootId: payload.canonicalRootId || null,
-      rootId: payload.rootId || null,
-      root: payload.root || null,
-      nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
-      edges: Array.isArray(payload.edges) ? payload.edges : [],
-      ranking: Array.isArray(payload.ranking) ? payload.ranking : [],
-      rankingMeta: payload.rankingMeta || { scoreById: new Map() },
-      warnings: Array.isArray(payload.warnings) ? payload.warnings : [],
-      diagnostics: payload.diagnostics && typeof payload.diagnostics === "object"
-        ? payload.diagnostics
-        : null
-    };
-  }
-
-  async function buildConversationArticle(options = {}) {
-    const baseUrl = normalizeApiBaseUrl(options.graphApiUrl);
-    if (!baseUrl) {
-      throw new Error("Graph API is required for article generation");
-    }
-
-    const followingSet = options?.rankOptions?.followingSet instanceof Set
-      ? options.rankOptions.followingSet
-      : new Set();
-    const requestPayload = {
-      clickedTweetId: options.clickedTweetId,
-      rootHintTweetId: options.rootHintTweetId || null,
-      mode: options.mode || "fast",
-      force: Boolean(options.forceRefresh),
-      incremental: options.incremental === true,
-      followingIds: [...followingSet],
-      viewerHandles: Array.isArray(options.viewerHandles) ? options.viewerHandles : []
-    };
-
-    const payload = await sendGraphApiJsonRequest({
-      url: `${baseUrl}/v1/conversation-article`,
-      method: "POST",
-      body: requestPayload
     });
-    if (!payload || typeof payload !== "object") {
-      throw new Error("Graph API returned invalid article payload");
-    }
-    return payload;
   }
 
-  function downloadPdfFromBase64(pdf) {
-    const base64 = String(pdf?.base64 || "").trim();
-    if (!base64 || !globalScope.window || !globalScope.document || typeof globalScope.window.atob !== "function") {
-      return false;
+  function generateReportArtifact(artifact, chromeApi = chrome) {
+    if (!chromeApi?.runtime?.sendMessage) {
+      return Promise.reject(new Error("extension_runtime_unavailable"));
     }
 
-    const binary = globalScope.window.atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
+    const onProgress = typeof arguments[2] === "function" ? arguments[2] : null;
 
-    const blob = new Blob([bytes], { type: pdf?.mimeType || "application/pdf" });
-    const objectUrl = globalScope.window.URL?.createObjectURL?.(blob);
-    if (!objectUrl) {
-      return false;
-    }
+    return new Promise((resolve, reject) => {
+      if (chromeApi?.runtime?.connect) {
+        const port = chromeApi.runtime.connect({ name: GENERATE_REPORT_PORT_NAME });
+        let settled = false;
+        const finishResolve = (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve(value);
+        };
+        const finishReject = (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          reject(error);
+        };
 
-    const anchor = globalScope.document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = String(pdf?.filename || "ariadex-digest.pdf");
-    anchor.style.display = "none";
-    globalScope.document.body?.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    globalScope.window.setTimeout(() => {
-      globalScope.window.URL?.revokeObjectURL?.(objectUrl);
-    }, 1000);
-    return true;
-  }
-
-  function formatExploreProgressMessage(progress = {}) {
-    const phase = String(progress?.phase || "").trim();
-    const tweetCount = Number(progress?.tweetCount || 0);
-    const replies = Number(progress?.replies || 0);
-    const quotes = Number(progress?.quotes || 0);
-    const processedRoots = Number(progress?.processedRoots || 0);
-    const queuedRoots = Number(progress?.queuedRoots || 0);
-    const selectedTweetCount = Number(progress?.selectedTweetCount || 0);
-    const referenceCount = Number(progress?.referenceCount || 0);
-    const mandatoryPathLength = Number(progress?.mandatoryPathLength || 0);
-
-    if (phase === "request_received") {
-      return "Preparing the conversation workspace…";
-    }
-    if (phase === "root_resolution_started") {
-      return "Resolving the clicked tweet and its context…";
-    }
-    if (phase === "root_resolved") {
-      return "Context resolved. Building the reading path…";
-    }
-    if (phase === "incremental_refresh") {
-      return "Refreshing cached conversation data…";
-    }
-    if (phase === "cache_hit") {
-      return "Loaded a cached conversation map.";
-    }
-    if (phase === "waiting_inflight") {
-      return "Another snapshot is already being built. Reusing it when ready…";
-    }
-    if (phase === "cache_hit_after_wait") {
-      return "Loaded the shared cached conversation map.";
-    }
-    if (phase === "collecting") {
-      return "Collecting conversation branches and evidence…";
-    }
-    if (phase === "collection_started") {
-      return "Scanning the conversation graph…";
-    }
-    if (phase === "collecting_root") {
-      return processedRoots > 1 || queuedRoots > 0
-        ? `Tracing relevant branches. ${processedRoots} scanned, ${queuedRoots} pending.`
-        : "Tracing the core conversation path…";
-    }
-    if (phase === "replies_fetched") {
-      return replies > 0
-        ? `Collected direct replies. ${replies} candidate replies found.`
-        : "Collected direct replies for this branch.";
-    }
-    if (phase === "quotes_fetched") {
-      return quotes > 0
-        ? `Collected quote branches. ${quotes} quote tweets found.`
-        : "Collected quote branches for this tweet.";
-    }
-    if (phase === "quote_reply_expanded") {
-      return queuedRoots > 0
-        ? `Expanding quote branches. ${queuedRoots} still worth checking.`
-        : "Finished expanding quote branches.";
-    }
-    if (phase === "network_discovery_batch") {
-      return "Checking relevant voices from your network…";
-    }
-    if (phase === "references_hydrated") {
-      return "Linking referenced tweets and citations…";
-    }
-    if (phase === "authors_hydrated") {
-      return "Hydrating author context…";
-    }
-    if (phase === "collection_complete") {
-      return tweetCount > 0
-        ? `Conversation collection complete. ${tweetCount} tweets available for selection.`
-        : "Conversation collection complete.";
-    }
-    if (phase === "path_selection_started") {
-      return "Building the mandatory path and selecting important branches…";
-    }
-    if (phase === "path_selection_complete") {
-      return selectedTweetCount > 0 || mandatoryPathLength > 0
-        ? `Structured the conversation. ${mandatoryPathLength} path tweets and ${selectedTweetCount} selected tweets kept.`
-        : "Structured the conversation around the clicked tweet.";
-    }
-    if (phase === "evidence_compiled") {
-      return referenceCount > 0
-        ? `Compiled evidence. ${referenceCount} canonical references linked.`
-        : "Compiled evidence from the selected branches.";
-    }
-    if (phase === "ranking_complete") {
-      return selectedTweetCount > 0
-        ? `Ranked the selected branches. ${selectedTweetCount} tweets are ready to read.`
-        : "Ranked the selected branches.";
-    }
-    if (phase === "cache_populated") {
-      return "Saved the conversation map to cache.";
-    }
-    if (phase === "completed") {
-      return "Conversation ready.";
-    }
-    return "Building the conversation view…";
-  }
-
-  function toMilestoneProgressMessage(progress = {}) {
-    const phase = String(progress?.phase || "").trim();
-    const rawStatus = String(progress?.statusMessage || "").trim().toLowerCase();
-
-    if (
-      phase === "request_received"
-      || phase === "root_resolution_started"
-      || rawStatus.includes("preparing")
-      || rawStatus.includes("resolving")
-    ) {
-      return "Resolving context…";
-    }
-
-    if (
-      phase === "cache_hit"
-      || phase === "cache_hit_after_wait"
-      || rawStatus.includes("cached conversation map")
-      || rawStatus.includes("shared cached")
-    ) {
-      return "Using cached conversation map…";
-    }
-
-    if (
-      phase === "collecting"
-      || phase === "collection_started"
-      || phase === "collecting_root"
-      || phase === "replies_fetched"
-      || phase === "quotes_fetched"
-      || phase === "quote_reply_expanded"
-      || phase === "network_discovery_batch"
-      || rawStatus.includes("collecting")
-      || rawStatus.includes("scanning")
-      || rawStatus.includes("tracing")
-      || rawStatus.includes("expanding")
-    ) {
-      return "Mapping the conversation…";
-    }
-
-    if (
-      phase === "path_selection_started"
-      || phase === "path_selection_complete"
-      || rawStatus.includes("mandatory path")
-      || rawStatus.includes("structured the conversation")
-      || rawStatus.includes("important branches")
-    ) {
-      return "Selecting the important path and branches…";
-    }
-
-    if (
-      phase === "references_hydrated"
-      || phase === "authors_hydrated"
-      || phase === "evidence_compiled"
-      || rawStatus.includes("evidence")
-      || rawStatus.includes("citations")
-      || rawStatus.includes("author context")
-    ) {
-      return "Linking evidence and context…";
-    }
-
-    if (
-      phase === "ranking_complete"
-      || rawStatus.includes("ranked")
-      || rawStatus.includes("ready to read")
-    ) {
-      return "Ranking what matters…";
-    }
-
-    if (
-      phase === "cache_populated"
-      || phase === "completed"
-      || rawStatus.includes("conversation ready")
-      || rawStatus.includes("saved the conversation map")
-    ) {
-      return "Conversation ready.";
-    }
-
-    return "Exploring conversation…";
-  }
-
-  async function buildConversationSnapshot(options = {}) {
-    if (options.graphApiUrl) {
-      try {
-        const remoteSnapshot = await fetchSnapshotFromGraphApi(options);
-        if (remoteSnapshot) {
-          return remoteSnapshot;
+        port.onMessage.addListener((message) => {
+          if (message?.type === "progress") {
+            if (onProgress) {
+              onProgress(message.progress || {});
+            }
+            return;
+          }
+          if (message?.type === "result") {
+            finishResolve(message?.report && typeof message.report === "object" ? message.report : {});
+            port.disconnect();
+            return;
+          }
+          if (message?.type === "error") {
+            finishReject(new Error(message?.error || "report_generation_failed"));
+            port.disconnect();
+          }
+        });
+        if (port.onDisconnect?.addListener) {
+          port.onDisconnect.addListener(() => {
+            const runtimeMessage = chromeApi?.runtime?.lastError?.message || "";
+            finishReject(new Error(runtimeMessage || "report_generation_port_disconnected"));
+          });
         }
-      } catch {
-        if (!options.allowClientDirectApi) {
-          throw new Error("Graph API request failed and direct client API mode is disabled");
-        }
-        // Fall through to direct X API collection only when explicitly enabled.
+        port.postMessage({
+          type: GENERATE_REPORT_MESSAGE_TYPE,
+          artifact
+        });
+        return;
       }
-    }
 
-    if (!options.allowClientDirectApi) {
-      throw new Error("Graph API is required; direct client API mode is disabled");
-    }
+      chromeApi.runtime.sendMessage(
+        {
+          type: GENERATE_REPORT_MESSAGE_TYPE,
+          artifact
+        },
+        (response) => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "extension_message_failed"));
+            return;
+          }
 
-    if (typeof buildConversationDataset !== "function") {
-      throw new Error("X API data client is not available");
-    }
+          if (!response?.ok) {
+            reject(new Error(response?.error || "report_generation_failed"));
+            return;
+          }
 
-    const dataset = await buildConversationDataset(options);
-    if (typeof options.onProgress === "function") {
-      options.onProgress({
-        phase: "data_retrieved",
-        dataset
-      });
-    }
-    if (!dataset?.canonicalRootId) {
-      return {
-        canonicalRootId: null,
-        rootId: null,
-        root: null,
-        nodes: [],
-        edges: [],
-        ranking: [],
-        rankingMeta: { scoreById: new Map() },
-        warnings: Array.isArray(dataset?.warnings) ? dataset.warnings : []
-      };
-    }
-
-    const engineResult = runConversationEngine({
-      tweets: dataset.tweets || [],
-      rankOptions: options.rankOptions || {}
+          resolve(response?.report && typeof response.report === "object" ? response.report : {});
+        }
+      );
     });
-    if (typeof options.onProgress === "function") {
-      options.onProgress({
-        phase: "ranking_complete",
-        dataset,
-        engineResult
-      });
-    }
-
-    return {
-      canonicalRootId: dataset.canonicalRootId,
-      rootId: engineResult.rootId,
-      root: engineResult.root || dataset.rootTweet || null,
-      nodes: engineResult.nodes || [],
-      edges: engineResult.edges || [],
-      ranking: engineResult.ranking || [],
-      rankingMeta: engineResult.rankingMeta || { scoreById: new Map() },
-      warnings: Array.isArray(dataset.warnings) ? dataset.warnings : [],
-      diagnostics: {
-        filter: {
-          inputTweetCount: Array.isArray(dataset.tweets) ? dataset.tweets.length : 0
-        }
-      }
-    };
   }
 
-  function createExploreButton(tweetElement = null) {
-    const button = globalScope.document.createElement("button");
+  function generateGistArtifact(artifact, chromeApi = chrome) {
+    if (!chromeApi?.runtime?.sendMessage) {
+      return Promise.reject(new Error("extension_runtime_unavailable"));
+    }
+
+    const onProgress = typeof arguments[2] === "function" ? arguments[2] : null;
+
+    return new Promise((resolve, reject) => {
+      if (chromeApi?.runtime?.connect) {
+        const port = chromeApi.runtime.connect({ name: GENERATE_GIST_PORT_NAME });
+        let settled = false;
+        const finishResolve = (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve(value);
+        };
+        const finishReject = (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          reject(error);
+        };
+
+        port.onMessage.addListener((message) => {
+          if (message?.type === "progress") {
+            if (onProgress) {
+              onProgress(message.progress || {});
+            }
+            return;
+          }
+          if (message?.type === "result") {
+            finishResolve(message?.report && typeof message.report === "object" ? message.report : {});
+            port.disconnect();
+            return;
+          }
+          if (message?.type === "error") {
+            finishReject(new Error(message?.error || "gist_generation_failed"));
+            port.disconnect();
+          }
+        });
+        if (port.onDisconnect?.addListener) {
+          port.onDisconnect.addListener(() => {
+            const runtimeMessage = chromeApi?.runtime?.lastError?.message || "";
+            finishReject(new Error(runtimeMessage || "gist_generation_port_disconnected"));
+          });
+        }
+        port.postMessage({
+          type: GENERATE_GIST_MESSAGE_TYPE,
+          artifact
+        });
+        return;
+      }
+
+      chromeApi.runtime.sendMessage(
+        {
+          type: GENERATE_GIST_MESSAGE_TYPE,
+          artifact
+        },
+        (response) => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "extension_message_failed"));
+            return;
+          }
+
+          if (!response?.ok) {
+            reject(new Error(response?.error || "gist_generation_failed"));
+            return;
+          }
+
+          resolve(response?.report && typeof response.report === "object" ? response.report : {});
+        }
+      );
+    });
+  }
+
+  // Ask the background worker to clear the tweet cache used during recursive resolution.
+  function clearTweetCache(chromeApi = chrome) {
+    if (!chromeApi?.runtime?.sendMessage) {
+      return Promise.reject(new Error("extension_runtime_unavailable"));
+    }
+
+    return new Promise((resolve, reject) => {
+      chromeApi.runtime.sendMessage(
+        { type: CLEAR_CACHE_MESSAGE_TYPE },
+        (response) => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "extension_message_failed"));
+            return;
+          }
+
+          if (!response?.ok) {
+            reject(new Error(response?.error || "cache_clear_failed"));
+            return;
+          }
+
+          resolve();
+        }
+      );
+    });
+  }
+
+  // Inject the user-facing button and wire it to background resolution plus panel rendering.
+  function createExploreButton(article, root = document, chromeApi = chrome) {
+    const button = root.createElement("button");
     button.type = "button";
-    button.className = BUTTON_CLASS;
+    button.className = "ariadex-button";
     button.setAttribute(BUTTON_ATTR, "true");
-    button.setAttribute("aria-label", "Explore conversation");
-    button.textContent = "◇ Explore";
+    button.textContent = "Explore Path";
 
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
 
-      const mappedTweet = buttonTweetElementByButton.get(event.currentTarget) || null;
-      const clickedTweet = mappedTweet || findClosestTweetContainer(event.currentTarget);
-      const clickedTweetData = extractTweetData(clickedTweet);
-      const rootTweetElement = resolveConversationRoot(clickedTweet) || clickedTweet;
-      const rootTweetData = extractTweetData(rootTweetElement);
-      const buttonTweetId = String(event.currentTarget?.getAttribute?.(BUTTON_TWEET_ID_ATTR) || "").trim();
-
-      const clickedTweetId = buttonTweetId || clickedTweetData.id || rootTweetData.id;
-      if (!clickedTweetId) {
-        console.error("[Ariadex] Unable to resolve clicked tweet id");
+      const tweetArticle = findClosestTweetArticle(button) || article;
+      const clickedId = extractTweetId(tweetArticle);
+      if (!clickedId) {
+        renderStatus("Could not resolve clicked tweet id.", root);
         return;
       }
 
-      const debugEnabled = typeof globalScope.window !== "undefined"
-        && Boolean(globalScope.window.AriadexDebug);
-      if (debugEnabled) {
-        console.debug("[Ariadex] Explore click ids", {
-          buttonTweetId,
-          clickedTweetId,
-          clickedTweetDataId: clickedTweetData.id || null,
-          rootHintTweetId: rootTweetData.id || null
-        });
-      }
-
-      if (renderConversationPanel) {
-        const exploreMode = readExploreMode();
-        const seedNodes = [];
-        const seedScoreById = new Map();
-        const initialExcludedIds = buildExcludedTweetIds(
-          clickedTweetId,
-          rootTweetData?.id,
-          clickedTweetData?.quote_of
-        );
-        renderConversationPanel({
-          nodes: seedNodes,
-          scoreById: seedScoreById,
-          relationshipById: new Map(),
-          followingSet: new Set(),
-          excludedTweetIds: initialExcludedIds,
-          humanOnly: true,
-          networkLimit: 0,
-          topLimit: 0,
-          loadingOnly: true,
-          statusMessage: "Exploring conversation…",
-          exploreMode,
-          root: globalScope.document
-        });
-      }
-
-      let runtimeConfig = readXApiRuntimeConfig();
-      const domFollowingHints = collectFollowedAuthorHints(globalScope.document);
-      const viewerHandleHints = collectViewerHandleHints(globalScope.document);
-      runtimeConfig = {
-        ...runtimeConfig,
-        followingSet: mergeFollowingSets(runtimeConfig.followingSet, domFollowingHints)
-      };
-      const exploreMode = readExploreMode();
-      if (!runtimeConfig.bearerToken && runtimeConfig.allowClientDirectApi) {
-        runtimeConfig = await hydrateRuntimeConfigFromGeneratedConfig(runtimeConfig);
-        runtimeConfig = {
-          ...runtimeConfig,
-          followingSet: mergeFollowingSets(runtimeConfig.followingSet, domFollowingHints)
-        };
-      }
-
-      const hasGraphApiUrl = Boolean(runtimeConfig.graphApiUrl);
-      if (!hasGraphApiUrl && !(runtimeConfig.allowClientDirectApi && runtimeConfig.bearerToken)) {
-        if (renderConversationPanel) {
-          renderConversationPanel({
-            nodes: [],
-            scoreById: new Map(),
-            relationshipById: new Map(),
-            followingSet: runtimeConfig.followingSet,
-            excludedTweetIds: new Set(),
-            humanOnly: true,
-            networkLimit: 5,
-            topLimit: 10,
-            statusMessage: "Graph API endpoint is missing. Configure graphApiUrl to explore conversations.",
-            exploreMode,
-            root: globalScope.document
-          });
-        }
-        return;
-      }
-
-      button.disabled = true;
-      button.setAttribute("aria-busy", "true");
+      renderStatus(`Tracing root path from ${clickedId}...`, root);
 
       try {
-        let lastMilestoneMessage = "Exploring conversation…";
-        const snapshot = await buildConversationSnapshot({
-          clickedTweetId,
-          rootHintTweetId: rootTweetData.id || null,
-          bearerToken: runtimeConfig.bearerToken,
-          apiBaseUrl: runtimeConfig.apiBaseUrl || undefined,
-          graphApiUrl: runtimeConfig.graphApiUrl || undefined,
-          allowClientDirectApi: runtimeConfig.allowClientDirectApi,
-          mode: exploreMode,
-          includeQuoteTweets: exploreMode === "deep",
-          includeQuoteReplies: exploreMode === "deep",
-          includeRetweets: false,
-          viewerHandles: [...viewerHandleHints],
-          rankOptions: {
-            followingSet: runtimeConfig.followingSet
-          },
-          fetchImpl: typeof globalScope.window !== "undefined" && typeof globalScope.window.fetch === "function"
-            ? globalScope.window.fetch.bind(globalScope.window)
-            : undefined,
-          onProgress: (progress) => {
-            if (!renderConversationPanel) {
-              return;
-            }
-            const milestoneMessage = toMilestoneProgressMessage(progress);
-            if (milestoneMessage === lastMilestoneMessage && progress?.phase !== "data_retrieved") {
-              return;
-            }
-            lastMilestoneMessage = milestoneMessage;
-
-            const phase = progress?.phase;
-            if (phase === "server_progress") {
-              const interimExcludedIds = buildExcludedTweetIds(
-                clickedTweetId,
-                rootTweetData?.id,
-                clickedTweetData?.quote_of
-              );
-              renderConversationPanel({
-                nodes: [],
-                scoreById: new Map(),
-                relationshipById: new Map(),
-                followingSet: runtimeConfig.followingSet,
-                excludedTweetIds: interimExcludedIds,
-              humanOnly: true,
-              networkLimit: 0,
-              topLimit: 0,
-              loadingOnly: true,
-              statusMessage: milestoneMessage,
-              exploreMode,
-              root: globalScope.document
-            });
-              return;
-            }
-
-            if (phase && phase !== "data_retrieved") {
-              const interimExcludedIds = buildExcludedTweetIds(
-                clickedTweetId,
-                rootTweetData?.id,
-                clickedTweetData?.quote_of,
-                progress?.canonicalRootId
-              );
-              renderConversationPanel({
-                nodes: [],
-                scoreById: new Map(),
-                relationshipById: new Map(),
-                followingSet: runtimeConfig.followingSet,
-                excludedTweetIds: interimExcludedIds,
-                humanOnly: true,
-                networkLimit: 0,
-                topLimit: 0,
-                loadingOnly: true,
-                statusMessage: milestoneMessage,
-                exploreMode,
-                root: globalScope.document
-              });
-              return;
-            }
-
-            if (phase === "data_retrieved") {
-              const tweets = Array.isArray(progress?.dataset?.tweets) ? progress.dataset.tweets : [];
-              const limitedTweets = tweets.slice(0, 25);
-              const provisionalScores = new Map(limitedTweets.map((tweet, index) => [tweet.id, limitedTweets.length - index]));
-              const relationshipById = buildRelationshipByIdFromTweets({
-                tweets: limitedTweets,
-                clickedTweetId,
-                canonicalRootId: progress?.dataset?.canonicalRootId,
-                rootId: progress?.dataset?.canonicalRootId
-              });
-              const excludedTweetIds = buildExcludedTweetIds(
-                clickedTweetId,
-                rootTweetData?.id,
-                clickedTweetData?.quote_of,
-                progress?.dataset?.canonicalRootId
-              );
-              renderConversationPanel({
-                nodes: limitedTweets,
-                scoreById: provisionalScores,
-                relationshipById,
-                followingSet: runtimeConfig.followingSet,
-                excludedTweetIds,
-                humanOnly: true,
-                networkLimit: 5,
-                topLimit: 10,
-                statusMessage: `Fetched ${tweets.length} tweets. Running ThinkerRank…`,
-                exploreMode,
-                root: globalScope.document
-              });
-            }
-          }
+        const artifact = await resolveRootArtifact(clickedId, chromeApi, (progress) => {
+          renderStatus(formatProgressMessage(progress), root);
         });
-
-        const ranking = {
-          scores: Array.isArray(snapshot.ranking) ? snapshot.ranking : []
-        };
-        const scoreById = resolveScoreByIdFromSnapshot(snapshot);
-        const relationshipById = buildRelationshipByIdFromGraph({
-          nodes: snapshot.nodes || [],
-          edges: snapshot.edges || [],
-          clickedTweetId,
-          canonicalRootId: snapshot?.canonicalRootId,
-          rootId: snapshot?.rootId || snapshot?.root?.id || null
-        });
-        let articleResult = null;
-        let articleLoading = false;
-        const excludedTweetIds = buildExcludedTweetIds(
-          clickedTweetId,
-          rootTweetData?.id,
-          clickedTweetData?.quote_of,
-          snapshot?.canonicalRootId,
-          snapshot?.rootId,
-          snapshot?.root?.id
-        );
-        const doneStatusMessage = (() => {
-          const traversedCount = Number(snapshot?.diagnostics?.filter?.inputTweetCount);
-          const safeTraversed = Number.isFinite(traversedCount)
-            ? traversedCount
-            : (Array.isArray(snapshot.ranking) ? snapshot.ranking.length : 0);
-          const rankedCount = Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0;
-          return `Done. Traversed ${safeTraversed} tweets. Ranked ${rankedCount} nodes.`;
-        })();
-
-        const rerenderPanel = () => {
-          if (!renderConversationPanel) {
-            return renderTopThreads((ranking.scores || []).slice(0, 5), globalScope.document);
-          }
-          return renderConversationPanel({
-            nodes: snapshot.nodes || [],
-            scoreById,
-            relationshipById,
-            followingSet: runtimeConfig.followingSet,
-            excludedTweetIds,
-            humanOnly: true,
-            networkLimit: 5,
-            topLimit: 10,
-            statusMessage: doneStatusMessage,
-            article: articleResult?.article || null,
-            articleLoading,
-            onGenerateArticle: async () => {
-              if (articleLoading) {
-                return;
-              }
-              articleLoading = true;
-              rerenderPanel();
-              try {
-                articleResult = await buildConversationArticle({
-                  clickedTweetId,
-                  rootHintTweetId: rootTweetData.id || null,
-                  graphApiUrl: runtimeConfig.graphApiUrl || undefined,
-                  mode: exploreMode,
-                  viewerHandles: [...viewerHandleHints],
-                  rankOptions: {
-                    followingSet: runtimeConfig.followingSet
-                  }
-                });
-              } catch (articleError) {
-                console.error("[Ariadex] Failed to build article", articleError);
-              } finally {
-                articleLoading = false;
-                rerenderPanel();
-              }
-            },
-            onDownloadPdf: () => {
-              if (articleResult?.pdf) {
-                downloadPdfFromBase64(articleResult.pdf);
-              }
-            },
-            snapshotMeta: {
-              clickedTweetId,
-              canonicalRootId: snapshot?.canonicalRootId || null,
-              branchName: runtimeConfig.branchName || null,
-              diagnostics: snapshot?.diagnostics || null,
-              pathAnchored: snapshot?.pathAnchored || null,
-              cache: snapshot?.cache || null,
-              warnings: snapshot?.warnings || []
-            },
-            exploreMode,
-            root: globalScope.document
-          });
-        };
-
-        const panelSections = rerenderPanel();
-
-        const debugEnabled = typeof globalScope.window !== "undefined"
-          && Boolean(globalScope.window.AriadexDebug);
-        const isTestRuntime = typeof module !== "undefined" && module.exports;
-        if (debugEnabled || isTestRuntime) {
-          console.log({
-            rootTweet: snapshot.root || rootTweetData,
-            graph: {
-              rootId: snapshot.rootId,
-              nodes: snapshot.nodes || [],
-              edges: snapshot.edges || []
-            },
-            ranking,
-            panelSections,
-            canonicalRootId: snapshot.canonicalRootId,
-            warnings: snapshot.warnings || [],
-            viewerHandleHints: [...viewerHandleHints],
-            followingCount: runtimeConfig.followingSet.size
-          });
-        }
+        renderArtifact(artifact, clickedId, root);
       } catch (error) {
-        console.error("[Ariadex] Failed to build conversation via layered engine", error);
-        if (renderConversationPanel) {
-          renderConversationPanel({
-            nodes: [],
-            scoreById: new Map(),
-            relationshipById: new Map(),
-            followingSet: runtimeConfig.followingSet,
-            excludedTweetIds: new Set(),
-            humanOnly: true,
-            networkLimit: 5,
-            topLimit: 10,
-            statusMessage: "Request failed or rate-limited. Showing no data.",
-            exploreMode,
-            root: globalScope.document
-          });
-        }
-      } finally {
-        button.disabled = false;
-        button.removeAttribute("aria-busy");
+        renderStatus(formatLookupErrorMessage(error), root);
       }
     });
 
     return button;
   }
 
-  function injectExploreButton(tweet) {
-    if (!tweet || typeof tweet.querySelector !== "function") {
-      return false;
+  // Add the button only once per tweet card.
+  function injectButton(article, root = document, chromeApi = chrome) {
+    if (!article || article.querySelector(`[${BUTTON_ATTR}="true"]`)) {
+      return;
     }
 
-    const actionBar = locateActionBar(tweet);
-    if (!actionBar) {
-      return false;
+    const toolbar = article.querySelector('[role="group"]');
+    if (!toolbar) {
+      return;
     }
 
-    if (actionBar.querySelector(`.${BUTTON_CLASS}`) || actionBar.querySelector(`[${BUTTON_ATTR}]`)) {
-      return false;
-    }
-
-    const button = createExploreButton(tweet);
-    const tweetData = extractTweetData(tweet);
-    if (tweetData?.id) {
-      button.setAttribute(BUTTON_TWEET_ID_ATTR, String(tweetData.id));
-    }
-    buttonTweetElementByButton.set(button, tweet);
-    actionBar.appendChild(button);
-    actionBar.setAttribute(INJECTED_ATTR, "true");
-    return true;
+    toolbar.appendChild(createExploreButton(article, root, chromeApi));
   }
 
-  function processRoot(root = globalScope.document) {
-    const tweets = getTweetCandidates(root);
-    for (const tweet of tweets) {
-      injectExploreButton(tweet);
-    }
+  // Re-scan the current DOM slice and attach buttons to newly rendered tweets.
+  function scan(root = document, chromeApi = chrome) {
+    findTweetArticles(root).forEach((article) => injectButton(article, root, chromeApi));
   }
 
-  function createObserver() {
-    const pendingRoots = new Set();
-    let scheduled = false;
-
-    const flush = () => {
-      scheduled = false;
-      const roots = [...pendingRoots];
-      pendingRoots.clear();
-
-      for (const root of roots) {
-        processRoot(root);
-      }
-    };
-
-    const scheduleFlush = () => {
-      if (scheduled) {
-        return;
-      }
-      scheduled = true;
-
-      const raf = typeof globalScope.requestAnimationFrame === "function"
-        ? globalScope.requestAnimationFrame
-        : (cb) => setTimeout(cb, 16);
-
-      raf(flush);
-    };
-
-    return new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type !== "childList" || mutation.addedNodes.length === 0) {
-          continue;
-        }
-
-        for (const node of mutation.addedNodes) {
-          if (node && typeof node.closest === "function") {
-            pendingRoots.add(node);
-          }
-        }
-      }
-
-      scheduleFlush();
+  // Boot the content script and keep it alive as X mutates the timeline DOM.
+  function start(root = document, chromeApi = chrome) {
+    const observer = new MutationObserver(() => {
+      scan(root, chromeApi);
     });
+
+    scan(root, chromeApi);
+    observer.observe(root.documentElement, {
+      childList: true,
+      subtree: true
+    });
+    return observer;
   }
-
-  function init() {
-    if (!globalScope.document || !globalScope.document.documentElement) {
-      return;
-    }
-
-    if (globalScope.document.documentElement.hasAttribute(EXTENSION_ROOT_ATTR)) {
-      return;
-    }
-
-    globalScope.document.documentElement.setAttribute(EXTENSION_ROOT_ATTR, "true");
-
-    processRoot(globalScope.document);
-
-    const observer = createObserver();
-    if (globalScope.document.body) {
-      observer.observe(globalScope.document.body, {
-        childList: true,
-        subtree: true
-      });
-    }
-  }
-
-  const api = {
-    TWEET_SELECTORS: domCollectorApi.TWEET_SELECTORS || [],
-    ACTION_HINTS: domCollectorApi.ACTION_HINTS || [],
-    extractTweetData,
-    resolveConversationRoot,
-    inferReplyStructure,
-    collectConversationBundle,
-    collectConversationTweets,
-    indexTweetsById,
-    attachReplies,
-    buildTypedEdges,
-    buildConversationGraph,
-    collapseAuthorThread,
-    rankConversationGraph,
-    buildConversationSnapshot,
-    buildConversationArticle,
-    resolveScoreByIdFromSnapshot,
-    parseFollowingSet,
-    mergeFollowingSets,
-    buildExcludedTweetIds,
-    buildRelationshipByIdFromTweets,
-    buildRelationshipByIdFromGraph,
-    readXApiRuntimeConfig,
-    findClosestTweetContainer,
-    getTweetCandidates,
-    locateActionBar,
-    injectExploreButton,
-    processRoot,
-    createObserver,
-    init
-  };
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = api;
-  }
-
-  if (!(typeof module !== "undefined" && module.exports)) {
-    if (globalScope.document.readyState === "loading") {
-      globalScope.document.addEventListener("DOMContentLoaded", init, { once: true });
-    } else {
-      init();
-    }
+    module.exports = {
+      BUTTON_ATTR,
+      PANEL_ID,
+      ARTICLE_SELECTOR,
+      MESSAGE_TYPE,
+      CLEAR_CACHE_MESSAGE_TYPE,
+      GENERATE_REPORT_MESSAGE_TYPE,
+      GENERATE_GIST_MESSAGE_TYPE,
+      GENERATE_REPORT_PORT_NAME,
+      GENERATE_GIST_PORT_NAME,
+      normalizeText,
+      readLocalStorageValue,
+      readXApiBearerToken,
+      readChromeStorageLocalValue,
+      readXApiBearerTokenWithFallbacks,
+      awaitDevEnvHydration,
+      formatProgressMessage,
+      formatLookupErrorMessage,
+      formatReportErrorMessage,
+      formatReportProgressMessage,
+      formatGistProgressMessage,
+      baseLabelForIndex,
+      relationLabel,
+      buildPathEntries,
+      findTweetArticles,
+      findClosestTweetArticle,
+      extractTweetId,
+      ensurePanel,
+      getViewportBounds,
+      getPanelSize,
+      clampPanelPosition,
+      applyPanelPosition,
+      makePanelMovable,
+      renderStatus,
+      buildReferenceBadgeText,
+      buildExportFilename,
+      buildReportFilename,
+      buildGistFilename,
+      triggerJsonDownload,
+      triggerTextDownload,
+      copyTextToClipboard,
+      setAccessibleLabel,
+      createCopyIcon,
+      renderPathTab,
+      renderReferencesTab,
+      renderPeopleTab,
+      renderReplyChainsTab,
+      renderGeneratedTextTab,
+      renderGistTab,
+      renderReportTab,
+      renderArtifact,
+      resolveRootArtifact,
+      generateReportArtifact,
+      generateGistArtifact,
+      clearTweetCache,
+      createExploreButton,
+      injectButton,
+      scan,
+      start
+    };
+  } else {
+    start(document, chrome);
   }
 })();

@@ -2,11 +2,14 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { execFileSync } = require("node:child_process");
 
-const ROOT_DIR = path.resolve(__dirname, "..");
-const ENV_PATH = path.join(ROOT_DIR, ".env");
-const OUTPUT_PATH = path.join(ROOT_DIR, "extension", "dev_env.generated.json");
+const PROJECT_ROOT_DIR = path.resolve(__dirname, "..");
+const ENV_CANDIDATE_PATHS = [
+  path.join(PROJECT_ROOT_DIR, ".env")
+];
+const OUTPUT_PATH = path.join(PROJECT_ROOT_DIR, "extension", "dev_env.generated.json");
+const REPO_CONFIG_PATH = path.join(PROJECT_ROOT_DIR, "ariadex.config.json");
+const DEFAULT_REPORT_BACKEND_BASE_URL = "http://127.0.0.1:8787";
 
 function parseDotEnv(rawText) {
   const parsed = {};
@@ -42,123 +45,72 @@ function parseDotEnv(rawText) {
   return parsed;
 }
 
-function parseFollowingIds(rawValue) {
-  if (typeof rawValue !== "string" || !rawValue.trim()) {
-    return [];
-  }
-
-  return [...new Set(
-    rawValue
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean)
-  )];
-}
-
-function normalizeRuntimeEnvironment(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) {
-    return "dev";
-  }
-  return normalized;
-}
-
-function resolveGraphApiByEnv(env) {
-  const safeEnv = env || {};
-  const byEnv = {};
-
-  const devUrl = String(safeEnv.ARIADEX_GRAPH_API_URL_DEV || "").trim();
-  const prodUrl = String(safeEnv.ARIADEX_GRAPH_API_URL_PROD || "").trim();
-
-  if (devUrl) {
-    byEnv.dev = devUrl;
-  }
-  if (prodUrl) {
-    byEnv.prod = prodUrl;
-  }
-
-  return byEnv;
-}
-
-function resolveGraphApiUrl(env, runtimeEnv, byEnv) {
-  const safeEnv = env || {};
-  const explicit = String(safeEnv.ARIADEX_GRAPH_API_URL || "").trim();
-  if (explicit) {
-    return explicit;
-  }
-
-  const fromMap = byEnv?.[runtimeEnv];
-  if (typeof fromMap === "string" && fromMap.trim()) {
-    return fromMap.trim();
-  }
-
-  return "";
+function resolveEnvPath() {
+  return ENV_CANDIDATE_PATHS.find((candidatePath) => fs.existsSync(candidatePath)) || "";
 }
 
 function buildEnvObject() {
-  const fileEnv = fs.existsSync(ENV_PATH)
-    ? parseDotEnv(fs.readFileSync(ENV_PATH, "utf8"))
-    : {};
-
+  const envPath = resolveEnvPath();
+  const fileEnv = envPath ? parseDotEnv(fs.readFileSync(envPath, "utf8")) : {};
+  let repoConfig = {};
+  try {
+    if (fs.existsSync(REPO_CONFIG_PATH)) {
+      const parsed = JSON.parse(fs.readFileSync(REPO_CONFIG_PATH, "utf8"));
+      repoConfig = parsed && typeof parsed === "object" ? parsed : {};
+    }
+  } catch {}
   return {
-    ...fileEnv,
-    ...process.env
+    envPath,
+    repoConfig,
+    env: {
+      ...fileEnv,
+      ...process.env
+    }
   };
 }
 
-function resolveBranchName(env) {
-  const explicit = String(env?.ARIADEX_BRANCH_NAME || "").trim();
-  if (explicit) {
-    return explicit;
-  }
-
-  try {
-    const branchName = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-      cwd: ROOT_DIR,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
-    }).trim();
-    return branchName || "";
-  } catch {
-    return "";
-  }
+function resolveReportConfig(env, repoConfig = {}) {
+  const safeEnv = env || {};
+  const normalizeOptional = (value, fallback = "") => {
+    if (value == null) {
+      return String(fallback || "").trim();
+    }
+    return String(value).trim();
+  };
+  return {
+    reportBackendBaseUrl: normalizeOptional(
+      safeEnv.REPORT_BACKEND_BASE_URL,
+      DEFAULT_REPORT_BACKEND_BASE_URL
+    )
+  };
 }
 
-function buildGeneratedConfig(env) {
+function buildGeneratedConfig(env, repoConfig = {}) {
   const safeEnv = env || {};
-  const bearerToken = (safeEnv.X_BEARER_TOKEN || safeEnv.X_API_BEARER_TOKEN || "").trim();
-  const allowClientDirectApi = String(safeEnv.ARIADEX_ALLOW_CLIENT_DIRECT_API || "").trim().toLowerCase() === "true";
+  const bearerToken = String(safeEnv.X_BEARER_TOKEN || safeEnv.X_API_BEARER_TOKEN || "").trim();
+  const apiBaseUrl = String(safeEnv.ARIADEX_X_API_BASE_URL || safeEnv.X_API_BASE_URL || "").trim();
+  const reportConfig = resolveReportConfig(safeEnv, repoConfig);
 
-  const followingIds = parseFollowingIds(safeEnv.X_FOLLOWING_IDS || "");
-  const environment = normalizeRuntimeEnvironment(safeEnv.ARIADEX_ENV || safeEnv.ARIADEX_RUNTIME_ENV || "dev");
-  const branchName = resolveBranchName(safeEnv);
-  const graphApiByEnv = resolveGraphApiByEnv(safeEnv);
-  const graphApiUrl = resolveGraphApiUrl(safeEnv, environment, graphApiByEnv);
-  if (!graphApiUrl && !(allowClientDirectApi && bearerToken)) {
-    throw new Error("Missing graph API URL. Set ARIADEX_GRAPH_API_URL (or ARIADEX_GRAPH_API_URL_DEV/PROD).");
+  if (!bearerToken) {
+    throw new Error("Missing X_BEARER_TOKEN or X_API_BEARER_TOKEN in .env/process env");
   }
 
   return {
-    environment,
-    ...(branchName ? { branchName } : {}),
-    allowClientDirectApi,
-    ...(allowClientDirectApi && bearerToken ? { bearerToken } : {}),
-    ...(followingIds.length > 0 ? { followingIds } : {}),
-    ...(Object.keys(graphApiByEnv).length > 0 ? { graphApiByEnv } : {}),
-    ...(graphApiUrl ? { graphApiUrl } : {})
+    bearerToken,
+    ...(apiBaseUrl ? { apiBaseUrl } : {}),
+    ...(reportConfig.reportBackendBaseUrl ? { reportBackendBaseUrl: reportConfig.reportBackendBaseUrl } : {})
   };
 }
 
 function syncFromEnvironment() {
-  if (!fs.existsSync(ENV_PATH)) {
-    throw new Error(`Missing .env file at ${ENV_PATH}`);
+  const { envPath, env, repoConfig } = buildEnvObject();
+  if (!envPath) {
+    throw new Error(`Missing .env file. Looked in: ${ENV_CANDIDATE_PATHS.join(", ")}`);
   }
 
-  const env = buildEnvObject();
-  const config = buildGeneratedConfig(env);
-
+  const config = buildGeneratedConfig(env, repoConfig);
   fs.writeFileSync(OUTPUT_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  console.log(`[Ariadex] Wrote ${OUTPUT_PATH}`);
+  console.log(`[Ariadex] Wrote ${OUTPUT_PATH} from ${envPath}`);
   console.log("[Ariadex] Reload the unpacked extension in chrome://extensions to apply updated credentials.");
 }
 
@@ -176,13 +128,12 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ENV_CANDIDATE_PATHS,
+  OUTPUT_PATH,
   parseDotEnv,
-  parseFollowingIds,
-  normalizeRuntimeEnvironment,
-  resolveGraphApiByEnv,
-  resolveGraphApiUrl,
+  resolveEnvPath,
   buildEnvObject,
-  resolveBranchName,
+  resolveReportConfig,
   buildGeneratedConfig,
   syncFromEnvironment
 };

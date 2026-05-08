@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Ariadex",
-  "version": "0.1",
-  "description": "Injects an Explore button into X tweets to bootstrap conversation exploration.",
-  "permissions": ["activeTab", "scripting"],
+  "name": "AriadeX",
+  "version": "0.0.1",
+  "description": "Minimal root-path explorer for X conversations.",
   "background": {
     "service_worker": "background.js"
   },
+  "permissions": [
+    "storage"
+  ],
   "host_permissions": [
     "https://api.x.com/*",
     "http://127.0.0.1/*",
@@ -14,23 +16,17 @@
   ],
   "content_scripts": [
     {
-      "matches": ["https://x.com/*"],
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
       "js": [
         "dev_env_loader.js",
-        "dom_collector.js",
-        "reply_inference.js",
-        "root_resolution.js",
-        "conversation_graph.js",
-        "conversation_adjacency.js",
-        "conversation_rank.js",
-        "thread_collapse.js",
-        "x_api_client.js",
-        "tweet_highlight.js",
-        "panel_renderer.js",
-        "conversation_engine.js",
         "content.js"
       ],
-      "css": ["styles.css"],
+      "css": [
+        "styles.css"
+      ],
       "run_at": "document_idle"
     }
   ]

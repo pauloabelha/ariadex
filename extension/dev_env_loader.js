@@ -2,186 +2,143 @@
   "use strict";
 
   const GENERATED_CONFIG_FILE = "dev_env.generated.json";
-  const BEARER_STORAGE_KEY = "ariadex.x_api_bearer_token";
-  const FOLLOWING_STORAGE_KEY = "ariadex.x_api_following_ids";
-  const GRAPH_API_BY_ENV_STORAGE_KEY = "ariadex.graph_api_by_env";
-  const RUNTIME_ENV_STORAGE_KEY = "ariadex.runtime_env";
-  const ALLOW_CLIENT_DIRECT_API_STORAGE_KEY = "ariadex.allow_client_direct_api";
-  const BRANCH_NAME_STORAGE_KEY = "ariadex.branch_name";
+  const BEARER_STORAGE_KEYS = [
+    "ariadex.x_api_bearer_token",
+    "ariadex.xApiBearerToken"
+  ];
 
-  function isExtensionContextValid() {
-    return (
-      typeof chrome !== "undefined"
-      && chrome.runtime
-      && chrome.runtime.id
-      && chrome.runtime.id !== "invalid"
+  function isExtensionContextValid(chromeApi = chrome) {
+    return Boolean(
+      chromeApi
+      && chromeApi.runtime
+      && chromeApi.runtime.id
+      && chromeApi.runtime.id !== "invalid"
     );
   }
 
-  function getGeneratedConfigUrl() {
-    if (!isExtensionContextValid()) {
-      return null;
-    }
-
-    if (typeof chrome.runtime.getURL !== "function") {
-      return null;
+  function getGeneratedConfigUrl(chromeApi = chrome) {
+    if (!isExtensionContextValid(chromeApi) || typeof chromeApi.runtime?.getURL !== "function") {
+      return "";
     }
 
     try {
-      const url = chrome.runtime.getURL(GENERATED_CONFIG_FILE);
-      if (!url || typeof url !== "string") {
-        return null;
-      }
-
-      const expectedPrefix = `chrome-extension://${chrome.runtime.id}/`;
-      if (!url.startsWith(expectedPrefix)) {
-        return null;
-      }
-
-      return url;
+      return String(chromeApi.runtime.getURL(GENERATED_CONFIG_FILE) || "");
     } catch {
-      return null;
+      return "";
     }
   }
 
   function isGeneratedConfigUrlSafe(url) {
-    if (!url || typeof url !== "string") {
+    if (!url) {
       return false;
     }
+
     try {
-      const parsed = new URL(url);
-      return parsed.protocol === "chrome-extension:" && parsed.hostname && parsed.hostname !== "invalid";
+      const parsed = new URL(String(url));
+      return parsed.protocol === "chrome-extension:" && Boolean(parsed.hostname) && parsed.hostname !== "invalid";
     } catch {
       return false;
     }
   }
 
-  function parseFollowingIds(raw) {
-    if (!Array.isArray(raw)) {
-      return [];
-    }
-
-    const unique = new Set();
-    for (const value of raw) {
-      if (value == null) {
-        continue;
-      }
-      const normalized = String(value).trim();
-      if (normalized) {
-        unique.add(normalized);
-      }
-    }
-    return [...unique];
-  }
-
-  function applyRuntimeConfig(config) {
+  function normalizeConfig(config) {
     if (!config || typeof config !== "object") {
-      return;
+      return {};
     }
 
     const bearerToken = typeof config.bearerToken === "string" ? config.bearerToken.trim() : "";
-    const followingIds = parseFollowingIds(config.followingIds);
-    const graphApiUrl = typeof config.graphApiUrl === "string" ? config.graphApiUrl.trim() : "";
-    const graphApiByEnv = config.graphApiByEnv && typeof config.graphApiByEnv === "object"
-      ? config.graphApiByEnv
-      : null;
-    const environment = typeof config.environment === "string" ? config.environment.trim().toLowerCase() : "";
-    const branchName = typeof config.branchName === "string" ? config.branchName.trim() : "";
-    const allowClientDirectApi = typeof config.allowClientDirectApi === "boolean"
-      ? config.allowClientDirectApi
-      : false;
+    const apiBaseUrl = typeof config.apiBaseUrl === "string" ? config.apiBaseUrl.trim() : "";
+    const reportBackendBaseUrl = typeof config.reportBackendBaseUrl === "string" ? config.reportBackendBaseUrl.trim() : "";
 
-    if (!bearerToken && followingIds.length === 0 && !graphApiUrl && !graphApiByEnv && !environment && !branchName && !allowClientDirectApi) {
-      return;
-    }
-
-    window.AriadexXApiSettings = {
-      ...(window.AriadexXApiSettings || {}),
+    return {
       ...(bearerToken ? { bearerToken } : {}),
-      ...(followingIds.length > 0 ? { followingIds } : {}),
-      ...(environment ? { environment } : {}),
-      ...(branchName ? { branchName } : {}),
-      allowClientDirectApi,
-      ...(graphApiByEnv ? { graphApiByEnv } : {}),
-      ...(graphApiUrl ? { graphApiUrl } : {})
+      ...(apiBaseUrl ? { apiBaseUrl } : {}),
+      ...(reportBackendBaseUrl ? { reportBackendBaseUrl } : {})
     };
-
-    if (bearerToken) {
-      try {
-        window.localStorage.setItem(BEARER_STORAGE_KEY, bearerToken);
-      } catch {}
-    }
-
-    if (followingIds.length > 0) {
-      try {
-        window.localStorage.setItem(FOLLOWING_STORAGE_KEY, JSON.stringify(followingIds));
-      } catch {}
-    }
-
-    if (graphApiUrl) {
-      try {
-        window.localStorage.setItem("ariadex.graph_api_url", graphApiUrl);
-      } catch {}
-    }
-
-    if (graphApiByEnv) {
-      try {
-        window.localStorage.setItem(GRAPH_API_BY_ENV_STORAGE_KEY, JSON.stringify(graphApiByEnv));
-      } catch {}
-    }
-
-    if (environment) {
-      try {
-        window.localStorage.setItem(RUNTIME_ENV_STORAGE_KEY, environment);
-      } catch {}
-    }
-
-    if (branchName) {
-      try {
-        window.localStorage.setItem(BRANCH_NAME_STORAGE_KEY, branchName);
-      } catch {}
-    }
-
-    try {
-      window.localStorage.setItem(ALLOW_CLIENT_DIRECT_API_STORAGE_KEY, String(allowClientDirectApi));
-    } catch {}
   }
 
-  async function loadGeneratedConfig() {
-    if (!isExtensionContextValid()) {
+  function persistBearerToken(bearerToken, chromeApi = chrome, view = globalThis.window) {
+    const trimmedToken = String(bearerToken || "").trim();
+    if (!trimmedToken) {
       return;
     }
 
-    const url = getGeneratedConfigUrl();
-    if (!url || !isGeneratedConfigUrlSafe(url)) {
-      return;
+    if (view && typeof view === "object") {
+      view.AriadexXApiSettings = {
+        ...(view.AriadexXApiSettings || {}),
+        bearerToken: trimmedToken
+      };
+      view.AriadexXApiBearerToken = trimmedToken;
     }
 
-    // Guard again in case extension context changed between URL generation and fetch.
-    if (!isExtensionContextValid()) {
-      return;
+    for (const key of BEARER_STORAGE_KEYS) {
+      try {
+        view?.localStorage?.setItem?.(key, trimmedToken);
+      } catch {}
     }
 
+    if (chromeApi?.storage?.local?.set) {
+      chromeApi.storage.local.set({
+        [BEARER_STORAGE_KEYS[0]]: trimmedToken,
+        [BEARER_STORAGE_KEYS[1]]: trimmedToken
+      }, () => {});
+    }
+  }
+
+  async function loadGeneratedConfig({
+    chromeApi = chrome,
+    fetchImpl = typeof fetch === "function" ? fetch.bind(globalThis) : null,
+    view = globalThis.window
+  } = {}) {
+    if (!fetchImpl || !isExtensionContextValid(chromeApi)) {
+      return null;
+    }
+
+    const url = getGeneratedConfigUrl(chromeApi);
     if (!isGeneratedConfigUrlSafe(url)) {
-      return;
+      return null;
     }
 
     try {
-      const response = await fetch(url, { cache: "no-store" });
-      if (!response.ok) {
-        return;
+      const response = await fetchImpl(url, { cache: "no-store" });
+      if (!response?.ok) {
+        return null;
       }
 
-      const config = await response.json();
-      applyRuntimeConfig(config);
+      const config = normalizeConfig(await response.json());
+      if (config.bearerToken) {
+        persistBearerToken(config.bearerToken, chromeApi, view);
+      }
+      if (config.apiBaseUrl && view && typeof view === "object") {
+        view.AriadexXApiSettings = {
+          ...(view.AriadexXApiSettings || {}),
+          apiBaseUrl: config.apiBaseUrl
+        };
+      }
+      if (view && typeof view === "object" && config.reportBackendBaseUrl) {
+        view.AriadexReportSettings = {
+          ...(view.AriadexReportSettings || {}),
+          backendBaseUrl: config.reportBackendBaseUrl
+        };
+      }
+      return config;
     } catch {
-      // Optional config: ignore missing/invalid file and stale-context fetch failures.
+      return null;
     }
   }
 
-  if (typeof chrome === "undefined" || !chrome.runtime || typeof chrome.runtime.getURL !== "function") {
-    return;
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      GENERATED_CONFIG_FILE,
+      BEARER_STORAGE_KEYS,
+      isExtensionContextValid,
+      getGeneratedConfigUrl,
+      isGeneratedConfigUrlSafe,
+      normalizeConfig,
+      persistBearerToken,
+      loadGeneratedConfig
+    };
+  } else {
+    globalThis.AriadexV2DevEnvReady = loadGeneratedConfig();
   }
-
-  loadGeneratedConfig();
 })();
