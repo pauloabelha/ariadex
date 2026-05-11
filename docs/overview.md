@@ -1,83 +1,86 @@
-# AriadeX Overview
+# Overview
 
-AriadeX is a path explorer for X conversations.
+AriadeX helps a reader inspect one tweet without falling into the whole feed.
 
-Its core question is:
+It has two evidence-first workflows:
 
-> How did this tweet get here, and what important context hangs off that path?
+- `Explore Path`: how this tweet connects backward through quote/reply structure.
+- `Top Takes`: which quote tweets around a source tweet most improve understanding.
 
-The answer is not a feed, a full graph, or an opaque summary. It is a structured artifact that keeps the evidence visible.
+The product is narrow on purpose. It is not a full graph crawler, a personalized feed, or an opaque AI summary.
 
 ## Mental Model
 
-AriadeX treats a clicked tweet as the end of a path.
+Explore Path treats the clicked tweet as the end of a path.
 
-The path is resolved by following explicit X relationships backward:
+```text
+root tweet -> ancestor tweet -> clicked tweet
+```
 
-- quote target
-- replied-to tweet
-- stop at root
+Top Takes treats the clicked tweet as the source of quote-discourse.
 
-Once AriadeX has the path, it builds four companion views:
+```text
+source tweet -> quote tweets -> ranked representative takes
+```
 
-- `Root Path`: the spine from root to explored tweet
-- `References`: external links cited along that spine
-- `People`: authors and mentioned users on that spine
-- `Replies`: reply pockets where path authors participate
+These workflows share UI, storage, config, and X API infrastructure, but produce separate artifacts.
 
-Report and gist generation are optional narrative layers on top of the artifact.
+## Explore Path
+
+Explore Path follows explicit X relationships backward:
+
+1. quoted tweet
+2. replied-to tweet
+3. stop at root
+
+It then enriches the path with:
+
+- canonical external references
+- authors and mentioned people
+- reply pockets where path authors participate
+
+Use this when you want to know how a tweet arrived in context.
+
+## Top Takes
+
+Top Takes ranks quote tweets only.
+
+Replies to quote tweets may be used as context, but they are not ranked. Viewer follow status is not used. The ranking is objective: the score is based on apparent author/domain relevance, enough substance to contain reasoning, and external references.
+
+Use this when you want a compact view of the best public quote-discourse around a source tweet.
+
+The canonical Top Takes spec is [top_takes.md](top_takes.md).
+
+## Generated Text
+
+Reports and gists are optional layers over existing artifacts.
+
+They should help reuse or communicate the artifact, not replace it. The artifact remains the source of truth.
 
 ## What AriadeX Is Good At
 
-AriadeX is useful when you land on a tweet and need to answer:
-
-- What original tweet or quote chain led here?
-- Which sources were cited along the way?
-- Which people are involved or mentioned?
-- Where did the path authors show up in replies?
-- Can this artifact be turned into a readable report?
-- Can I export the evidence as JSON?
+- Reconstructing one quote/reply path.
+- Preserving visible evidence.
+- Canonicalizing references.
+- Surfacing relevant people.
+- Finding compact reply pockets.
+- Ranking objective quote-discourse.
+- Exporting artifacts for debugging, notebooks, and reports.
 
 ## What AriadeX Is Not
 
-AriadeX is intentionally not:
+- A replacement X client.
+- A whole-conversation archive.
+- A personalized recommendation system.
+- A social graph database.
+- A legal or archival capture tool.
+- A claim-verification engine.
 
-- a whole-conversation crawler
-- a ranking engine
-- a replacement X client
-- a background surveillance tool
-- a general social graph database
+## Limitations
 
-It explores one clicked tweet at a time.
-
-## Primary Artifact
-
-The extension produces one artifact per explored tweet:
-
-- `path`
-  Ordered root-to-explored tweet chain.
-
-- `references`
-  Deduped canonical external URLs from path tweets.
-
-- `people`
-  Deduped canonical X users from path authors and mentions.
-
-- `replyChains`
-  Anchored reply subtrees under path tweets where path authors appear.
-
-The artifact can be exported as JSON, sent to the local report backend, or sent to the local gist backend.
-
-## Trust Model
-
-AriadeX keeps its generated text downstream of visible structure.
-
-The resolver builds the artifact first. The report backend only receives that artifact after the user asks for a report or gist. This keeps source collection deterministic and makes generated prose optional.
-
-## Current Limitations
-
-- X API visibility can differ from what the X web UI displays.
-- Recent search may omit deleted, hidden, old, or inaccessible replies.
-- Reference extraction depends on X API `entities.urls`.
-- The backend currently supports OpenAI-compatible chat completions only.
-- The extension expects local developer setup, not packaged distribution.
+- X API visibility can differ from the web UI.
+- Recent search can omit old, deleted, hidden, or inaccessible replies.
+- Reference extraction depends on X API URL entities.
+- Top Takes depends on quote-tweet endpoint visibility.
+- Top Takes may skip direct-reply context when X rate-limits conversation fetches.
+- The local report backend supports OpenAI-compatible chat completions only.

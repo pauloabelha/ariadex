@@ -5,7 +5,7 @@ const CONVERSATION_CACHE_KEY = "ariadex_conversation_cache";
 const QUOTE_TWEET_CACHE_KEY = "ariadex_quote_tweet_cache";
 const TOP_TAKES_ANALYSIS_CACHE_KEY = "ariadex_top_takes_analysis_cache";
 const TOP_TAKES_ARTIFACT_CACHE_KEY = "ariadex_top_takes_artifact_cache";
-const TOP_TAKES_CACHE_VERSION = 5;
+const TOP_TAKES_CACHE_VERSION = 7;
 const DEFAULT_API_BASE_URL = "https://api.x.com/2";
 const DEFAULT_TWEET_FIELDS = [
   "author_id",
@@ -38,7 +38,10 @@ const DEFAULT_OPTIONS = {
   maxQuotePages: 3,
   quoteBatchSize: 40,
   representativesPerRole: 3,
-  topCommentsPerQuote: 3
+  topCommentsPerQuote: 3,
+  maxRateLimitRetries: 2,
+  rateLimitRetryDelayMs: 60_000,
+  rateLimitMaxWaitMs: 120_000
 };
 const TOP_TAKES_ROLES = [
   "validation",
@@ -110,6 +113,30 @@ function clampScore(value) {
 function normalizeMetric(value) {
   const number = Number(value || 0);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, Number(ms || 0)));
+  });
+}
+
+function parseRateLimitWaitMs(response, options = {}) {
+  const headers = response?.headers;
+  const retryAfter = Number(headers?.get?.("retry-after") || 0);
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return retryAfter * 1000;
+  }
+
+  const resetSeconds = Number(headers?.get?.("x-rate-limit-reset") || 0);
+  if (Number.isFinite(resetSeconds) && resetSeconds > 0) {
+    const waitMs = (resetSeconds * 1000) - Date.now() + 1000;
+    if (waitMs > 0) {
+      return waitMs;
+    }
+  }
+
+  return Number(options?.rateLimitRetryDelayMs || DEFAULT_OPTIONS.rateLimitRetryDelayMs);
 }
 
 function ensureArray(value) {
@@ -442,21 +469,44 @@ function createTweetClient(fetchImpl, options = {}) {
 
   async function request(path, params = {}) {
     const url = buildApiUrl(clientOptions.apiBaseUrl, path, params);
-    const response = await effectiveFetch(url.toString(), {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${bearerToken}`
-      }
-    });
+    const maxRetries = Math.max(0, Math.min(10, Number(clientOptions.maxRateLimitRetries ?? DEFAULT_OPTIONS.maxRateLimitRetries)));
+    const maxWaitMs = Math.max(0, Number(clientOptions.rateLimitMaxWaitMs ?? DEFAULT_OPTIONS.rateLimitMaxWaitMs));
 
-    if (!response.ok) {
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      const response = await effectiveFetch(url.toString(), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${bearerToken}`
+        }
+      });
+
+      if (response.ok) {
+        return response.json();
+      }
+
+      if (Number(response.status) === 429 && attempt < maxRetries) {
+        const rawWaitMs = parseRateLimitWaitMs(response, clientOptions);
+        const waitMs = maxWaitMs > 0 ? Math.min(rawWaitMs, maxWaitMs) : rawWaitMs;
+        if (typeof clientOptions.onProgress === "function") {
+          clientOptions.onProgress({
+            phase: "x_rate_limit_wait",
+            path,
+            attempt: attempt + 1,
+            maxAttempts: maxRetries + 1,
+            waitMs
+          });
+        }
+        await sleep(waitMs);
+        continue;
+      }
+
       const error = new Error(`tweet_fetch_failed_${response.status}`);
       error.status = response.status;
       error.path = path;
       throw error;
     }
 
-    return response.json();
+    throw new Error("tweet_fetch_failed");
   }
 
   async function fetchTweetFromNetwork(tweetId) {
@@ -653,8 +703,19 @@ function isSpamLikeQuote(tweet) {
   if (!text) {
     return true;
   }
+  const rawText = String(tweet?.text || "").trim();
+  if (/^rt\s+@/i.test(rawText)) {
+    return true;
+  }
   const words = text.split(/\s+/).filter(Boolean);
   if (words.length <= 2) {
+    return true;
+  }
+  const withoutMentionsAndUrls = rawText
+    .replace(/@\w{1,15}/g, "")
+    .replace(/https?:\/\/\S+/g, "")
+    .trim();
+  if (words.length <= 6 && !withoutMentionsAndUrls) {
     return true;
   }
   const uniqueWords = new Set(words);
@@ -776,6 +837,7 @@ function selectTopCommentsForTweet(tweet, conversationTweets, options = {}) {
 
 async function attachTopCommentsToQuoteTweets(quoteTweets, deps, options = {}) {
   const tweets = ensureArray(quoteTweets).filter(Boolean);
+  const onProgress = typeof options?.onProgress === "function" ? options.onProgress : null;
   const commentCount = Math.max(0, Math.min(10, Number(options?.topCommentsPerQuote ?? DEFAULT_OPTIONS.topCommentsPerQuote)));
   if (tweets.length === 0 || commentCount === 0) {
     return tweets.map((tweet) => ({ ...tweet, topComments: [] }));
@@ -784,7 +846,21 @@ async function attachTopCommentsToQuoteTweets(quoteTweets, deps, options = {}) {
   const conversationIds = [...new Set(
     tweets.map((tweet) => normalizeTweetId(tweet?.conversationId || tweet?.id || "")).filter(Boolean)
   )];
-  const conversationPayloads = await fetchConversations(conversationIds, deps);
+  let conversationPayloads = [];
+  try {
+    conversationPayloads = await fetchConversations(conversationIds, deps);
+  } catch (error) {
+    if (Number(error?.status || 0) !== 429 && !String(error?.message || "").includes("tweet_fetch_failed_429")) {
+      throw error;
+    }
+    if (onProgress) {
+      onProgress({
+        phase: "top_comments_rate_limited",
+        candidateQuoteCount: tweets.length
+      });
+    }
+    return tweets.map((tweet) => ({ ...tweet, topComments: [] }));
+  }
   const conversationTweets = conversationPayloads
     .map((payload) => normalizeQuoteTweet(payload))
     .filter(Boolean);
@@ -860,6 +936,32 @@ function topTakesContentMultiplier(tweet) {
   return isLowInformationAffectiveReaction(tweet) ? 0.55 : 1;
 }
 
+function scoreTopTakeLength(tweet) {
+  const words = normalizeTextForDedupe(tweet?.text || "").split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+  if (wordCount <= 3) {
+    return 0;
+  }
+  if (wordCount <= 8) {
+    return 0.2;
+  }
+  if (wordCount <= 15) {
+    return 0.45;
+  }
+  if (wordCount <= 30) {
+    return 0.75;
+  }
+  return 1;
+}
+
+function scoreTopTakeReferences(tweet) {
+  const references = ensureArray(tweet?.referenceUrls).filter(Boolean);
+  if (references.length === 0) {
+    return 0;
+  }
+  return references.length === 1 ? 0.75 : 1;
+}
+
 function normalizeTopTakesClassification(rawEntry, quoteById) {
   const tweetId = normalizeTweetId(rawEntry?.tweetId || rawEntry?.id || "");
   const tweet = quoteById.get(tweetId);
@@ -877,6 +979,12 @@ function normalizeTopTakesClassification(rawEntry, quoteById) {
   const domainGroup = TOP_TAKES_DOMAIN_GROUPS.includes(requestedDomainGroup) ? requestedDomainGroup : "adjacent";
   const authorDomainRelevance = clampScore(rawEntry?.authorDomainRelevance);
   const authorExpertiseSignal = clampScore(rawEntry?.authorExpertiseSignal);
+  const inferredAuthorScore = Math.max(authorDomainRelevance, authorExpertiseSignal);
+  const domainExpertScore = clampScore(rawEntry?.domainExpertScore ?? rawEntry?.domain_expert_score ?? (domainGroup === "expert" ? inferredAuthorScore : 0));
+  const adjacentExpertScore = clampScore(rawEntry?.adjacentExpertScore ?? rawEntry?.adjacent_expert_score ?? (domainGroup === "adjacent" ? inferredAuthorScore : 0));
+  const authorScore = Math.max(domainExpertScore, adjacentExpertScore);
+  const lengthScore = scoreTopTakeLength(tweet);
+  const referenceScore = scoreTopTakeReferences(tweet);
   const isDomainFluentTechnicalTake = Boolean(rawEntry?.isDomainFluentTechnicalTake);
   const confidence = clampScore(rawEntry?.confidence);
   const domainBoostRoles = new Set(["technical_explanation", "methodological_criticism", "operational_caveat", "evidence"]);
@@ -894,6 +1002,11 @@ function normalizeTopTakesClassification(rawEntry, quoteById) {
   );
   const contentMultiplier = topTakesContentMultiplier(tweet);
   const combinedScore = baseScore * contentMultiplier;
+  const takeScore = (
+    authorScore * 0.45
+    + lengthScore * 0.30
+    + referenceScore * 0.25
+  ) * contentMultiplier;
 
   return {
     tweetId,
@@ -906,6 +1019,18 @@ function normalizeTopTakesClassification(rawEntry, quoteById) {
     expertiseEvidence: normalizeDisplayName(rawEntry?.expertiseEvidence || ""),
     isDomainFluentTechnicalTake,
     scorecard,
+    domainExpertScore,
+    adjacentExpertScore,
+    authorScore,
+    lengthScore,
+    referenceScore,
+    takeScore,
+    domain_expert_score: domainExpertScore,
+    adjacent_expert_score: adjacentExpertScore,
+    author_score: authorScore,
+    length_score: lengthScore,
+    reference_score: referenceScore,
+    take_score: takeScore,
     confidence,
     contentMultiplier,
     explanation: normalizeDisplayName(rawEntry?.explanation || rawEntry?.why_it_matters || ""),
@@ -915,72 +1040,46 @@ function normalizeTopTakesClassification(rawEntry, quoteById) {
 }
 
 function groupTopTakes(classifications, options = {}) {
-  const representativesPerGroup = Math.max(1, Math.min(8, Number(options?.representativesPerGroup || options?.representativesPerRole || DEFAULT_OPTIONS.representativesPerRole)));
-  const groupedRoles = [];
+  const representativeLimit = Math.max(1, Math.min(40, Number(options?.representativeTakeCount || options?.maxRepresentativeTakes || 20)));
+  const minTakeScore = Math.max(0, Math.min(1, Number(options?.minTakeScore ?? 0.55)));
   const representativeTakes = [];
-  const byGroup = new Map();
 
-  for (const classification of ensureArray(classifications)) {
-    if (!classification?.tweetId) {
+  const entries = ensureArray(classifications)
+    .filter((entry) => {
+      const score = Number(entry?.takeScore ?? entry?.combinedScore ?? 0);
+      return entry?.tweetId && Number.isFinite(score) && score >= minTakeScore;
+    })
+    .sort((left, right) => Number(right?.takeScore ?? right?.combinedScore ?? 0) - Number(left?.takeScore ?? left?.combinedScore ?? 0));
+
+  const selectedAuthors = new Set();
+  for (const entry of entries) {
+    if (representativeTakes.length >= representativeLimit) {
+      break;
+    }
+    const author = canonicalizeHandle(entry?.raw?.author || "");
+    if (author && selectedAuthors.has(author)) {
       continue;
     }
-    const group = TOP_TAKES_DOMAIN_GROUPS.includes(classification.domainGroup) ? classification.domainGroup : "adjacent";
-    const entries = byGroup.get(group) || [];
-    entries.push(classification);
-    byGroup.set(group, entries);
-  }
-
-  for (const group of TOP_TAKES_DOMAIN_GROUPS) {
-    const entries = (byGroup.get(group) || [])
-      .filter((entry) => entry.combinedScore > 0)
-      .sort((left, right) => right.combinedScore - left.combinedScore);
-    if (entries.length === 0) {
+    if (representativeTakes.some((candidate) => areNearDuplicateTexts(candidate.raw?.text || "", entry.raw?.text || ""))) {
       continue;
     }
-
-    const selected = [];
-    const selectedRoles = new Set();
-    for (const entry of entries) {
-      if (selected.length >= representativesPerGroup) {
-        break;
-      }
-      if (selectedRoles.has(entry.role)) {
-        continue;
-      }
-      if (selected.some((candidate) => areNearDuplicateTexts(candidate.raw?.text || "", entry.raw?.text || ""))) {
-        continue;
-      }
-      selected.push(entry);
-      selectedRoles.add(entry.role);
-    }
-    for (const entry of entries) {
-      if (selected.length >= representativesPerGroup) {
-        break;
-      }
-      if (selected.includes(entry)) {
-        continue;
-      }
-      if (selected.some((candidate) => areNearDuplicateTexts(candidate.raw?.text || "", entry.raw?.text || ""))) {
-        continue;
-      }
-      selected.push(entry);
-    }
-
-    groupedRoles.push({
-      role: group,
-      group,
-      label: TOP_TAKES_DOMAIN_GROUP_LABELS[group],
-      takeCount: entries.length,
-      takes: selected
-    });
-    representativeTakes.push(...selected.map((entry) => ({
+    representativeTakes.push({
       ...entry,
       selectedBecause: entry.explanation || `${entry.domainGroupLabel} perspective with high substance, novelty, and credibility.`
-    })));
+    });
+    if (author) {
+      selectedAuthors.add(author);
+    }
   }
 
   return {
-    groupedRoles,
+    groupedRoles: [{
+      role: "ranked",
+      group: "ranked",
+      label: "Top Takes",
+      takeCount: entries.length,
+      takes: representativeTakes
+    }],
     representativeTakes
   };
 }
@@ -990,6 +1089,7 @@ async function readQuoteTweetsForSource(sourceTweetId, { storage, client }, opti
   if (!normalizedTweetId) {
     return [];
   }
+  const onProgress = typeof options?.onProgress === "function" ? options.onProgress : null;
 
   const maxQuoteTweets = Math.max(1, Math.min(500, Number(options?.maxQuoteTweets || DEFAULT_OPTIONS.maxQuoteTweets)));
   const cache = typeof storage?.readQuoteTweetCache === "function" ? await storage.readQuoteTweetCache() : {};
@@ -999,9 +1099,24 @@ async function readQuoteTweetsForSource(sourceTweetId, { storage, client }, opti
     && Array.isArray(cachedEntry.payloads)
     && Number(cachedEntry.maxQuoteTweets || 0) >= maxQuoteTweets
   ) {
+    if (onProgress) {
+      onProgress({
+        phase: "quote_tweets_cache_hit",
+        sourceTweetId: normalizedTweetId,
+        quoteCount: cachedEntry.payloads.length,
+        cachedAt: String(cachedEntry.fetchedAt || "")
+      });
+    }
     return cachedEntry.payloads.slice(0, maxQuoteTweets);
   }
 
+  if (onProgress) {
+    onProgress({
+      phase: "quote_tweets_cache_miss",
+      sourceTweetId: normalizedTweetId,
+      requestedQuoteCount: maxQuoteTweets
+    });
+  }
   const payloads = await client.fetchQuoteTweetsFromNetwork(normalizedTweetId, options);
   if (typeof storage?.writeQuoteTweetCache === "function") {
     await storage.writeQuoteTweetCache({
@@ -1012,6 +1127,13 @@ async function readQuoteTweetsForSource(sourceTweetId, { storage, client }, opti
         payloads
       }
     });
+    if (onProgress) {
+      onProgress({
+        phase: "quote_tweets_cache_write",
+        sourceTweetId: normalizedTweetId,
+        quoteCount: payloads.length
+      });
+    }
   }
   await cacheTweets(payloads, storage);
   return payloads;
@@ -1025,6 +1147,44 @@ function buildAnalysisCacheKey(sourceTweet, quoteTweets, model = "") {
     String(model || "default").trim(),
     quoteIds.join(",")
   ].join(":");
+}
+
+function summarizeOpenAiBatchTimings(timings) {
+  const cleanTimings = ensureArray(timings)
+    .map((entry) => ({
+      batchIndex: Number(entry?.batchIndex || 0),
+      quoteCount: Number(entry?.quoteCount || 0),
+      durationMs: Number(entry?.durationMs || 0),
+      completedAt: String(entry?.completedAt || "")
+    }))
+    .filter((entry) => Number.isFinite(entry.durationMs) && entry.durationMs > 0);
+  const totalDurationMs = cleanTimings.reduce((sum, entry) => sum + entry.durationMs, 0);
+  const totalQuoteCount = cleanTimings.reduce((sum, entry) => sum + Math.max(0, entry.quoteCount), 0);
+  const averageBatchDurationMs = cleanTimings.length > 0 ? totalDurationMs / cleanTimings.length : 0;
+  const averageMsPerQuote = totalQuoteCount > 0 ? totalDurationMs / totalQuoteCount : 0;
+  return {
+    batchCount: cleanTimings.length,
+    totalDurationMs,
+    averageBatchDurationMs,
+    averageMsPerQuote,
+    batches: cleanTimings
+  };
+}
+
+function estimateOpenAiRemainingMs(batch, remainingBatches, timingSummary = {}) {
+  const averageMsPerQuote = Number(timingSummary?.averageMsPerQuote || 0);
+  if (Number.isFinite(averageMsPerQuote) && averageMsPerQuote > 0) {
+    const remainingQuoteCount = ensureArray(remainingBatches)
+      .reduce((sum, entry) => sum + ensureArray(entry?.quoteTweets).length, ensureArray(batch?.quoteTweets).length);
+    return Math.round(remainingQuoteCount * averageMsPerQuote);
+  }
+
+  const averageBatchDurationMs = Number(timingSummary?.averageBatchDurationMs || 0);
+  if (Number.isFinite(averageBatchDurationMs) && averageBatchDurationMs > 0) {
+    return Math.round((ensureArray(remainingBatches).length + 1) * averageBatchDurationMs);
+  }
+
+  return 0;
 }
 
 async function resolveTopTakes(tweetId, deps, options = {}) {
@@ -1061,9 +1221,15 @@ async function resolveTopTakes(tweetId, deps, options = {}) {
   if (onProgress) {
     onProgress({ phase: "collecting_quote_tweets", sourceTweetId: normalizedTweetId });
   }
-  const sourcePayload = await fetchTweet(normalizedTweetId, deps);
+  const sourcePayload = await fetchTweet(normalizedTweetId, {
+    ...deps,
+    cacheProgress: true
+  });
   const sourceTweet = normalizeQuoteTweet(sourcePayload);
-  const quotePayloads = await readQuoteTweetsForSource(normalizedTweetId, deps, options);
+  const quotePayloads = await readQuoteTweetsForSource(normalizedTweetId, deps, {
+    ...options,
+    onProgress
+  });
 
   if (onProgress) {
     onProgress({ phase: "normalizing_discourse", quoteCount: quotePayloads.length });
@@ -1073,7 +1239,10 @@ async function resolveTopTakes(tweetId, deps, options = {}) {
   if (onProgress) {
     onProgress({ phase: "collecting_top_comments", candidateQuoteCount: dedupedQuotes.length, topCommentsPerQuote: Math.max(0, Math.min(10, Number(options?.topCommentsPerQuote ?? DEFAULT_OPTIONS.topCommentsPerQuote))) });
   }
-  const candidateQuotes = await attachTopCommentsToQuoteTweets(dedupedQuotes, deps, options);
+  const candidateQuotes = await attachTopCommentsToQuoteTweets(dedupedQuotes, deps, {
+    ...options,
+    onProgress
+  });
   const batchSize = Math.max(10, Math.min(50, Number(options?.quoteBatchSize || DEFAULT_OPTIONS.quoteBatchSize)));
   const batches = [];
   for (let batchIndex = 0; batchIndex * batchSize < candidateQuotes.length; batchIndex += 1) {
@@ -1087,6 +1256,7 @@ async function resolveTopTakes(tweetId, deps, options = {}) {
   const cacheKey = buildAnalysisCacheKey(sourceTweet, candidateQuotes, modelHint);
   let classifications = [];
   let modelMetadata = analysisCache[cacheKey]?.modelMetadata || {};
+  let openAiTiming = analysisCache[cacheKey]?.openAiTiming || {};
   let sourceDomain = String(analysisCache[cacheKey]?.sourceDomain || "").trim();
   let sourceDomainConfidence = clampScore(analysisCache[cacheKey]?.sourceDomainConfidence);
   if (Array.isArray(analysisCache[cacheKey]?.classifications)) {
@@ -1094,17 +1264,49 @@ async function resolveTopTakes(tweetId, deps, options = {}) {
       ...entry,
       raw: candidateQuotes.find((tweet) => tweet.id === entry.tweetId) || entry.raw
     }));
+    if (onProgress && openAiTiming?.batchCount) {
+      onProgress({
+        phase: "openai_timing_cache_hit",
+        batchCount: Number(openAiTiming.batchCount || 0),
+        averageBatchDurationMs: Number(openAiTiming.averageBatchDurationMs || 0),
+        averageMsPerQuote: Number(openAiTiming.averageMsPerQuote || 0)
+      });
+    }
   } else {
+    const batchTimings = [];
     for (const batch of batches) {
+      const remainingBatches = batches.slice(batch.batchIndex + 1);
+      const estimatedRemainingMs = estimateOpenAiRemainingMs(batch, remainingBatches, openAiTiming);
       if (onProgress) {
         onProgress({
           phase: "sending_batches_to_openai",
           batchIndex: batch.batchIndex + 1,
           batchCount: batches.length,
-          quoteCount: batch.quoteTweets.length
+          quoteCount: batch.quoteTweets.length,
+          estimatedRemainingMs
         });
       }
+      const startedAt = Date.now();
       const result = await deps.analyzeTopTakesBatch(batch, options);
+      const durationMs = Date.now() - startedAt;
+      batchTimings.push({
+        batchIndex: batch.batchIndex + 1,
+        quoteCount: batch.quoteTweets.length,
+        durationMs,
+        completedAt: new Date().toISOString()
+      });
+      openAiTiming = summarizeOpenAiBatchTimings(batchTimings);
+      if (onProgress) {
+        onProgress({
+          phase: "openai_batch_complete",
+          batchIndex: batch.batchIndex + 1,
+          batchCount: batches.length,
+          quoteCount: batch.quoteTweets.length,
+          durationMs,
+          averageBatchDurationMs: openAiTiming.averageBatchDurationMs,
+          averageMsPerQuote: openAiTiming.averageMsPerQuote
+        });
+      }
       if (!sourceDomain && result?.sourceDomain) {
         sourceDomain = normalizeDisplayName(result.sourceDomain);
       }
@@ -1126,6 +1328,7 @@ async function resolveTopTakes(tweetId, deps, options = {}) {
         [cacheKey]: {
           cachedAt: new Date().toISOString(),
           modelMetadata,
+          openAiTiming,
           sourceDomain,
           sourceDomainConfidence,
           classifications: classifications.map((entry) => ({
@@ -1177,6 +1380,7 @@ async function resolveTopTakes(tweetId, deps, options = {}) {
       representativeTakeCount: grouped.representativeTakes.length
     },
     modelMetadata,
+    openAiTiming,
     cacheKey
   };
 
@@ -1454,7 +1658,7 @@ function resolveParentId(tweet) {
   return { parentId: "", relationType: "" };
 }
 
-async function fetchTweet(tweetId, { storage, client }) {
+async function fetchTweet(tweetId, { storage, client, onProgress, cacheProgress }) {
   const normalizedTweetId = normalizeTweetId(tweetId);
   if (!normalizedTweetId) {
     throw new Error("missing_tweet_id");
@@ -1462,7 +1666,19 @@ async function fetchTweet(tweetId, { storage, client }) {
 
   const cache = await storage.readCache();
   if (cache[normalizedTweetId]) {
+    if (cacheProgress && typeof onProgress === "function") {
+      onProgress({
+        phase: "tweet_cache_hit",
+        tweetId: normalizedTweetId
+      });
+    }
     return cache[normalizedTweetId];
+  }
+  if (cacheProgress && typeof onProgress === "function") {
+    onProgress({
+      phase: "tweet_cache_miss",
+      tweetId: normalizedTweetId
+    });
   }
 
   if (inFlightTweetFetchById.has(normalizedTweetId)) {
@@ -1475,6 +1691,12 @@ async function fetchTweet(tweetId, { storage, client }) {
       ...cache,
       [normalizedTweetId]: payload
     });
+    if (cacheProgress && typeof onProgress === "function") {
+      onProgress({
+        phase: "tweet_cache_write",
+        tweetId: normalizedTweetId
+      });
+    }
     return payload;
   })();
   inFlightTweetFetchById.set(normalizedTweetId, pending);
@@ -1908,6 +2130,8 @@ const api = {
   buildTopTakesPeople,
   readQuoteTweetsForSource,
   buildAnalysisCacheKey,
+  summarizeOpenAiBatchTimings,
+  estimateOpenAiRemainingMs,
   extractReferenceUrls,
   extractMentionHandles,
   extractMentionPeople,

@@ -1,8 +1,10 @@
-# Reference Handling
+# References
 
-AriadeX treats references as part of the evidence trail.
+AriadeX treats external links as evidence, not decoration.
 
-References are collected only from tweets on the resolved root path. Reply-chain references are not promoted into the main reference list yet, because the current artifact is organized around the path itself.
+Explore Path builds a canonical reference list from tweets on the resolved root path. Reply-chain references are not promoted into that main list yet because the Explore Path artifact is organized around the path itself.
+
+Top Takes uses quote-tweet external links differently: they contribute to each quote tweet's `reference_score`, but they do not become part of the Explore Path reference artifact.
 
 ## Source Fields
 
@@ -30,7 +32,7 @@ The canonicalizer:
 - normalizes `youtu.be/<id>` to `youtube.com/watch?v=<id>`
 - removes trailing slashes
 
-The goal is stable identity, not perfect archival fidelity.
+The goal is stable identity, not archival fidelity.
 
 ## Numbering
 
@@ -56,7 +58,7 @@ Each reference entry is shaped for UI and export use:
 - count of path tweets that cited it
 - tweet ids that cited it when available
 
-The JSON export preserves the same canonical list, making it suitable for downstream analysis or report generation.
+The JSON export preserves the same canonical list, making it suitable for debugging, notebooks, and report generation.
 
 ## Practical Caveats
 

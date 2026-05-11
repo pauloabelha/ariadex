@@ -311,8 +311,11 @@
       return "Path lookup failed: missing X API bearer token. Set `ariadex.x_api_bearer_token` in page localStorage or chrome.storage.local, then reload X.";
     }
 
-    if (normalized.includes("tweet_fetch_failed_401") || normalized.includes("tweet_fetch_failed_403")) {
+    if (normalized.includes("tweet_fetch_failed_401") || normalized.includes("tweet_fetch_failed-401") || normalized.includes("tweet_fetch_failed_403") || normalized.includes("tweet_fetch_failed-403")) {
       return "Path lookup failed: X rejected the bearer token. Check that the token is valid and has access to the requested API endpoints.";
+    }
+    if (normalized.includes("tweet_fetch_failed_429") || normalized.includes("tweet_fetch_failed-429")) {
+      return "Path lookup failed: X rate-limited the request. Wait for the X API limit window to reset, then try again.";
     }
 
     if (
@@ -404,10 +407,57 @@
     return "Generating gist...";
   }
 
+  function formatDuration(ms) {
+    const totalSeconds = Math.max(1, Math.round(Number(ms || 0) / 1000));
+    if (totalSeconds < 60) {
+      return `${totalSeconds}s`;
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+
   function formatTopTakesProgressMessage(progress) {
     const phase = String(progress?.phase || "").trim();
     if (phase === "collecting_quote_tweets") {
       return "Collecting quote tweets from X...";
+    }
+    if (phase === "tweet_cache_hit") {
+      return "Using cached source tweet.";
+    }
+    if (phase === "tweet_cache_miss") {
+      return "Fetching source tweet from X...";
+    }
+    if (phase === "tweet_cache_write") {
+      return "Cached source tweet for later runs.";
+    }
+    if (phase === "quote_tweets_cache_hit") {
+      const count = Number(progress?.quoteCount || 0);
+      return `Using ${count} cached quote tweet${count === 1 ? "" : "s"}.`;
+    }
+    if (phase === "quote_tweets_cache_miss") {
+      const count = Number(progress?.requestedQuoteCount || 0);
+      return count
+        ? `Fetching up to ${count} quote tweets from X...`
+        : "Fetching quote tweets from X...";
+    }
+    if (phase === "quote_tweets_cache_write") {
+      const count = Number(progress?.quoteCount || 0);
+      return `Cached ${count} quote tweet${count === 1 ? "" : "s"} for later runs.`;
+    }
+    if (phase === "x_rate_limit_wait") {
+      const seconds = Math.max(1, Math.ceil(Number(progress?.waitMs || 0) / 1000));
+      const attempt = Number(progress?.attempt || 0);
+      const maxAttempts = Number(progress?.maxAttempts || 0);
+      return maxAttempts
+        ? `X rate-limited this endpoint. Waiting ${seconds}s before retry ${attempt + 1}/${maxAttempts}...`
+        : `X rate-limited this endpoint. Waiting ${seconds}s before retrying...`;
+    }
+    if (phase === "top_comments_rate_limited") {
+      return "X still rate-limited comment context. Continuing with cached quote tweets only.";
+    }
+    if (phase === "top_takes_port_reconnecting") {
+      return "Top Takes background connection closed. Reconnecting and resuming from cache...";
     }
     if (phase === "top_takes_cache_hit") {
       return "Loading cached Top Takes...";
@@ -424,9 +474,25 @@
     if (phase === "sending_batches_to_openai") {
       const batchIndex = Number(progress?.batchIndex || 0);
       const batchCount = Number(progress?.batchCount || 0);
+      const estimatedRemainingMs = Number(progress?.estimatedRemainingMs || 0);
+      const estimateText = estimatedRemainingMs > 0 ? ` Estimated remaining ${formatDuration(estimatedRemainingMs)}.` : "";
       return batchCount
-        ? `Sending quote batch ${batchIndex}/${batchCount} to OpenAI...`
-        : "Sending quote batches to OpenAI...";
+        ? `Sending quote batch ${batchIndex}/${batchCount} to OpenAI...${estimateText}`
+        : `Sending quote batches to OpenAI...${estimateText}`;
+    }
+    if (phase === "openai_batch_complete") {
+      const batchIndex = Number(progress?.batchIndex || 0);
+      const batchCount = Number(progress?.batchCount || 0);
+      const durationMs = Number(progress?.durationMs || 0);
+      return batchCount
+        ? `OpenAI batch ${batchIndex}/${batchCount} finished in ${formatDuration(durationMs)}.`
+        : `OpenAI batch finished in ${formatDuration(durationMs)}.`;
+    }
+    if (phase === "openai_timing_cache_hit") {
+      const averageMs = Number(progress?.averageBatchDurationMs || 0);
+      return averageMs > 0
+        ? `Using cached OpenAI timing estimate: about ${formatDuration(averageMs)} per batch.`
+        : "Using cached OpenAI timing estimate.";
     }
     if (phase === "analyzing_epistemic_roles") {
       return "Analyzing epistemic roles...";
@@ -459,8 +525,11 @@
     if (normalized.includes("missing_x_api_bearer_token")) {
       return "Top Takes failed: missing X API bearer token.";
     }
-    if (normalized.includes("tweet_fetch_failed_401") || normalized.includes("tweet_fetch_failed_403")) {
+    if (normalized.includes("tweet_fetch_failed_401") || normalized.includes("tweet_fetch_failed-401") || normalized.includes("tweet_fetch_failed_403") || normalized.includes("tweet_fetch_failed-403")) {
       return "Top Takes failed: X rejected the bearer token or quote-tweet endpoint access.";
+    }
+    if (normalized.includes("tweet_fetch_failed_429") || normalized.includes("tweet_fetch_failed-429")) {
+      return "Top Takes failed: X rate-limited the tweet or quote-tweet request. Wait for the X API limit window to reset, then try again.";
     }
     if (normalized.includes("top_takes_openai_failed_401") || normalized.includes("top_takes_openai_failed_403")) {
       return "Top Takes failed: OpenAI rejected the API key or model access.";
@@ -1161,6 +1230,10 @@
     } else if (domainGroup === "adjacent") {
       addPill(domainLabel || "Adjacent", "adjacent");
     }
+    addPill(take?.roleLabel || take?.role || "", "role");
+    if (Array.isArray(raw.referenceUrls) && raw.referenceUrls.length > 0) {
+      addPill("Reference", "reference");
+    }
 
     const author = root.createElement("div");
     author.className = "ariadex-item-author";
@@ -1202,6 +1275,10 @@
     const scores = root.createElement("div");
     scores.className = "ariadex-score-row";
     for (const [label, value] of [
+      ["Take", take?.takeScore],
+      ["Author", take?.authorScore],
+      ["Length", take?.lengthScore],
+      ["Reference", take?.referenceScore],
       ["Substance", scorecard.substance],
       ["Novelty", scorecard.novelty],
       ["Credibility", scorecard.credibility]
@@ -1792,7 +1869,8 @@
         representativeTakes: [],
         people: [],
         stats: {},
-        modelMetadata: {}
+        modelMetadata: {},
+        openAiTiming: {}
       });
     }
 
@@ -1808,7 +1886,8 @@
         representativeTakes: Array.isArray(artifact?.representativeTakes) ? artifact.representativeTakes : [],
         people: Array.isArray(artifact?.people) ? artifact.people : [],
         stats: artifact?.stats && typeof artifact.stats === "object" ? artifact.stats : {},
-        modelMetadata: artifact?.modelMetadata && typeof artifact.modelMetadata === "object" ? artifact.modelMetadata : {}
+        modelMetadata: artifact?.modelMetadata && typeof artifact.modelMetadata === "object" ? artifact.modelMetadata : {},
+        openAiTiming: artifact?.openAiTiming && typeof artifact.openAiTiming === "object" ? artifact.openAiTiming : {}
       };
     }
 
@@ -1817,9 +1896,31 @@
       Promise.resolve(readConfiguredApiBaseUrl(globalThis.window))
     ])).then(([bearerToken, apiBaseUrl]) => {
       return new Promise((resolve, reject) => {
+        const requestPayload = {
+          type: RESOLVE_TOP_TAKES_MESSAGE_TYPE,
+          tweetId: clickedTweetId,
+          bearerToken,
+          apiBaseUrl
+        };
+        const requestViaMessage = () => {
+          chromeApi.runtime.sendMessage(requestPayload, (response) => {
+            const runtimeError = chromeApi.runtime?.lastError;
+            if (runtimeError) {
+              reject(new Error(runtimeError.message || "top_takes_port_disconnected"));
+              return;
+            }
+            if (!response?.ok) {
+              reject(new Error(response?.error || "top_takes_failed"));
+              return;
+            }
+            resolve(normalizeArtifact(response?.artifact || {}));
+          });
+        };
+
         if (chromeApi?.runtime?.connect) {
           const port = chromeApi.runtime.connect({ name: RESOLVE_TOP_TAKES_PORT_NAME });
           let settled = false;
+          let fallbackStarted = false;
           const finishResolve = (value) => {
             if (settled) {
               return;
@@ -1854,36 +1955,26 @@
           });
           if (port.onDisconnect?.addListener) {
             port.onDisconnect.addListener(() => {
+              if (settled || fallbackStarted) {
+                return;
+              }
+              fallbackStarted = true;
+              if (typeof onProgress === "function") {
+                onProgress({ phase: "top_takes_port_reconnecting" });
+              }
               const runtimeMessage = chromeApi?.runtime?.lastError?.message || "";
-              finishReject(new Error(runtimeMessage || "top_takes_port_disconnected"));
+              if (!chromeApi?.runtime?.sendMessage) {
+                finishReject(new Error(runtimeMessage || "top_takes_port_disconnected"));
+                return;
+              }
+              requestViaMessage();
             });
           }
-          port.postMessage({
-            type: RESOLVE_TOP_TAKES_MESSAGE_TYPE,
-            tweetId: clickedTweetId,
-            bearerToken,
-            apiBaseUrl
-          });
+          port.postMessage(requestPayload);
           return;
         }
 
-        chromeApi.runtime.sendMessage({
-          type: RESOLVE_TOP_TAKES_MESSAGE_TYPE,
-          tweetId: clickedTweetId,
-          bearerToken,
-          apiBaseUrl
-        }, (response) => {
-          const runtimeError = chromeApi.runtime?.lastError;
-          if (runtimeError) {
-            reject(new Error(runtimeError.message || "extension_message_failed"));
-            return;
-          }
-          if (!response?.ok) {
-            reject(new Error(response?.error || "top_takes_failed"));
-            return;
-          }
-          resolve(normalizeArtifact(response?.artifact || {}));
-        });
+        requestViaMessage();
       });
     });
   }

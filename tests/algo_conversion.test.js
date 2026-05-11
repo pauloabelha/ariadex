@@ -148,7 +148,7 @@ test("dedupeQuoteTweets removes spam and near-identical quote phrasing", () => {
   assert.deepEqual(quotes.map((tweet) => tweet.id), ["1", "4"]);
 });
 
-test("groupTopTakes groups takes into Expert and Adjacent with role coverage", () => {
+test("groupTopTakes returns one ranked representative list", () => {
   const grouped = algo.groupTopTakes([
     {
       tweetId: "1",
@@ -174,8 +174,8 @@ test("groupTopTakes groups takes into Expert and Adjacent with role coverage", (
     }
   ]);
 
-  assert.deepEqual(grouped.groupedRoles.map((group) => [group.group, group.label]), [["expert", "Expert"], ["adjacent", "Adjacent"]]);
-  assert.deepEqual(grouped.representativeTakes.map((take) => take.tweetId), ["2", "1"]);
+  assert.deepEqual(grouped.groupedRoles.map((group) => [group.group, group.label]), [["ranked", "Top Takes"]]);
+  assert.deepEqual(grouped.representativeTakes.map((take) => take.tweetId), ["1", "2"]);
 });
 
 test("normalizeTopTakesClassification preserves author expertise fields", () => {
@@ -203,6 +203,12 @@ test("normalizeTopTakesClassification preserves author expertise fields", () => 
   assert.equal(classification.domainGroupLabel, "Expert");
   assert.equal(classification.authorDomainRelevance, 0.9);
   assert.equal(classification.authorExpertiseSignal, 0.8);
+  assert.equal(classification.domainExpertScore, 0.9);
+  assert.equal(classification.adjacentExpertScore, 0);
+  assert.equal(classification.authorScore, 0.9);
+  assert.ok(classification.lengthScore > 0);
+  assert.equal(classification.referenceScore, 0);
+  assert.ok(classification.takeScore > 0);
   assert.equal(classification.expertiseEvidence, "Profile says robotics researcher; quote explains control latency.");
   assert.equal(classification.isDomainFluentTechnicalTake, true);
 });
@@ -235,6 +241,7 @@ test("normalizeTopTakesClassification penalizes low-information affective reacti
   assert.equal(good.contentMultiplier, 1);
   assert.equal(bad.contentMultiplier, 0.55);
   assert.ok(good.combinedScore > bad.combinedScore);
+  assert.ok(good.takeScore > bad.takeScore);
 });
 
 test("selectTopCommentsForTweet keeps the top three direct replies by engagement", () => {
@@ -278,6 +285,50 @@ test("buildTopTakesCandidateBatch includes top comments as quote context", () =>
     authorFollowers: undefined,
     authorVerified: undefined,
     authorDescription: undefined
+  }]);
+});
+
+test("OpenAI timing helpers summarize batches and estimate remaining time", () => {
+  const summary = algo.summarizeOpenAiBatchTimings([
+    { batchIndex: 1, quoteCount: 10, durationMs: 2000, completedAt: "now" },
+    { batchIndex: 2, quoteCount: 5, durationMs: 1000, completedAt: "later" }
+  ]);
+
+  assert.equal(summary.batchCount, 2);
+  assert.equal(summary.totalDurationMs, 3000);
+  assert.equal(summary.averageBatchDurationMs, 1500);
+  assert.equal(summary.averageMsPerQuote, 200);
+  assert.equal(algo.estimateOpenAiRemainingMs(
+    { quoteTweets: Array.from({ length: 4 }) },
+    [{ quoteTweets: Array.from({ length: 6 }) }],
+    summary
+  ), 2000);
+});
+
+test("attachTopCommentsToQuoteTweets skips comment context when X rate-limits conversation fetches", async () => {
+  const tweets = await algo.attachTopCommentsToQuoteTweets([
+    { id: "10", conversationId: "10", author: "expert", text: "quote" }
+  ], {
+    storage: {
+      async readConversationCache() {
+        return {};
+      }
+    },
+    client: {
+      async fetchConversationFromNetwork() {
+        const error = new Error("tweet_fetch_failed_429");
+        error.status = 429;
+        throw error;
+      }
+    }
+  });
+
+  assert.deepEqual(tweets, [{
+    id: "10",
+    conversationId: "10",
+    author: "expert",
+    text: "quote",
+    topComments: []
   }]);
 });
 

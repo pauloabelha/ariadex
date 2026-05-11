@@ -319,7 +319,8 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
       ).trim() || algoApi.DEFAULT_API_BASE_URL;
       const client = algoApi.createTweetClient(fetchImpl, {
         bearerToken,
-        apiBaseUrl
+        apiBaseUrl,
+        onProgress: typeof options?.onProgress === "function" ? options.onProgress : null
       });
       return algoApi.resolveRootPath(tweetId, {
         storage,
@@ -354,7 +355,11 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
         bearerToken,
         apiBaseUrl,
         maxQuoteTweets: options?.maxQuoteTweets,
-        maxQuotePages: options?.maxQuotePages
+        maxQuotePages: options?.maxQuotePages,
+        maxRateLimitRetries: options?.maxRateLimitRetries,
+        rateLimitRetryDelayMs: options?.rateLimitRetryDelayMs,
+        rateLimitMaxWaitMs: options?.rateLimitMaxWaitMs,
+        onProgress: typeof options?.onProgress === "function" ? options.onProgress : null
       });
       const providerConfig = {
         apiKey: openAiApiKey,
@@ -380,6 +385,9 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
         maxQuoteTweets: options?.maxQuoteTweets,
         maxQuotePages: options?.maxQuotePages,
         quoteBatchSize: options?.quoteBatchSize,
+        maxRateLimitRetries: options?.maxRateLimitRetries,
+        rateLimitRetryDelayMs: options?.rateLimitRetryDelayMs,
+        rateLimitMaxWaitMs: options?.rateLimitMaxWaitMs,
         model: providerConfig.model
       });
     },

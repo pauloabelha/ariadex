@@ -1,109 +1,103 @@
-# AriadeX Algorithm
+# Algorithm
 
-The algorithm lives in `extension/algo.js`. It is the heart of AriadeX and is designed to be testable without Chrome.
+The core implementation lives in `extension/algo.js`. It is written as plain JavaScript so the same logic can run in the Chrome extension and in Node tests.
 
-## Inputs
+This document is an implementation map. Product-level Top Takes rules live in [top_takes.md](top_takes.md).
 
-The resolver needs:
+## Shared Inputs
 
-- clicked tweet id
-- X API bearer token
-- optional X API base URL
-- cache adapter
-- progress callback
+Most algorithm entry points receive:
 
-The content script obtains the clicked tweet id from the page and sends it to the background service worker. The service worker loads runtime config and calls the algorithm.
+- tweet id or artifact input
+- cache/storage adapter
+- X API client
+- optional progress callback
+- workflow options
 
-## Tweet Fetching
+The content script extracts tweet ids from the page. The background service worker loads config, creates adapters, and calls into `algo.js`.
 
-The X API client uses:
+## X API Client
+
+`createTweetClient(...)` wraps X API requests.
+
+Endpoints used:
 
 - `GET /2/tweets/{id}` for single tweet lookup
-- `GET /2/tweets` for batch lookup
-- `GET /2/tweets/search/recent?query=conversation_id:<id>` for reply collection
+- `GET /2/tweets` for batch tweet lookup
+- `GET /2/tweets/search/recent` for conversation/reply collection
+- `GET /2/tweets/search/all` when available for conversation/reply collection
+- `GET /2/tweets/{id}/quote_tweets` for Top Takes quote collection
 
-Requested tweet fields include:
+Requested tweet fields include author, conversation, creation time, entities, reply/quote references, public metrics, and text.
 
-- `author_id`
-- `conversation_id`
-- `created_at`
-- `entities`
-- `in_reply_to_user_id`
-- `referenced_tweets`
-- `text`
+Requested user fields include id, username, name, profile image, description, public metrics, and verification metadata.
 
-Requested user fields include:
+Rate-limited X requests emit progress and retry when possible.
 
-- `id`
-- `username`
-- `name`
-- `profile_image_url`
+## Explore Path
 
-## Root Path Resolution
+Primary entry point: `resolveRootPath(...)`.
 
-For each tweet:
+For each path step:
 
-1. Normalize the tweet id.
-2. Fetch from cache or network.
-3. Normalize the tweet payload into the AriadeX shape.
-4. Choose the parent:
+1. Normalize tweet id.
+2. Read tweet cache.
+3. Fetch from X only on cache miss.
+4. Normalize payload.
+5. Select parent:
    - quoted tweet first
    - replied-to tweet second
    - stop otherwise
-5. Append the tweet to the raw path.
-6. Continue until the root is reached.
-7. Stop early if a cycle is detected.
-8. Reverse the raw path so it reads root-to-explored.
+6. Stop on root or cycle.
+7. Reverse the raw path to root-to-clicked order.
 
-The parent rule is deliberately simple. Quote edges carry stronger context than reply edges, so they win when both are present.
+The quote-first parent rule keeps quote-of-reply chains deterministic.
 
-## Reference Pass
+## Enrichment Passes
 
-After path resolution, the algorithm reads external URLs from every path tweet.
+After the raw path is known:
 
-For each URL:
+- `buildReferenceArtifact(...)` canonicalizes external URLs from path tweets.
+- `buildPeopleArtifact(...)` dedupes authors and mentioned users.
+- `collectReplyChainsForAnchorTweets(...)` collects local reply pockets where path authors appear.
 
-1. Select the best X API URL field.
-2. Canonicalize the URL.
-3. Ignore internal X, Twitter, and `t.co` links.
-4. Deduplicate across the full path.
-5. Assign a stable 1-based reference number.
-6. Store local reference numbers on each path tweet.
+Reference rules are documented in [references.md](references.md).
 
-This lets the path tab show compact markers such as `[1] [3]` while the references tab holds the canonical URL list.
+## Top Takes
 
-## People Pass
+Primary entry point: `resolveTopTakes(...)`.
 
-The people pass collects:
+Implementation stages:
 
-- each path tweet author
-- each explicit `entities.user_mentions` entry
+1. Read final artifact cache.
+2. Fetch or cache-hit the source tweet.
+3. Fetch or cache-hit quote tweets.
+4. Normalize and dedupe candidates.
+5. Attach optional top direct replies as context.
+6. Read OpenAI analysis cache.
+7. Classify uncached batches with OpenAI.
+8. Record OpenAI batch timing.
+9. Score and select representative quote tweets.
+10. Write analysis and artifact caches.
 
-People are deduped by canonical handle. For each handle, AriadeX keeps the best available display name, avatar URL, profile URL, source types, and path-tweet count.
+Important helpers:
 
-## Reply Chain Pass
+- `readQuoteTweetsForSource(...)`
+- `dedupeQuoteTweets(...)`
+- `attachTopCommentsToQuoteTweets(...)`
+- `buildTopTakesCandidateBatch(...)`
+- `normalizeTopTakesClassification(...)`
+- `groupTopTakes(...)`
+- `summarizeOpenAiBatchTimings(...)`
+- `estimateOpenAiRemainingMs(...)`
 
-Reply chains are collected after the root path is known.
-
-For each path tweet:
-
-1. Read its `conversation_id`.
-2. Fetch the conversation search results.
-3. Build reply edges from referenced tweet metadata.
-4. Find direct replies to the path tweet.
-5. Treat each direct reply as the root of one candidate subtree.
-6. Walk descendants under that candidate root.
-7. Keep the subtree only if at least one path author appears inside it.
-8. Trim the subtree at the last tweet by any path author.
-9. Store anchor metadata:
-   - `anchorTweetId`
-   - `anchorAuthor`
-
-This produces reply pockets that are local to the explored path instead of a huge unranked conversation dump.
+See [top_takes.md](top_takes.md) for candidate rules, ranking formula, objective-ranking constraints, caching, and progress behavior.
 
 ## Progress Events
 
-The algorithm emits progress so the panel can explain what is happening:
+Progress events are workflow-specific and should map to visible user stages.
+
+Explore Path emits:
 
 - start
 - path walking
@@ -112,26 +106,29 @@ The algorithm emits progress so the panel can explain what is happening:
 - reply collection
 - done
 
-Report and gist generation emit their own backend progress events from the background service worker.
+Top Takes emits:
+
+- source/quote cache hit and miss events
+- X rate-limit waits
+- discourse normalization
+- optional reply-context collection
+- OpenAI batch start/finish/timing estimates
+- grouping and selection
+- ready
+
+The content script owns user-facing text for these events.
 
 ## Failure Behavior
 
 AriadeX prefers explicit failure over silent invention.
 
-- Missing bearer token stops X API resolution.
-- Network errors surface in the panel.
-- Missing OpenAI key stops report or gist generation.
-- Empty model output is treated as an error.
-- Cache can be cleared from the panel when API state looks stale.
+- Missing X token stops X API workflows.
+- Missing OpenAI key stops model-backed workflows.
+- X `429` rate limits retry with visible waits.
+- Top Takes can continue without reply context when that optional stage remains rate-limited.
+- Top Takes can fall back from a disconnected progress port to a normal runtime message.
+- Empty or invalid OpenAI output is treated as an error.
 
-## Example
+## Test Strategy
 
-Suppose the path is:
-
-```text
-Root -> Ancestor 1 -> Explored
-```
-
-If `Ancestor 1` has three direct replies, AriadeX evaluates three candidate reply chains. A candidate is kept only when one of the path authors appears somewhere in that subtree. If the path author appears halfway down the subtree, the chain is trimmed there.
-
-The result stays compact, grounded, and explainable.
+Algorithm code should stay testable without Chrome. Chrome-specific behavior belongs in thin content/background adapters and is tested with small mocks.

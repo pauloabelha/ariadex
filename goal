@@ -1,38 +1,42 @@
-# Goal: AriadeX Top Takes Ranking
+# Goal
 
 Status: active.
 
-AriadeX Top Takes should surface the highest-signal quote-tweet discourse around a selected tweet as one compact ranked list. It should feel like a small intelligence feed: the best takes first, with pill labels explaining why each take is worth reading.
+AriadeX should feel like compact epistemic tooling for X: one click turns a tweet into structured context, inspectable evidence, and optional generated prose.
 
-## Current Architecture
+## Current Product Shape
 
-- `extension/` is the loadable Chrome extension.
-- `server/` contains the local report and gist backend.
-- `scripts/` contains root-level developer commands.
-- `tests/` runs from the repository root.
-- `docs/` describes the current root product.
-- `extension/algo.js` owns quote retrieval normalization, scoring, selection, grouping, and artifact assembly.
-- `extension/background.js` owns runtime orchestration, X/OpenAI calls, caching, and progress streaming.
-- `extension/content.js` owns button injection and panel rendering.
+Two workflows share one extension surface:
 
-## Current Product Goal
+- `Explore Path`: reconstruct the quote/reply path behind a clicked tweet.
+- `Top Takes`: objectively rank quote tweets around a source tweet.
 
-AriadeX should help a user rapidly form an informed opinion about one tweet by surfacing quote tweets that are likely to contain actual takes.
+The canonical Top Takes collect/rank spec is `docs/top_takes.md`.
 
-Top Takes should rank candidate quote tweets using only three first-pass dimensions:
+## Product Principles
 
-- `author_score`: how close the author appears to the source tweet's domain.
-- `length_score`: whether the quote text is long enough to plausibly contain reasoning.
-- `reference_score`: whether the quote tweet brings relevant external references.
+- Evidence first.
+- Generated prose second.
+- Cache heavily.
+- Resume gracefully.
+- Make long waits visible.
+- Keep Top Takes objective.
+- Do not personalize Top Takes with viewer follow graph or private relationship data.
 
-Author scoring should keep two expert notions separate:
+## Top Takes Target
 
-- `domain_expert_score`: author appears directly fluent in the source tweet's core domain.
-- `adjacent_expert_score`: author appears expert in a useful neighboring domain, such as economics, policy, commercialization, deployment, operations, manufacturing, safety, ethics, investing, or field practice.
+Top Takes should surface the highest-signal quote-tweet discourse around a selected tweet as one compact ranked list.
 
-The displayed `author_score` is the stronger of those two scores, but the artifact should preserve both.
+The ranking should preserve explicit fields:
 
-Initial ranking formula:
+- `domain_expert_score`
+- `adjacent_expert_score`
+- `author_score`
+- `length_score`
+- `reference_score`
+- `take_score`
+
+The current score formula is:
 
 ```text
 take_score =
@@ -41,48 +45,27 @@ take_score =
 + reference_score * 0.25
 ```
 
-Top Takes should render as a single list, not separate top-level sections. Each card should use pill labels such as:
-
-- `Expert`
-- `Adjacent`
-- adjacent domain, e.g. `Economics`, `Policy`, `Deployment`
-- epistemic role, e.g. `Technical`, `Skepticism`, `Evidence`, `Operational`
-- `Reference` when the take cites an external source
-
-The list should still preserve diversity by avoiding duplicate authors, near-identical takes, and repetitive consensus posts.
-
-## Non-Goals
-
-- Do not reintroduce parallel product folders.
-- Do not bring back old root architecture unless a specific feature needs to be deliberately rebuilt.
-- Do not hide generated text behind uninspectable model output.
-- Do not commit generated config or credentials.
-- Do not optimize Top Takes for likes, virality, or agreement.
-- Do not treat profile metadata as credential verification.
-- Do not equate follower count or verification with expertise.
-- Do not let long vague posts outrank shorter concrete posts only because they are long.
-- Do not replace or alter Explore Path, deterministic root traversal, or reply-chain logic.
+Only quote tweets are ranked. Replies to quote tweets are context only.
 
 ## Acceptance Criteria
 
 - `npm test` passes from `/home/pauloabelha/ariadex`.
 - The extension loads from `/home/pauloabelha/ariadex/extension`.
 - Generated runtime config remains local-only.
-- Top Takes retrieves up to 200 quote tweets for the selected source tweet.
-- Top Takes caches quote retrieval, OpenAI classifications, and final artifacts.
-- OpenAI receives author profile metadata from the X API.
-- Top Takes artifacts include `domain_expert_score`, `adjacent_expert_score`, `author_score`, `length_score`, `reference_score`, and `take_score`.
-- Top Takes UI renders one compact list with pill labels instead of top-level Expert/Adjacent sections.
-- Expert/Adjacent labels remain explainable via profile and quote-text evidence.
-- Existing Explore Path behavior remains unchanged.
+- Explore Path behavior remains deterministic and unchanged by Top Takes.
+- Top Takes retrieves up to 200 quote tweets for the selected source tweet by default.
+- Top Takes caches quote retrieval, OpenAI classifications, final artifacts, and OpenAI timing.
+- Top Takes retries X rate limits when possible and communicates waiting/retry progress.
+- Top Takes reconnects/resumes from cache when a long-running progress port disconnects.
+- Top Takes UI renders one compact ranked list with explanatory pills and score fields.
+- Top Takes does not use viewer follow status as a ranking signal.
 
-## Next Product Direction
+## Non-Goals
 
-Implement the simplified scoring and presentation:
-
-- compute deterministic text length features
-- compute deterministic reference features from tweet URL entities
-- ask OpenAI for author/domain scoring and role labels
-- combine the three scores into `take_score`
-- render a single Top Takes list with compact pills
-- keep the full artifact exportable for debugging and notebooks
+- Do not reintroduce parallel product folders.
+- Do not hide evidence behind generated prose.
+- Do not commit generated config or credentials.
+- Do not optimize Top Takes for virality, agreement, ideology, or personalization.
+- Do not treat profile metadata as credential verification.
+- Do not equate follower count or verification with expertise.
+- Do not replace the X interface.

@@ -1,89 +1,108 @@
-# AriadeX Architecture
+# Architecture
 
-AriadeX has one responsibility: turn a clicked tweet into a structured, readable artifact.
-
-The codebase is split into four layers:
+AriadeX is a browser-first local tool. The extension owns the product experience; the local backend exists only for report/gist generation.
 
 ```text
 X page
-  |
-content script
-  |
-background service worker
-  |
-algorithm module + X API
-  |
-local report backend
+  -> content script
+  -> background service worker
+  -> algorithm module
+  -> X API / OpenAI / local report backend
 ```
 
-## Components
+## Design Rules
+
+- Keep the product runtime in JavaScript.
+- Keep source evidence visible and exportable.
+- Keep generated prose downstream of structured artifacts.
+- Cache every expensive or rate-limited stage.
+- Surface long-running work through progress messages.
+- Keep Top Takes objective; do not use viewer follow status as a ranking signal.
+
+## Runtime Components
 
 `extension/content.js`
 
-- injects the `Explore Path` button into X tweet cards
-- reads generated runtime settings
-- opens and renders the floating panel
-- sends resolve, report, gist, export, and cache-clear requests
-- keeps panel state across rerenders
+- Injects `Explore Path` and `Top Takes` actions into X tweet cards.
+- Reads page/runtime settings.
+- Opens and renders the floating panel.
+- Formats progress and error messages.
+- Sends resolve, report, gist, export, and cache-clear requests.
+- Falls back to a normal runtime message when a long Top Takes progress port disconnects.
 
 `extension/background.js`
 
-- owns Chrome runtime message and port wiring
-- loads generated config through `dev_env_loader.js`
-- calls `algo.js` for artifact construction
-- calls `report_generation.js` for report and gist requests
-- streams progress back to the panel
+- Owns Chrome runtime message and port handlers.
+- Loads generated config through `dev_env_loader.js`.
+- Creates X clients and storage adapters.
+- Calls `algo.js` for Explore Path and Top Takes artifacts.
+- Calls `report_generation.js` for report/gist requests.
+- Calls OpenAI for Top Takes classification from the service worker.
 
 `extension/algo.js`
 
-- creates X API clients
-- normalizes tweets, users, references, and handles
-- resolves the root path
-- builds reference and people artifacts
-- collects anchored reply chains
-- keeps the algorithm testable outside Chrome
+- Normalizes X API tweet/user payloads.
+- Resolves root paths.
+- Builds references, people, and reply-chain artifacts.
+- Collects, filters, scores, and selects Top Takes quote tweets.
+- Implements cache-aware and rate-limit-aware helpers.
+- Stays testable without Chrome.
 
 `server/report_backend.js`
 
-- exposes local HTTP endpoints
-- loads prompts from `prompts/`
-- keeps OpenAI credentials server-side
-- sends the artifact to OpenAI chat completions
-- returns generated report or gist metadata
+- Exposes `POST /v1/report` and `POST /v1/gist`.
+- Loads prompts from `prompts/`.
+- Calls OpenAI-compatible chat completions.
+- Keeps report/gist generation outside the content script.
 
-## Runtime Flow
+`scripts/run_top_takes.js`
 
-1. The content script detects tweet cards on X.
-2. The user clicks `Explore Path`.
-3. The content script opens a long-lived port to the service worker.
-4. The service worker loads generated config and creates an X API client.
-5. The algorithm resolves the root path and emits progress events.
-6. The algorithm enriches the path with references, people, and reply chains.
-7. The service worker returns the artifact.
-8. The panel renders tabs for each artifact section.
-9. Optional report and gist requests go through the local backend.
+- Runs Top Takes locally through the same background/controller path.
+- Reads `.env`.
+- Stores local runner cache and output under `data/`.
 
-## Data Boundaries
+## Workflow Boundaries
 
-Secrets have clear ownership:
+Explore Path:
+
+1. Content script extracts the clicked tweet id.
+2. Background creates an X client and storage adapter.
+3. Algorithm follows quote/reply parent edges back to the root.
+4. Algorithm enriches the path with references, people, and reply chains.
+5. Panel renders tabs over the artifact.
+
+Top Takes:
+
+1. Content script extracts the source tweet id.
+2. Background creates X/OpenAI clients and storage adapters.
+3. Algorithm collects quote tweets and optional direct-reply context.
+4. OpenAI classifies candidate quote tweets.
+5. Algorithm computes inspectable score fields and selects a ranked list.
+6. Panel renders the Top Takes artifact.
+
+Report/Gist:
+
+1. User requests generated prose from the panel.
+2. Extension sends the current artifact to the local backend.
+3. Backend calls OpenAI with the report or gist prompt.
+4. Panel renders the generated text as an optional artifact layer.
+
+## Data And Secret Boundaries
 
 - X bearer token lives in `.env`, generated config, browser local storage, or `chrome.storage.local`.
-- OpenAI API key lives in `.env` or process environment for the local backend.
-- The content script never calls OpenAI directly.
-- Generated config is ignored and should not be committed.
+- OpenAI settings can live in `.env`, generated config, or extension storage depending on workflow.
+- The content script does not directly call OpenAI.
+- `extension/dev_env.generated.json` and `.env` are local-only and must not be committed.
 
-The extension talks to:
+Network targets:
 
-- X API at `https://api.x.com/2` unless overridden
-- local report backend at `http://127.0.0.1:8787` unless overridden
+- X API: `https://api.x.com/2` unless overridden.
+- OpenAI-compatible API: `https://api.openai.com/v1` unless overridden.
+- Local report backend: `http://127.0.0.1:8787` unless overridden.
 
-The backend talks to:
+## Artifact Contracts
 
-- OpenAI-compatible chat completions endpoint
-
-## Artifact Contract
-
-The resolved artifact is the main internal contract:
+Explore Path artifact:
 
 ```js
 {
@@ -95,86 +114,44 @@ The resolved artifact is the main internal contract:
 }
 ```
 
-`path` is ordered from root to explored tweet.
+Top Takes artifact:
 
-Each path tweet may contain:
-
-- `id`
-- `authorId`
-- `authorUsername`
-- `authorName`
-- `text`
-- `createdAt`
-- `conversationId`
-- `outboundRelation`
-- `referenceNumbers`
-- `peopleHandles`
-
-`references` contains canonical external links cited by path tweets.
-
-`people` contains canonical handles collected from authors and mentions.
-
-`replyChains` contains anchored reply subtrees that begin as direct replies to a path tweet and contain at least one path author.
-
-## Parent Rule
-
-Parent selection is deterministic:
-
-1. A quote target wins.
-2. A reply target is used when there is no quote target.
-3. No parent means the current tweet is the root.
-
-This rule makes quote-of-reply chains stable: AriadeX follows the quoted tweet first, then continues through that quoted tweet's own ancestry.
-
-## Cache Rule
-
-The algorithm caches:
-
-- tweet payloads by tweet id
-- conversation memberships by `conversation_id`
-
-Cache reads happen before network calls. Cache writes happen immediately after successful fetches. The panel exposes `Clear Cache` when the user wants a fresh X API view.
-
-## Report Backend
-
-The backend exposes:
-
-- `POST /v1/report`
-- `POST /v1/gist`
-
-Both endpoints accept:
-
-```json
+```js
 {
-  "artifact": {}
+  sourceTweet,
+  sourceDomain,
+  sourceDomainConfidence,
+  takes,
+  representativeTakes,
+  people,
+  stats,
+  modelMetadata,
+  openAiTiming,
+  cacheKey
 }
 ```
 
-Both endpoints return:
+See [docs/top_takes.md](docs/top_takes.md) for the canonical collect/rank contract.
 
-```json
-{
-  "ok": true,
-  "report": {
-    "text": "...",
-    "model": "gpt-4o-mini",
-    "apiBaseUrl": "https://api.openai.com/v1",
-    "provider": "openai"
-  }
-}
-```
+## Storage
 
-The only difference is prompt selection:
+Extension storage is used for:
 
-- `/v1/report` uses `prompts/generate_report.md`
-- `/v1/gist` uses `prompts/generate_gist.md`
+- tweet payload cache
+- conversation membership cache
+- quote tweet collection cache
+- Top Takes analysis cache
+- Top Takes artifact cache
+- local settings and generated config hydration
 
-## Testing Strategy
+The panel exposes `Clear Cache` for stale X API state.
 
-Tests run with Node's built-in test runner:
+## Testing
+
+Tests use Node's built-in test runner:
 
 ```bash
 npm test
 ```
 
-The suite avoids browser automation by testing pure helpers and Chrome-shell adapters with small mock objects. That keeps the highest-risk behavior covered without making local iteration heavy.
+Browser behavior is covered through small Chrome-like mocks. Pure algorithm behavior stays in `extension/algo.js` so it can be tested without launching Chrome.

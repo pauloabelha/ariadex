@@ -1,34 +1,35 @@
-# UX Notes
+# UX
 
 AriadeX should feel like a compact investigation panel, not a second feed.
 
-The user has already found something interesting on X. The extension should help them preserve context, compare path evidence, and produce a readable explanation without pulling them away from the page.
+The user is already reading X. AriadeX should add context beside the timeline, preserve evidence, and make long-running work legible.
 
-## Entry Point
+## Product Feel
 
-The extension injects an `Explore Path` action into tweet cards.
+- One click starts useful work.
+- Progress is specific, not theatrical.
+- Cache reuse feels instant.
+- Slow network/model work explains itself.
+- Failures are plain and recoverable.
+- Generated prose never hides the source artifact.
 
-The action should feel lightweight:
+## Entry Points
 
-- one click starts exploration
-- progress is visible
-- failures are plain and recoverable
-- the result appears in-place
+Tweet cards get two sibling actions:
 
-The extension also injects a sibling `Top Takes` action into tweet cards.
+- `Explore Path`: reconstruct quote/reply ancestry and local context.
+- `Top Takes`: rank objective quote-discourse around the selected tweet.
 
-This action opens the same floating panel in a quote-discourse mode. It should help the user quickly see the most informative competing perspectives around the selected tweet without entering an endless quote-feed scroll.
+The workflows share the same panel but produce different artifacts.
 
 ## Panel
 
-The floating panel is the main surface.
-
-It is:
+The floating panel is:
 
 - draggable from the header
-- compact enough to sit beside the X timeline
+- compact enough to sit beside the timeline
 - stateful across rerenders
-- organized by artifact tabs
+- organized by tabs
 
 Header actions:
 
@@ -37,115 +38,94 @@ Header actions:
 - `Generate Gist`
 - `Clear Cache`
 
-The panel can be rendered in either root-path mode or Top Takes mode. These are separate workflows. Top Takes must not change the deterministic path resolver, reply-chain collection, or Explore Path interaction.
-
 ## Tabs
 
-`Root Path`
+Explore Path tabs:
 
-Shows the resolved root-to-explored chain. Cards include structural labels, relation labels, author handles, tweet text, reference markers, and tweet ids.
+- `Root Path`: root-to-clicked chain with structural labels and reference markers.
+- `References`: canonical external links cited by path tweets.
+- `People`: path authors and mentioned users.
+- `Replies`: anchored reply pockets where path authors participate.
 
-`References`
+Top Takes tab:
 
-Shows canonical external URLs cited by path tweets. Each reference can be opened directly.
+- `Top Takes`: one ranked list of representative quote tweets.
 
-`People`
+Generated tabs:
 
-Shows path authors and mentioned users. Each person links to their X profile when the handle is valid.
+- `Gist`: portable short-form generated text.
+- `Report`: longer generated explanation.
 
-`Replies`
+## Top Takes Cards
 
-Shows anchored reply chains. Each chain names the path tweet it belongs to, the anchor author, and the collected tweets in that trimmed subtree.
+Each card should make the reason for selection inspectable.
 
-`Gist`
+Show:
 
-Appears after `Generate Gist`. The gist is meant to be portable, shorter, and easier to reuse elsewhere.
+- quote tweet author
+- quote tweet text
+- domain pill, such as `Expert` or `Adjacent`
+- role pill, such as `Skepticism`, `Evidence`, or `Operational`
+- `Reference` pill when applicable
+- score pills for relevant ranking fields
+- concise explanation
+- domain/expertise evidence when available
+- tweet metadata
 
-`Report`
+Do not split Top Takes into top-level Expert/Adjacent sections. The ranked list is the product; pills explain the ranking.
 
-Appears after `Generate Report`. The report is meant to be more narrative and explanatory.
+Top Takes must remain objective. Do not use viewer follow graph, likes, lists, bookmarks, or private relationship signals for ranking.
 
-`Top Takes`
+## Progress
 
-Appears after clicking `Top Takes`. Shows one sorted list of representative high-signal quote-tweet takes. Each card uses compact colored pills to show the author's apparent relationship to the source tweet's domain.
+Progress messages should name real stages.
 
-Domain pills:
+Explore Path examples:
 
-- `Expert`: the author appears directly domain-fluent for the source tweet's subject based on the quote text and public X profile metadata.
-- `Adjacent`: the author brings useful neighboring expertise or context, such as economics, policy, commercialization, deployment, operations, user experience, ethics, investing, or field practice.
-
-Each selected take includes the quote tweet, the author, colored pills for domain/role/reference signals, compact scorecard values, domain signal evidence, and a concise explanation of why that take materially improves understanding.
-
-Top Takes sections should prefer discourse coverage over ranking:
-
-- Best Technical Explanation
-- Strongest Skeptical Take
-- Most Important Operational Caveat
-- Best Evidence-Based Take
-- Best Commercial Framing
-- Most Informative Context
-
-The UI should feel like epistemic tooling and perspective compression, not sentiment analysis, engagement farming, or a generic AI summary.
-
-## Interaction Rules
-
-The panel should never hide the evidence behind the generated prose.
-
-Generated text is useful, but the artifact is the source of truth. The user should always be able to return to the path, references, people, and replies.
-
-Progress messages should describe real stages:
-
-- loading generated config
 - resolving path
 - collecting references
 - collecting people
 - collecting replies
-- calling backend
-- waiting for model response
 - ready
 
-Top Takes progress messages should describe real stages:
+Top Takes examples:
 
-- collecting quote tweets
-- normalizing discourse
-- sending batches to OpenAI
-- analyzing epistemic roles
-- grouping perspectives
+- using cached source tweet
+- fetching quote tweets from X
+- using cached quote tweets
+- waiting for X rate limit reset
+- collecting optional top replies
+- continuing without reply context
+- sending batch to OpenAI with estimated remaining time
+- OpenAI batch finished
 - selecting representative takes
-- rendering Top Takes
+- reconnecting and resuming from cache
+- ready
+
+The UI should never look frozen while AriadeX is intentionally waiting.
 
 ## Export
 
-`Export` downloads a JSON snapshot:
+`Export` downloads the current artifact as JSON.
 
-```json
-{
-  "clickedTweetId": "...",
-  "exportedAt": "...",
-  "artifact": {}
-}
-```
+The export is the best handoff format for debugging, notebooks, and later analysis. It should preserve score fields, cache metadata, model metadata, timing metadata, and the raw evidence needed to inspect why the UI rendered what it rendered.
 
-The export is the best handoff format for debugging, notebooks, and future analysis.
+## Generated Text
 
-## Report And Gist
+Reports and gists are optional.
 
-Both generated outputs come from the same artifact.
+They should:
 
-The extension sends the artifact to the background service worker. The service worker calls the local backend. The backend loads a prompt and calls OpenAI.
-
-This keeps the browser extension free of OpenAI credentials.
-
-Top Takes uses a separate artifact and pipeline. The extension retrieves quote tweets and author profile metadata through the X API, normalizes and deduplicates them, then asks OpenAI for structured epistemic classifications. The prompt must optimize for informational contribution, perspective diversity, mechanistic understanding, operational realism, meaningful skepticism, and evidence-based reasoning. It must not optimize for popularity, agreement, hype, or objective truth determination.
-
-Profile metadata is weak public evidence, not credential verification. The model should not equate follower count or verification with expertise. It should prefer demonstrated domain fluency in the quote itself and classify authors into `Expert` or `Adjacent`.
+- use the current artifact
+- be copyable/downloadable
+- keep model/provider metadata visible
+- never replace the evidence tabs
 
 ## UX Principles
 
 - Keep the artifact visible.
 - Keep Top Takes grounded in quote tweets.
-- Prefer deterministic labels over clever prose.
-- Make generated text optional.
-- Use stable numbering for references.
-- Preserve user agency with export, copy, and download actions.
+- Keep Top Takes objective.
+- Prefer explicit labels over clever prose.
 - Make stale data easy to clear.
+- Make resumed/cached work obvious.

@@ -886,6 +886,56 @@ test("createTweetClient surfaces network failures with the response status", asy
   await assert.rejects(() => client.fetchTweetFromNetwork("10"), /tweet_fetch_failed_503/);
 });
 
+test("createTweetClient waits and retries after X rate limits", async () => {
+  const progress = [];
+  let calls = 0;
+  const client = algo.createTweetClient(async () => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        ok: false,
+        status: 429,
+        headers: {
+          get(name) {
+            return name === "retry-after" ? "1" : "";
+          }
+        }
+      };
+    }
+    return {
+      ok: true,
+      async json() {
+        return {
+          data: {
+            id: "10",
+            author_id: "u1",
+            conversation_id: "10",
+            text: "hello"
+          },
+          includes: {
+            users: [{ id: "u1", username: "alice", name: "Alice Example" }]
+          }
+        };
+      }
+    };
+  }, {
+    bearerToken: "test-token",
+    maxRateLimitRetries: 1,
+    rateLimitRetryDelayMs: 1,
+    rateLimitMaxWaitMs: 1,
+    onProgress(event) {
+      progress.push(event);
+    }
+  });
+
+  const tweet = await client.fetchTweetFromNetwork("10");
+
+  assert.equal(tweet.id_str, "10");
+  assert.equal(calls, 2);
+  assert.equal(progress[0].phase, "x_rate_limit_wait");
+  assert.equal(progress[0].waitMs, 1);
+});
+
 test("resolveRootPath walks quote parent first and then reply ancestry", async () => {
   const chromeStub = createChromeStub();
   const storage = algo.createStorageAdapter(chromeStub);

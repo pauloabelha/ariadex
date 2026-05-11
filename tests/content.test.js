@@ -183,6 +183,13 @@ test("formatLookupErrorMessage translates X auth rejections", () => {
   );
 });
 
+test("formatLookupErrorMessage explains X rate limits", () => {
+  assert.match(
+    content.formatLookupErrorMessage(new Error("tweet_fetch_failed-429")),
+    /X rate-limited/i
+  );
+});
+
 test("formatLookupErrorMessage explains background worker disconnects", () => {
   assert.match(
     content.formatLookupErrorMessage(new Error("root_path_port_disconnected")),
@@ -220,9 +227,17 @@ test("formatReportProgressMessage explains report phases", () => {
 
 test("formatTopTakesProgressMessage explains Top Takes phases", () => {
   assert.match(content.formatTopTakesProgressMessage({ phase: "collecting_quote_tweets" }), /Collecting quote tweets/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "tweet_cache_hit" }), /cached source tweet/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "quote_tweets_cache_hit", quoteCount: 200 }), /200 cached quote tweets/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "quote_tweets_cache_miss", requestedQuoteCount: 200 }), /up to 200 quote tweets/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "x_rate_limit_wait", waitMs: 2000, attempt: 1, maxAttempts: 3 }), /Waiting 2s/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "top_comments_rate_limited" }), /Continuing with cached quote tweets only/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "top_takes_port_reconnecting" }), /Reconnecting and resuming from cache/i);
   assert.match(content.formatTopTakesProgressMessage({ phase: "normalizing_discourse", quoteCount: 3 }), /3 quote tweets/i);
   assert.match(content.formatTopTakesProgressMessage({ phase: "collecting_top_comments", candidateQuoteCount: 3, topCommentsPerQuote: 3 }), /top 3 comments/i);
-  assert.match(content.formatTopTakesProgressMessage({ phase: "sending_batches_to_openai", batchIndex: 1, batchCount: 2 }), /1\/2/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "sending_batches_to_openai", batchIndex: 1, batchCount: 2, estimatedRemainingMs: 90_000 }), /1\/2.*1m 30s/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "openai_batch_complete", batchIndex: 1, batchCount: 2, durationMs: 15_000 }), /finished in 15s/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "openai_timing_cache_hit", averageBatchDurationMs: 45_000 }), /45s per batch/i);
   assert.match(content.formatTopTakesProgressMessage({ phase: "top_takes_ready", representativeTakeCount: 4 }), /4 representative/i);
 });
 
@@ -230,6 +245,17 @@ test("formatTopTakesErrorMessage explains OpenAI credential failures", () => {
   assert.match(
     content.formatTopTakesErrorMessage(new Error("missing_openai_api_key")),
     /missing OpenAI API key/i
+  );
+});
+
+test("formatTopTakesErrorMessage explains X rate limits", () => {
+  assert.match(
+    content.formatTopTakesErrorMessage(new Error("tweet_fetch_failed_429")),
+    /X rate-limited/i
+  );
+  assert.match(
+    content.formatTopTakesErrorMessage(new Error("tweet_fetch_failed-429")),
+    /X rate-limited/i
   );
 });
 
@@ -839,12 +865,13 @@ test("renderTopTakesTab renders one sorted list with only expertise pills", () =
   assert.equal(tab.children[1].children[1].textContent, "@skeptic");
 
   const firstPills = tab.children[0].children[0].children.map((child) => [child.textContent, child.className]);
-  assert.deepEqual(firstPills.map(([text]) => text), ["Expert"]);
+  assert.deepEqual(firstPills.map(([text]) => text), ["Expert", "Best Technical Explanation", "Reference"]);
   assert.match(firstPills[0][1], /ariadex-take-pill-expert/);
+  assert.match(firstPills[2][1], /ariadex-take-pill-reference/);
   assert.equal(tab.children[0].children[4].className, "ariadex-top-comments");
   assert.equal(tab.children[0].children[4].children[0].textContent, "@reviewer: This correction matters.");
   const secondPills = tab.children[1].children[0].children.map((child) => [child.textContent, child.className]);
-  assert.deepEqual(secondPills.map(([text]) => text), ["Adjacent"]);
+  assert.deepEqual(secondPills.map(([text]) => text), ["Adjacent", "Strongest Skeptical Take"]);
   assert.match(secondPills[0][1], /ariadex-take-pill-adjacent/);
   assert.equal(tab.children.some((child) => child.tagName === "section"), false);
 });
@@ -1205,12 +1232,27 @@ test("resolveTopTakesArtifact uses the streaming port and ignores normal close a
   delete global.window.AriadexXApiSettings;
 });
 
-test("resolveTopTakesArtifact rejects when the streaming port disconnects before a result", async () => {
+test("resolveTopTakesArtifact falls back to sendMessage when the streaming port disconnects before a result", async () => {
   let disconnectListener;
+  const progressEvents = [];
   const chromeStub = {
     runtime: {
       lastError: null,
-      sendMessage() {},
+      sendMessage(message, callback) {
+        assert.deepEqual(message, {
+          type: content.RESOLVE_TOP_TAKES_MESSAGE_TYPE,
+          tweetId: "2",
+          bearerToken: "test-token",
+          apiBaseUrl: ""
+        });
+        callback({
+          ok: true,
+          artifact: {
+            sourceTweet: { id: "2" },
+            representativeTakes: [{ tweetId: "10" }]
+          }
+        });
+      },
       connect() {
         return {
           onMessage: {
@@ -1230,10 +1272,12 @@ test("resolveTopTakesArtifact rejects when the streaming port disconnects before
     }
   };
 
-  await assert.rejects(
-    () => content.resolveTopTakesArtifact("2", chromeStub),
-    /top_takes_port_disconnected/
-  );
+  const artifact = await content.resolveTopTakesArtifact("2", chromeStub, (progress) => {
+    progressEvents.push(progress.phase);
+  });
+
+  assert.deepEqual(progressEvents, ["top_takes_port_reconnecting"]);
+  assert.deepEqual(artifact.representativeTakes, [{ tweetId: "10" }]);
 });
 
 test("clearTweetCache sends the expected extension message", async () => {
