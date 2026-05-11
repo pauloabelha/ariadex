@@ -85,11 +85,38 @@ function resolveReportConfig(env, repoConfig = {}) {
   };
 }
 
+function resolveOpenAiConfig(env, repoConfig = {}) {
+  const safeEnv = env || {};
+  const llmConfig = repoConfig?.llm && typeof repoConfig.llm === "object" ? repoConfig.llm : {};
+  const normalizeOptional = (value, fallback = "") => {
+    if (value == null) {
+      return String(fallback || "").trim();
+    }
+    return String(value).trim();
+  };
+  return {
+    openAiApiKey: normalizeOptional(
+      safeEnv.OPENAI_API_KEY ?? safeEnv.ARIADEX_OPENAI_API_KEY ?? llmConfig.apiKey
+    ),
+    openAiModel: normalizeOptional(
+      safeEnv.OPENAI_MODEL
+      ?? safeEnv.ARIADEX_OPENAI_MODEL
+      ?? safeEnv.ARIADEX_OPENAI_ARTICLE_MODEL
+      ?? llmConfig.model
+      ?? llmConfig.articleModel
+    ),
+    openAiBaseUrl: normalizeOptional(
+      safeEnv.OPENAI_BASE_URL ?? safeEnv.ARIADEX_OPENAI_BASE_URL ?? llmConfig.baseUrl
+    )
+  };
+}
+
 function buildGeneratedConfig(env, repoConfig = {}) {
   const safeEnv = env || {};
   const bearerToken = String(safeEnv.X_BEARER_TOKEN || safeEnv.X_API_BEARER_TOKEN || "").trim();
   const apiBaseUrl = String(safeEnv.ARIADEX_X_API_BASE_URL || safeEnv.X_API_BASE_URL || "").trim();
   const reportConfig = resolveReportConfig(safeEnv, repoConfig);
+  const openAiConfig = resolveOpenAiConfig(safeEnv, repoConfig);
 
   if (!bearerToken) {
     throw new Error("Missing X_BEARER_TOKEN or X_API_BEARER_TOKEN in .env/process env");
@@ -98,7 +125,10 @@ function buildGeneratedConfig(env, repoConfig = {}) {
   return {
     bearerToken,
     ...(apiBaseUrl ? { apiBaseUrl } : {}),
-    ...(reportConfig.reportBackendBaseUrl ? { reportBackendBaseUrl: reportConfig.reportBackendBaseUrl } : {})
+    ...(reportConfig.reportBackendBaseUrl ? { reportBackendBaseUrl: reportConfig.reportBackendBaseUrl } : {}),
+    ...(openAiConfig.openAiApiKey ? { openAiApiKey: openAiConfig.openAiApiKey } : {}),
+    ...(openAiConfig.openAiModel ? { openAiModel: openAiConfig.openAiModel } : {}),
+    ...(openAiConfig.openAiBaseUrl ? { openAiBaseUrl: openAiConfig.openAiBaseUrl } : {})
   };
 }
 
@@ -134,6 +164,7 @@ module.exports = {
   resolveEnvPath,
   buildEnvObject,
   resolveReportConfig,
+  resolveOpenAiConfig,
   buildGeneratedConfig,
   syncFromEnvironment
 };

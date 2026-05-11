@@ -2,6 +2,10 @@
 
 const TWEET_CACHE_KEY = "ariadex_tweet_cache";
 const CONVERSATION_CACHE_KEY = "ariadex_conversation_cache";
+const QUOTE_TWEET_CACHE_KEY = "ariadex_quote_tweet_cache";
+const TOP_TAKES_ANALYSIS_CACHE_KEY = "ariadex_top_takes_analysis_cache";
+const TOP_TAKES_ARTIFACT_CACHE_KEY = "ariadex_top_takes_artifact_cache";
+const TOP_TAKES_CACHE_VERSION = 5;
 const DEFAULT_API_BASE_URL = "https://api.x.com/2";
 const DEFAULT_TWEET_FIELDS = [
   "author_id",
@@ -9,14 +13,19 @@ const DEFAULT_TWEET_FIELDS = [
   "created_at",
   "entities",
   "in_reply_to_user_id",
+  "public_metrics",
   "referenced_tweets",
   "text"
 ];
 const DEFAULT_USER_FIELDS = [
+  "description",
+  "public_metrics",
   "id",
   "name",
   "profile_image_url",
-  "username"
+  "username",
+  "verified",
+  "verified_type"
 ];
 const DEFAULT_EXPANSIONS = [
   "author_id"
@@ -24,7 +33,43 @@ const DEFAULT_EXPANSIONS = [
 const DEFAULT_OPTIONS = {
   apiBaseUrl: DEFAULT_API_BASE_URL,
   maxPagesPerCollection: 5,
-  maxResultsPerPage: 100
+  maxResultsPerPage: 100,
+  maxQuoteTweets: 200,
+  maxQuotePages: 3,
+  quoteBatchSize: 40,
+  representativesPerRole: 3,
+  topCommentsPerQuote: 3
+};
+const TOP_TAKES_ROLES = [
+  "validation",
+  "skepticism",
+  "evidence",
+  "operational_caveat",
+  "technical_explanation",
+  "methodological_criticism",
+  "commercialization_framing",
+  "historical_context",
+  "synthesis",
+  "hype",
+  "other"
+];
+const TOP_TAKES_ROLE_LABELS = {
+  validation: "Best Validation",
+  skepticism: "Strongest Skeptical Take",
+  evidence: "Best Evidence-Based Take",
+  operational_caveat: "Most Important Operational Caveat",
+  technical_explanation: "Best Technical Explanation",
+  methodological_criticism: "Best Methodological Criticism",
+  commercialization_framing: "Best Commercial Framing",
+  historical_context: "Most Informative Context",
+  synthesis: "Best Synthesis",
+  hype: "Notable Hype Signal",
+  other: "Other Informative Take"
+};
+const TOP_TAKES_DOMAIN_GROUPS = ["expert", "adjacent"];
+const TOP_TAKES_DOMAIN_GROUP_LABELS = {
+  expert: "Expert",
+  adjacent: "Adjacent"
 };
 const inFlightTweetFetchById = new Map();
 const inFlightConversationFetchById = new Map();
@@ -52,6 +97,19 @@ function normalizeAvatarUrl(rawUrl) {
 
 function normalizeTimestamp(rawValue) {
   return String(rawValue || "").trim();
+}
+
+function clampScore(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, number));
+}
+
+function normalizeMetric(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
 }
 
 function ensureArray(value) {
@@ -140,7 +198,7 @@ function convertApiTweetToPayload(tweet, userById) {
   const repliedToId = pickReferencedTweetId(tweet, "replied_to");
   const quotedId = pickReferencedTweetId(tweet, "quoted");
 
-  return {
+  const payload = {
     id_str: String(tweet.id),
     conversation_id_str: String(tweet.conversation_id || tweet.id),
     created_at: normalizeTimestamp(tweet.created_at),
@@ -157,6 +215,33 @@ function convertApiTweetToPayload(tweet, userById) {
       profile_image_url_https: normalizeAvatarUrl(author?.profile_image_url || "")
     }
   };
+
+  if (tweet?.public_metrics && typeof tweet.public_metrics === "object") {
+    payload.public_metrics = {
+      retweet_count: normalizeMetric(tweet.public_metrics.retweet_count),
+      reply_count: normalizeMetric(tweet.public_metrics.reply_count),
+      like_count: normalizeMetric(tweet.public_metrics.like_count),
+      quote_count: normalizeMetric(tweet.public_metrics.quote_count),
+      bookmark_count: normalizeMetric(tweet.public_metrics.bookmark_count),
+      impression_count: normalizeMetric(tweet.public_metrics.impression_count)
+    };
+  }
+  if (author?.verified != null) {
+    payload.user.verified = Boolean(author.verified);
+  }
+  if (author?.verified_type) {
+    payload.user.verified_type = String(author.verified_type || "");
+  }
+  if (author?.public_metrics && typeof author.public_metrics === "object") {
+    payload.user.followers_count = normalizeMetric(author.public_metrics.followers_count);
+    payload.user.following_count = normalizeMetric(author.public_metrics.following_count);
+    payload.user.tweet_count = normalizeMetric(author.public_metrics.tweet_count);
+  }
+  if (author?.description) {
+    payload.user.description = normalizeDisplayName(author.description || "");
+  }
+
+  return payload;
 }
 
 function collectMissingReferencedTweetIds(payloadsById) {
@@ -206,6 +291,51 @@ function createStorageAdapter(chromeApi) {
       });
     },
 
+    async readQuoteTweetCache() {
+      return new Promise((resolve, reject) => {
+        chromeApi.storage.local.get([QUOTE_TWEET_CACHE_KEY], (result) => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "quote_tweet_cache_read_failed"));
+            return;
+          }
+
+          const cache = result?.[QUOTE_TWEET_CACHE_KEY];
+          resolve(cache && typeof cache === "object" ? cache : {});
+        });
+      });
+    },
+
+    async readTopTakesAnalysisCache() {
+      return new Promise((resolve, reject) => {
+        chromeApi.storage.local.get([TOP_TAKES_ANALYSIS_CACHE_KEY], (result) => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "top_takes_cache_read_failed"));
+            return;
+          }
+
+          const cache = result?.[TOP_TAKES_ANALYSIS_CACHE_KEY];
+          resolve(cache && typeof cache === "object" ? cache : {});
+        });
+      });
+    },
+
+    async readTopTakesArtifactCache() {
+      return new Promise((resolve, reject) => {
+        chromeApi.storage.local.get([TOP_TAKES_ARTIFACT_CACHE_KEY], (result) => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "top_takes_artifact_cache_read_failed"));
+            return;
+          }
+
+          const cache = result?.[TOP_TAKES_ARTIFACT_CACHE_KEY];
+          resolve(cache && typeof cache === "object" ? cache : {});
+        });
+      });
+    },
+
     async writeCache(cache) {
       return new Promise((resolve, reject) => {
         chromeApi.storage.local.set({ [TWEET_CACHE_KEY]: cache }, () => {
@@ -234,9 +364,51 @@ function createStorageAdapter(chromeApi) {
       });
     },
 
+    async writeQuoteTweetCache(cache) {
+      return new Promise((resolve, reject) => {
+        chromeApi.storage.local.set({ [QUOTE_TWEET_CACHE_KEY]: cache }, () => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "quote_tweet_cache_write_failed"));
+            return;
+          }
+
+          resolve();
+        });
+      });
+    },
+
+    async writeTopTakesAnalysisCache(cache) {
+      return new Promise((resolve, reject) => {
+        chromeApi.storage.local.set({ [TOP_TAKES_ANALYSIS_CACHE_KEY]: cache }, () => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "top_takes_cache_write_failed"));
+            return;
+          }
+
+          resolve();
+        });
+      });
+    },
+
+    async writeTopTakesArtifactCache(cache) {
+      return new Promise((resolve, reject) => {
+        chromeApi.storage.local.set({ [TOP_TAKES_ARTIFACT_CACHE_KEY]: cache }, () => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "top_takes_artifact_cache_write_failed"));
+            return;
+          }
+
+          resolve();
+        });
+      });
+    },
+
     async clearCache() {
       return new Promise((resolve, reject) => {
-        chromeApi.storage.local.remove([TWEET_CACHE_KEY, CONVERSATION_CACHE_KEY], () => {
+        chromeApi.storage.local.remove([TWEET_CACHE_KEY, CONVERSATION_CACHE_KEY, QUOTE_TWEET_CACHE_KEY, TOP_TAKES_ANALYSIS_CACHE_KEY, TOP_TAKES_ARTIFACT_CACHE_KEY], () => {
           const runtimeError = chromeApi.runtime?.lastError;
           if (runtimeError) {
             reject(new Error(runtimeError.message || "tweet_cache_clear_failed"));
@@ -370,11 +542,49 @@ function createTweetClient(fetchImpl, options = {}) {
     return Object.values(payloadsById);
   }
 
+  async function fetchQuoteTweetsFromNetwork(tweetId, options = {}) {
+    const normalizedTweetId = normalizeTweetId(tweetId);
+    if (!normalizedTweetId) {
+      return [];
+    }
+
+    const maxPages = Math.max(1, Math.min(10, Number(options?.maxPages || clientOptions.maxQuotePages || 3)));
+    const maxQuotes = Math.max(1, Math.min(500, Number(options?.maxQuoteTweets || clientOptions.maxQuoteTweets || DEFAULT_OPTIONS.maxQuoteTweets)));
+    const maxResults = Math.max(10, Math.min(100, Number(options?.maxResultsPerPage || clientOptions.maxResultsPerPage || 100)));
+    const payloadsById = {};
+    let nextToken = "";
+
+    for (let page = 0; page < maxPages && Object.keys(payloadsById).length < maxQuotes; page += 1) {
+      const response = await request(`/tweets/${encodeURIComponent(normalizedTweetId)}/quote_tweets`, {
+        ...buildBaseApiParams(maxResults),
+        ...(nextToken ? { pagination_token: nextToken } : {})
+      });
+      const userById = createUserMap(response?.includes?.users);
+      for (const tweet of ensureArray(response?.data)) {
+        const payload = convertApiTweetToPayload(tweet, userById);
+        if (payload?.id_str && !payloadsById[payload.id_str]) {
+          payloadsById[payload.id_str] = payload;
+        }
+        if (Object.keys(payloadsById).length >= maxQuotes) {
+          break;
+        }
+      }
+
+      nextToken = String(response?.meta?.next_token || "").trim();
+      if (!nextToken) {
+        break;
+      }
+    }
+
+    return Object.values(payloadsById);
+  }
+
   return {
     request,
     fetchTweetFromNetwork,
     fetchTweetsFromNetwork,
-    fetchConversationFromNetwork
+    fetchConversationFromNetwork,
+    fetchQuoteTweetsFromNetwork
   };
 }
 
@@ -400,6 +610,592 @@ function normalizeTweet(payload) {
     quotedId: payload?.quoted_tweet?.id_str ? String(payload.quoted_tweet.id_str) : "",
     repliedToId: payload?.in_reply_to_status_id_str ? String(payload.in_reply_to_status_id_str) : ""
   };
+}
+
+function normalizeQuoteTweet(payload) {
+  const tweet = normalizeTweet(payload);
+  if (!tweet) {
+    return null;
+  }
+
+  const metrics = payload?.public_metrics || {};
+  return {
+    ...tweet,
+    metrics: {
+      retweets: normalizeMetric(metrics.retweet_count),
+      replies: normalizeMetric(metrics.reply_count),
+      likes: normalizeMetric(metrics.like_count),
+      quotes: normalizeMetric(metrics.quote_count),
+      bookmarks: normalizeMetric(metrics.bookmark_count),
+      impressions: normalizeMetric(metrics.impression_count)
+    },
+    authorVerified: Boolean(payload?.user?.verified),
+    authorVerifiedType: String(payload?.user?.verified_type || ""),
+    authorFollowers: normalizeMetric(payload?.user?.followers_count),
+    authorFollowing: normalizeMetric(payload?.user?.following_count),
+    authorTweetCount: normalizeMetric(payload?.user?.tweet_count),
+    authorDescription: normalizeDisplayName(payload?.user?.description || "")
+  };
+}
+
+function normalizeTextForDedupe(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/@\w{1,15}/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isSpamLikeQuote(tweet) {
+  const text = normalizeTextForDedupe(tweet?.text || "");
+  if (!text) {
+    return true;
+  }
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length <= 2) {
+    return true;
+  }
+  const uniqueWords = new Set(words);
+  return words.length >= 8 && uniqueWords.size / words.length < 0.35;
+}
+
+function areNearDuplicateTexts(leftText, rightText) {
+  const leftWords = new Set(normalizeTextForDedupe(leftText).split(/\s+/).filter(Boolean));
+  const rightWords = new Set(normalizeTextForDedupe(rightText).split(/\s+/).filter(Boolean));
+  if (leftWords.size === 0 || rightWords.size === 0) {
+    return false;
+  }
+  const intersection = [...leftWords].filter((word) => rightWords.has(word)).length;
+  const smaller = Math.min(leftWords.size, rightWords.size);
+  const larger = Math.max(leftWords.size, rightWords.size);
+  return intersection / smaller >= 0.9 && intersection / larger >= 0.72;
+}
+
+function dedupeQuoteTweets(quoteTweets) {
+  const deduped = [];
+  const exactTextKeys = new Set();
+  for (const tweet of ensureArray(quoteTweets)) {
+    if (!tweet?.id || isSpamLikeQuote(tweet)) {
+      continue;
+    }
+    const key = normalizeTextForDedupe(tweet.text);
+    if (!key || exactTextKeys.has(key)) {
+      continue;
+    }
+    if (deduped.some((entry) => areNearDuplicateTexts(entry.text, tweet.text))) {
+      continue;
+    }
+    exactTextKeys.add(key);
+    deduped.push(tweet);
+  }
+  return deduped;
+}
+
+function buildTopTakesPeople(sourceTweet, quoteTweets) {
+  const people = [];
+  const byHandle = new Map();
+  for (const tweet of [sourceTweet, ...ensureArray(quoteTweets)]) {
+    const handle = canonicalizeHandle(tweet?.author || "");
+    if (!handle) {
+      continue;
+    }
+    let person = byHandle.get(handle);
+    if (!person) {
+      person = {
+        handle,
+        displayName: normalizeDisplayName(tweet?.authorName || ""),
+        avatarUrl: normalizeAvatarUrl(tweet?.authorAvatarUrl || ""),
+        profileUrl: `https://x.com/${encodeURIComponent(handle)}`,
+        verified: Boolean(tweet?.authorVerified),
+        followers: normalizeMetric(tweet?.authorFollowers),
+        sourceTypes: []
+      };
+      byHandle.set(handle, person);
+      people.push(person);
+    }
+    const sourceType = tweet?.id === sourceTweet?.id ? "source_author" : "quote_author";
+    if (!person.sourceTypes.includes(sourceType)) {
+      person.sourceTypes.push(sourceType);
+    }
+  }
+  return people;
+}
+
+function scoreTopTakeComment(comment) {
+  const metrics = comment?.metrics || {};
+  return (
+    normalizeMetric(metrics.likes) * 3
+    + normalizeMetric(metrics.replies) * 2
+    + normalizeMetric(metrics.retweets)
+    + normalizeMetric(metrics.quotes)
+    + normalizeMetric(metrics.bookmarks)
+  );
+}
+
+function selectTopCommentsForTweet(tweet, conversationTweets, options = {}) {
+  const tweetId = normalizeTweetId(tweet?.id || "");
+  if (!tweetId) {
+    return [];
+  }
+  const commentCount = Math.max(0, Math.min(10, Number(options?.topCommentsPerQuote ?? DEFAULT_OPTIONS.topCommentsPerQuote)));
+  if (commentCount === 0) {
+    return [];
+  }
+
+  return ensureArray(conversationTweets)
+    .filter((entry) => normalizeTweetId(entry?.repliedToId || "") === tweetId)
+    .filter((entry) => normalizeTweetId(entry?.id || "") !== tweetId)
+    .sort((left, right) => {
+      const scoreDelta = scoreTopTakeComment(right) - scoreTopTakeComment(left);
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+      const leftTime = left?.createdAt ? Date.parse(left.createdAt) : NaN;
+      const rightTime = right?.createdAt ? Date.parse(right.createdAt) : NaN;
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+        return rightTime - leftTime;
+      }
+      return String(left?.id || "").localeCompare(String(right?.id || ""), "en");
+    })
+    .slice(0, commentCount)
+    .map((entry) => ({
+      id: entry.id,
+      author: entry.author,
+      authorName: entry.authorName,
+      text: entry.text,
+      url: entry.url,
+      createdAt: entry.createdAt,
+      metrics: entry.metrics,
+      authorFollowers: entry.authorFollowers,
+      authorVerified: entry.authorVerified,
+      authorDescription: entry.authorDescription
+    }));
+}
+
+async function attachTopCommentsToQuoteTweets(quoteTweets, deps, options = {}) {
+  const tweets = ensureArray(quoteTweets).filter(Boolean);
+  const commentCount = Math.max(0, Math.min(10, Number(options?.topCommentsPerQuote ?? DEFAULT_OPTIONS.topCommentsPerQuote)));
+  if (tweets.length === 0 || commentCount === 0) {
+    return tweets.map((tweet) => ({ ...tweet, topComments: [] }));
+  }
+
+  const conversationIds = [...new Set(
+    tweets.map((tweet) => normalizeTweetId(tweet?.conversationId || tweet?.id || "")).filter(Boolean)
+  )];
+  const conversationPayloads = await fetchConversations(conversationIds, deps);
+  const conversationTweets = conversationPayloads
+    .map((payload) => normalizeQuoteTweet(payload))
+    .filter(Boolean);
+  const byConversationId = new Map();
+  for (const comment of conversationTweets) {
+    const conversationId = normalizeTweetId(comment?.conversationId || "");
+    if (!conversationId) {
+      continue;
+    }
+    const entries = byConversationId.get(conversationId) || [];
+    entries.push(comment);
+    byConversationId.set(conversationId, entries);
+  }
+
+  return tweets.map((tweet) => {
+    const conversationId = normalizeTweetId(tweet?.conversationId || tweet?.id || "");
+    return {
+      ...tweet,
+      topComments: selectTopCommentsForTweet(tweet, byConversationId.get(conversationId) || [], { topCommentsPerQuote: commentCount })
+    };
+  });
+}
+
+function buildTopTakesCandidateBatch(sourceTweet, quoteTweets, batchIndex, batchSize) {
+  return {
+    batchIndex,
+    sourceTweet,
+    quoteTweets: quoteTweets.slice(batchIndex * batchSize, (batchIndex + 1) * batchSize).map((tweet) => ({
+      id: tweet.id,
+      author: tweet.author,
+      authorName: tweet.authorName,
+      text: tweet.text,
+      urls: tweet.referenceUrls,
+      metrics: tweet.metrics,
+      topComments: ensureArray(tweet.topComments).map((comment) => ({
+        id: comment.id,
+        author: comment.author,
+        authorName: comment.authorName,
+        text: comment.text,
+        metrics: comment.metrics,
+        createdAt: comment.createdAt,
+        authorFollowers: comment.authorFollowers,
+        authorVerified: comment.authorVerified,
+        authorDescription: comment.authorDescription
+      })),
+      createdAt: tweet.createdAt,
+      authorFollowers: tweet.authorFollowers,
+      authorVerified: tweet.authorVerified,
+      authorDescription: tweet.authorDescription
+    }))
+  };
+}
+
+function isLowInformationAffectiveReaction(tweet) {
+  const normalizedText = normalizeTextForDedupe(tweet?.text || "");
+  if (!normalizedText) {
+    return true;
+  }
+  const words = normalizedText.split(/\s+/).filter(Boolean);
+  if (words.length > 45) {
+    return false;
+  }
+
+  const hasReference = ensureArray(tweet?.referenceUrls).length > 0;
+  const hasNumbers = /\d/.test(String(tweet?.text || ""));
+  const hasReasoningMarker = /\b(because|since|therefore|due to|the reason|for example|for instance|evidence|data|benchmark|paper|study|source|architecture|bottleneck|constraint|mechanism|deployment|production|reliable|scale)\b/i.test(String(tweet?.text || ""));
+  const hasAffectiveReaction = /\b(revulsion|revolted|disgust|disgusted|horrified|terrified|scared|creepy|disturbing|uncomfortable|vibes|yikes|wow|wild|insane|amazing|excited)\b/i.test(String(tweet?.text || ""));
+
+  return hasAffectiveReaction && !hasReference && !hasNumbers && !hasReasoningMarker;
+}
+
+function topTakesContentMultiplier(tweet) {
+  return isLowInformationAffectiveReaction(tweet) ? 0.55 : 1;
+}
+
+function normalizeTopTakesClassification(rawEntry, quoteById) {
+  const tweetId = normalizeTweetId(rawEntry?.tweetId || rawEntry?.id || "");
+  const tweet = quoteById.get(tweetId);
+  if (!tweet) {
+    return null;
+  }
+  const scorecard = {
+    substance: clampScore(rawEntry?.scorecard?.substance ?? rawEntry?.substance),
+    novelty: clampScore(rawEntry?.scorecard?.novelty ?? rawEntry?.novelty),
+    credibility: clampScore(rawEntry?.scorecard?.credibility ?? rawEntry?.credibility)
+  };
+  const requestedRole = String(rawEntry?.role || "").trim();
+  const role = TOP_TAKES_ROLES.includes(requestedRole) ? requestedRole : "other";
+  const requestedDomainGroup = String(rawEntry?.domainGroup || rawEntry?.authorDomainGroup || "").trim();
+  const domainGroup = TOP_TAKES_DOMAIN_GROUPS.includes(requestedDomainGroup) ? requestedDomainGroup : "adjacent";
+  const authorDomainRelevance = clampScore(rawEntry?.authorDomainRelevance);
+  const authorExpertiseSignal = clampScore(rawEntry?.authorExpertiseSignal);
+  const isDomainFluentTechnicalTake = Boolean(rawEntry?.isDomainFluentTechnicalTake);
+  const confidence = clampScore(rawEntry?.confidence);
+  const domainBoostRoles = new Set(["technical_explanation", "methodological_criticism", "operational_caveat", "evidence"]);
+  const domainBoost = domainBoostRoles.has(role)
+    ? (authorDomainRelevance * 0.12 + authorExpertiseSignal * 0.12 + (isDomainFluentTechnicalTake ? 0.08 : 0))
+    : 0;
+  const groupBoost = domainGroup === "expert" ? 0.04 : 0;
+  const baseScore = (
+    scorecard.substance * 0.42
+    + scorecard.novelty * 0.32
+    + scorecard.credibility * 0.26
+    + confidence * 0.08
+    + domainBoost
+    + groupBoost
+  );
+  const contentMultiplier = topTakesContentMultiplier(tweet);
+  const combinedScore = baseScore * contentMultiplier;
+
+  return {
+    tweetId,
+    role,
+    roleLabel: TOP_TAKES_ROLE_LABELS[role] || TOP_TAKES_ROLE_LABELS.other,
+    domainGroup,
+    domainGroupLabel: TOP_TAKES_DOMAIN_GROUP_LABELS[domainGroup],
+    authorDomainRelevance,
+    authorExpertiseSignal,
+    expertiseEvidence: normalizeDisplayName(rawEntry?.expertiseEvidence || ""),
+    isDomainFluentTechnicalTake,
+    scorecard,
+    confidence,
+    contentMultiplier,
+    explanation: normalizeDisplayName(rawEntry?.explanation || rawEntry?.why_it_matters || ""),
+    combinedScore,
+    raw: tweet
+  };
+}
+
+function groupTopTakes(classifications, options = {}) {
+  const representativesPerGroup = Math.max(1, Math.min(8, Number(options?.representativesPerGroup || options?.representativesPerRole || DEFAULT_OPTIONS.representativesPerRole)));
+  const groupedRoles = [];
+  const representativeTakes = [];
+  const byGroup = new Map();
+
+  for (const classification of ensureArray(classifications)) {
+    if (!classification?.tweetId) {
+      continue;
+    }
+    const group = TOP_TAKES_DOMAIN_GROUPS.includes(classification.domainGroup) ? classification.domainGroup : "adjacent";
+    const entries = byGroup.get(group) || [];
+    entries.push(classification);
+    byGroup.set(group, entries);
+  }
+
+  for (const group of TOP_TAKES_DOMAIN_GROUPS) {
+    const entries = (byGroup.get(group) || [])
+      .filter((entry) => entry.combinedScore > 0)
+      .sort((left, right) => right.combinedScore - left.combinedScore);
+    if (entries.length === 0) {
+      continue;
+    }
+
+    const selected = [];
+    const selectedRoles = new Set();
+    for (const entry of entries) {
+      if (selected.length >= representativesPerGroup) {
+        break;
+      }
+      if (selectedRoles.has(entry.role)) {
+        continue;
+      }
+      if (selected.some((candidate) => areNearDuplicateTexts(candidate.raw?.text || "", entry.raw?.text || ""))) {
+        continue;
+      }
+      selected.push(entry);
+      selectedRoles.add(entry.role);
+    }
+    for (const entry of entries) {
+      if (selected.length >= representativesPerGroup) {
+        break;
+      }
+      if (selected.includes(entry)) {
+        continue;
+      }
+      if (selected.some((candidate) => areNearDuplicateTexts(candidate.raw?.text || "", entry.raw?.text || ""))) {
+        continue;
+      }
+      selected.push(entry);
+    }
+
+    groupedRoles.push({
+      role: group,
+      group,
+      label: TOP_TAKES_DOMAIN_GROUP_LABELS[group],
+      takeCount: entries.length,
+      takes: selected
+    });
+    representativeTakes.push(...selected.map((entry) => ({
+      ...entry,
+      selectedBecause: entry.explanation || `${entry.domainGroupLabel} perspective with high substance, novelty, and credibility.`
+    })));
+  }
+
+  return {
+    groupedRoles,
+    representativeTakes
+  };
+}
+
+async function readQuoteTweetsForSource(sourceTweetId, { storage, client }, options = {}) {
+  const normalizedTweetId = normalizeTweetId(sourceTweetId);
+  if (!normalizedTweetId) {
+    return [];
+  }
+
+  const maxQuoteTweets = Math.max(1, Math.min(500, Number(options?.maxQuoteTweets || DEFAULT_OPTIONS.maxQuoteTweets)));
+  const cache = typeof storage?.readQuoteTweetCache === "function" ? await storage.readQuoteTweetCache() : {};
+  const cachedEntry = cache[normalizedTweetId];
+  if (
+    cachedEntry
+    && Array.isArray(cachedEntry.payloads)
+    && Number(cachedEntry.maxQuoteTweets || 0) >= maxQuoteTweets
+  ) {
+    return cachedEntry.payloads.slice(0, maxQuoteTweets);
+  }
+
+  const payloads = await client.fetchQuoteTweetsFromNetwork(normalizedTweetId, options);
+  if (typeof storage?.writeQuoteTweetCache === "function") {
+    await storage.writeQuoteTweetCache({
+      ...cache,
+      [normalizedTweetId]: {
+        fetchedAt: new Date().toISOString(),
+        maxQuoteTweets,
+        payloads
+      }
+    });
+  }
+  await cacheTweets(payloads, storage);
+  return payloads;
+}
+
+function buildAnalysisCacheKey(sourceTweet, quoteTweets, model = "") {
+  const quoteIds = ensureArray(quoteTweets).map((tweet) => normalizeTweetId(tweet?.id || "")).filter(Boolean).sort();
+  return [
+    normalizeTweetId(sourceTweet?.id || ""),
+    `v${TOP_TAKES_CACHE_VERSION}`,
+    String(model || "default").trim(),
+    quoteIds.join(",")
+  ].join(":");
+}
+
+async function resolveTopTakes(tweetId, deps, options = {}) {
+  const onProgress = typeof deps?.onProgress === "function" ? deps.onProgress : null;
+  const normalizedTweetId = normalizeTweetId(tweetId);
+  if (!normalizedTweetId) {
+    throw new Error("missing_tweet_id");
+  }
+  if (typeof deps?.analyzeTopTakesBatch !== "function") {
+    throw new Error("missing_top_takes_analyzer");
+  }
+
+  const artifactCache = typeof deps?.storage?.readTopTakesArtifactCache === "function"
+    ? await deps.storage.readTopTakesArtifactCache()
+    : {};
+  const cachedArtifact = artifactCache[normalizedTweetId]?.version === TOP_TAKES_CACHE_VERSION
+    ? artifactCache[normalizedTweetId]?.artifact
+    : null;
+  if (cachedArtifact && typeof cachedArtifact === "object") {
+    if (onProgress) {
+      onProgress({
+        phase: "top_takes_cache_hit",
+        sourceTweetId: normalizedTweetId,
+        cachedAt: String(artifactCache[normalizedTweetId]?.cachedAt || "")
+      });
+      onProgress({
+        phase: "top_takes_ready",
+        ...(cachedArtifact.stats && typeof cachedArtifact.stats === "object" ? cachedArtifact.stats : {})
+      });
+    }
+    return cachedArtifact;
+  }
+
+  if (onProgress) {
+    onProgress({ phase: "collecting_quote_tweets", sourceTweetId: normalizedTweetId });
+  }
+  const sourcePayload = await fetchTweet(normalizedTweetId, deps);
+  const sourceTweet = normalizeQuoteTweet(sourcePayload);
+  const quotePayloads = await readQuoteTweetsForSource(normalizedTweetId, deps, options);
+
+  if (onProgress) {
+    onProgress({ phase: "normalizing_discourse", quoteCount: quotePayloads.length });
+  }
+  const normalizedQuotes = quotePayloads.map((payload) => normalizeQuoteTweet(payload)).filter(Boolean);
+  const dedupedQuotes = dedupeQuoteTweets(normalizedQuotes);
+  if (onProgress) {
+    onProgress({ phase: "collecting_top_comments", candidateQuoteCount: dedupedQuotes.length, topCommentsPerQuote: Math.max(0, Math.min(10, Number(options?.topCommentsPerQuote ?? DEFAULT_OPTIONS.topCommentsPerQuote))) });
+  }
+  const candidateQuotes = await attachTopCommentsToQuoteTweets(dedupedQuotes, deps, options);
+  const batchSize = Math.max(10, Math.min(50, Number(options?.quoteBatchSize || DEFAULT_OPTIONS.quoteBatchSize)));
+  const batches = [];
+  for (let batchIndex = 0; batchIndex * batchSize < candidateQuotes.length; batchIndex += 1) {
+    batches.push(buildTopTakesCandidateBatch(sourceTweet, candidateQuotes, batchIndex, batchSize));
+  }
+
+  const analysisCache = typeof deps?.storage?.readTopTakesAnalysisCache === "function"
+    ? await deps.storage.readTopTakesAnalysisCache()
+    : {};
+  const modelHint = String(options?.model || "").trim();
+  const cacheKey = buildAnalysisCacheKey(sourceTweet, candidateQuotes, modelHint);
+  let classifications = [];
+  let modelMetadata = analysisCache[cacheKey]?.modelMetadata || {};
+  let sourceDomain = String(analysisCache[cacheKey]?.sourceDomain || "").trim();
+  let sourceDomainConfidence = clampScore(analysisCache[cacheKey]?.sourceDomainConfidence);
+  if (Array.isArray(analysisCache[cacheKey]?.classifications)) {
+    classifications = analysisCache[cacheKey].classifications.map((entry) => ({
+      ...entry,
+      raw: candidateQuotes.find((tweet) => tweet.id === entry.tweetId) || entry.raw
+    }));
+  } else {
+    for (const batch of batches) {
+      if (onProgress) {
+        onProgress({
+          phase: "sending_batches_to_openai",
+          batchIndex: batch.batchIndex + 1,
+          batchCount: batches.length,
+          quoteCount: batch.quoteTweets.length
+        });
+      }
+      const result = await deps.analyzeTopTakesBatch(batch, options);
+      if (!sourceDomain && result?.sourceDomain) {
+        sourceDomain = normalizeDisplayName(result.sourceDomain);
+      }
+      sourceDomainConfidence = Math.max(sourceDomainConfidence, clampScore(result?.sourceDomainConfidence));
+      modelMetadata = {
+        provider: String(result?.provider || modelMetadata.provider || ""),
+        model: String(result?.model || modelMetadata.model || modelHint || ""),
+        analyzedAt: new Date().toISOString()
+      };
+      const quoteById = new Map(candidateQuotes.map((tweet) => [tweet.id, tweet]));
+      const entries = ensureArray(result?.classifications)
+        .map((entry) => normalizeTopTakesClassification(entry, quoteById))
+        .filter(Boolean);
+      classifications.push(...entries);
+    }
+    if (typeof deps?.storage?.writeTopTakesAnalysisCache === "function") {
+      await deps.storage.writeTopTakesAnalysisCache({
+        ...analysisCache,
+        [cacheKey]: {
+          cachedAt: new Date().toISOString(),
+          modelMetadata,
+          sourceDomain,
+          sourceDomainConfidence,
+          classifications: classifications.map((entry) => ({
+            tweetId: entry.tweetId,
+            role: entry.role,
+            roleLabel: entry.roleLabel,
+            domainGroup: entry.domainGroup,
+            domainGroupLabel: entry.domainGroupLabel,
+            authorDomainRelevance: entry.authorDomainRelevance,
+            authorExpertiseSignal: entry.authorExpertiseSignal,
+            expertiseEvidence: entry.expertiseEvidence,
+            isDomainFluentTechnicalTake: entry.isDomainFluentTechnicalTake,
+            scorecard: entry.scorecard,
+            confidence: entry.confidence,
+            contentMultiplier: entry.contentMultiplier,
+            explanation: entry.explanation,
+            combinedScore: entry.combinedScore
+          }))
+        }
+      });
+    }
+  }
+
+  if (onProgress) {
+    onProgress({ phase: "analyzing_epistemic_roles", classifiedCount: classifications.length });
+  }
+  const grouped = groupTopTakes(classifications, options);
+
+  if (onProgress) {
+    onProgress({ phase: "grouping_perspectives", roleCount: grouped.groupedRoles.length });
+    onProgress({ phase: "selecting_representative_takes", takeCount: grouped.representativeTakes.length });
+    onProgress({ phase: "rendering_top_takes", takeCount: grouped.representativeTakes.length });
+  }
+
+  const artifact = {
+    sourceTweet,
+    sourceDomain,
+    sourceDomainConfidence,
+    takes: classifications,
+    groupedRoles: grouped.groupedRoles,
+    representativeTakes: grouped.representativeTakes,
+    people: buildTopTakesPeople(sourceTweet, candidateQuotes),
+    stats: {
+      retrievedQuoteCount: quotePayloads.length,
+      normalizedQuoteCount: normalizedQuotes.length,
+      candidateQuoteCount: candidateQuotes.length,
+      classifiedQuoteCount: classifications.length,
+      roleCount: grouped.groupedRoles.length,
+      representativeTakeCount: grouped.representativeTakes.length
+    },
+    modelMetadata,
+    cacheKey
+  };
+
+  if (onProgress) {
+    onProgress({ phase: "top_takes_ready", ...artifact.stats });
+  }
+
+  if (typeof deps?.storage?.writeTopTakesArtifactCache === "function") {
+    await deps.storage.writeTopTakesArtifactCache({
+      ...artifactCache,
+      [normalizedTweetId]: {
+        version: TOP_TAKES_CACHE_VERSION,
+        cachedAt: new Date().toISOString(),
+        artifact
+      }
+    });
+  }
+
+  return artifact;
 }
 
 function extractReferenceUrls(payload) {
@@ -1069,10 +1865,18 @@ async function resolveRootPath(tweetId, deps) {
 const api = {
   TWEET_CACHE_KEY,
   CONVERSATION_CACHE_KEY,
+  QUOTE_TWEET_CACHE_KEY,
+  TOP_TAKES_ANALYSIS_CACHE_KEY,
+  TOP_TAKES_ARTIFACT_CACHE_KEY,
+  TOP_TAKES_CACHE_VERSION,
   DEFAULT_API_BASE_URL,
   DEFAULT_TWEET_FIELDS,
   DEFAULT_USER_FIELDS,
   DEFAULT_EXPANSIONS,
+  TOP_TAKES_ROLES,
+  TOP_TAKES_ROLE_LABELS,
+  TOP_TAKES_DOMAIN_GROUPS,
+  TOP_TAKES_DOMAIN_GROUP_LABELS,
   inFlightTweetFetchById,
   inFlightConversationFetchById,
   buildTweetUrl,
@@ -1088,6 +1892,22 @@ const api = {
   createStorageAdapter,
   createTweetClient,
   normalizeTweet,
+  normalizeQuoteTweet,
+  normalizeTextForDedupe,
+  isSpamLikeQuote,
+  areNearDuplicateTexts,
+  dedupeQuoteTweets,
+  isLowInformationAffectiveReaction,
+  topTakesContentMultiplier,
+  scoreTopTakeComment,
+  selectTopCommentsForTweet,
+  attachTopCommentsToQuoteTweets,
+  buildTopTakesCandidateBatch,
+  normalizeTopTakesClassification,
+  groupTopTakes,
+  buildTopTakesPeople,
+  readQuoteTweetsForSource,
+  buildAnalysisCacheKey,
   extractReferenceUrls,
   extractMentionHandles,
   extractMentionPeople,
@@ -1101,7 +1921,8 @@ const api = {
   fetchTweet,
   fetchTweets,
   fetchConversation,
-  resolveRootPath
+  resolveRootPath,
+  resolveTopTakes
 };
 
 if (typeof module !== "undefined" && module.exports) {

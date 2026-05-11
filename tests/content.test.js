@@ -218,6 +218,21 @@ test("formatReportProgressMessage explains report phases", () => {
   assert.match(content.formatReportProgressMessage({ phase: "report_ready", model: "gpt-4o-mini" }), /gpt-4o-mini/i);
 });
 
+test("formatTopTakesProgressMessage explains Top Takes phases", () => {
+  assert.match(content.formatTopTakesProgressMessage({ phase: "collecting_quote_tweets" }), /Collecting quote tweets/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "normalizing_discourse", quoteCount: 3 }), /3 quote tweets/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "collecting_top_comments", candidateQuoteCount: 3, topCommentsPerQuote: 3 }), /top 3 comments/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "sending_batches_to_openai", batchIndex: 1, batchCount: 2 }), /1\/2/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "top_takes_ready", representativeTakeCount: 4 }), /4 representative/i);
+});
+
+test("formatTopTakesErrorMessage explains OpenAI credential failures", () => {
+  assert.match(
+    content.formatTopTakesErrorMessage(new Error("missing_openai_api_key")),
+    /missing OpenAI API key/i
+  );
+});
+
 test("normalizeText trims and collapses whitespace", () => {
   assert.equal(content.normalizeText(" a \n  b   c "), "a b c");
 });
@@ -760,6 +775,153 @@ test("renderGistTab shows generated gist text and metadata", async () => {
   assert.deepEqual(clipboardWrites, ["Portable gist."]);
 });
 
+test("renderTopTakesTab renders one sorted list with only expertise pills", () => {
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        style: {},
+        children: [],
+        appendChild(child) {
+          this.children.push(child);
+        },
+        addEventListener(type, listener) {
+          this[`on${type}`] = listener;
+        }
+      };
+    },
+    defaultView: {
+      open() {}
+    }
+  };
+
+  const tab = content.renderTopTakesTab({
+    representativeTakes: [
+      {
+        domainGroup: "adjacent",
+        domainGroupLabel: "Adjacent",
+        roleLabel: "Strongest Skeptical Take",
+        combinedScore: 0.4,
+        explanation: "Skeptical but useful.",
+        scorecard: { substance: 0.5, novelty: 0.4, credibility: 0.5 },
+        raw: { id: "low", author: "skeptic", text: "Concern here.", referenceUrls: [] }
+      },
+      {
+        domainGroup: "expert",
+        domainGroupLabel: "Expert",
+        roleLabel: "Best Technical Explanation",
+        combinedScore: 0.9,
+        expertiseEvidence: "Profile says robotics engineer.",
+        explanation: "Explains mechanism.",
+        scorecard: { substance: 0.8, novelty: 0.7, credibility: 0.8 },
+        raw: {
+          id: "high",
+          author: "expert",
+          text: "Technical explanation.",
+          referenceUrls: ["https://example.com/paper"],
+          topComments: [
+            { id: "comment-1", author: "reviewer", text: "This correction matters." }
+          ]
+        }
+      }
+    ],
+    groupedRoles: [
+      { label: "Expert", takes: [] }
+    ]
+  }, root);
+
+  assert.equal(tab.children.length, 2);
+  assert.equal(tab.children[0].tagName, "article");
+  assert.equal(tab.children[1].tagName, "article");
+  assert.equal(tab.children[0].children[1].textContent, "@expert");
+  assert.equal(tab.children[1].children[1].textContent, "@skeptic");
+
+  const firstPills = tab.children[0].children[0].children.map((child) => [child.textContent, child.className]);
+  assert.deepEqual(firstPills.map(([text]) => text), ["Expert"]);
+  assert.match(firstPills[0][1], /ariadex-take-pill-expert/);
+  assert.equal(tab.children[0].children[4].className, "ariadex-top-comments");
+  assert.equal(tab.children[0].children[4].children[0].textContent, "@reviewer: This correction matters.");
+  const secondPills = tab.children[1].children[0].children.map((child) => [child.textContent, child.className]);
+  assert.deepEqual(secondPills.map(([text]) => text), ["Adjacent"]);
+  assert.match(secondPills[0][1], /ariadex-take-pill-adjacent/);
+  assert.equal(tab.children.some((child) => child.tagName === "section"), false);
+});
+
+test("renderTopTakesTab renders all cached takes incrementally on scroll", () => {
+  const listeners = {};
+  const panel = {
+    scrollTop: 0,
+    clientHeight: 100,
+    scrollHeight: 1000,
+    addEventListener(type, listener) {
+      listeners[type] = listener;
+    }
+  };
+  const root = {
+    createElement(tagName) {
+      return {
+        tagName,
+        className: "",
+        textContent: "",
+        style: {},
+        children: [],
+        appendChild(child) {
+          child.parentNode = this;
+          this.children.push(child);
+        },
+        removeChild(child) {
+          this.children = this.children.filter((candidate) => candidate !== child);
+          child.parentNode = null;
+        },
+        addEventListener(type, listener) {
+          this[`on${type}`] = listener;
+        }
+      };
+    },
+    getElementById(id) {
+      return id === content.PANEL_ID ? panel : null;
+    },
+    defaultView: {
+      open() {}
+    }
+  };
+
+  const tab = content.renderTopTakesTab({
+    takes: Array.from({ length: 7 }, (_, index) => ({
+      tweetId: String(index + 1),
+      domainGroup: "expert",
+      domainGroupLabel: "Expert",
+      roleLabel: "Best Technical Explanation",
+      combinedScore: 1 - (index * 0.1),
+      explanation: `Explanation ${index + 1}`,
+      scorecard: { substance: 0.8, novelty: 0.7, credibility: 0.8 },
+      raw: { id: String(index + 1), author: `author${index + 1}`, text: `Cached take ${index + 1}`, referenceUrls: [] }
+    })),
+    representativeTakes: [
+      {
+        tweetId: "representative-only",
+        domainGroup: "adjacent",
+        domainGroupLabel: "Adjacent",
+        roleLabel: "Other Informative Take",
+        combinedScore: 99,
+        raw: { id: "representative-only", author: "rep", text: "Should not replace cached takes." }
+      }
+    ]
+  }, root);
+
+  assert.equal(tab.children.filter((child) => child.tagName === "article").length, 5);
+  assert.match(tab.children[5].textContent, /Showing 5 of 7 cached takes/);
+
+  panel.scrollTop = 900;
+  listeners.scroll();
+
+  assert.equal(tab.children.filter((child) => child.tagName === "article").length, 7);
+  assert.equal(tab.children[0].children[1].textContent, "@author1");
+  assert.equal(tab.children.some((child) => child.textContent === "Should not replace cached takes."), false);
+});
+
 test("resolveRootArtifact falls back to chrome storage for the bearer token", async () => {
   const chromeStub = {
     runtime: {
@@ -972,6 +1134,105 @@ test("resolveRootArtifact rejects when the streaming port disconnects without a 
   await assert.rejects(
     () => content.resolveRootArtifact("2", chromeStub),
     /message port closed before a response was received/i
+  );
+});
+
+test("resolveTopTakesArtifact uses the streaming port and ignores normal close after result", async () => {
+  const progressEvents = [];
+  let portListener;
+  let disconnectListener;
+  let disconnected = false;
+  global.window.AriadexXApiSettings = {
+    apiBaseUrl: "https://proxy.example.test/2"
+  };
+  const chromeStub = {
+    runtime: {
+      lastError: null,
+      sendMessage() {},
+      connect(options) {
+        assert.deepEqual(options, { name: content.RESOLVE_TOP_TAKES_PORT_NAME });
+        return {
+          onMessage: {
+            addListener(listener) {
+              portListener = listener;
+            }
+          },
+          onDisconnect: {
+            addListener(listener) {
+              disconnectListener = listener;
+            }
+          },
+          postMessage(message) {
+            assert.deepEqual(message, {
+              type: content.RESOLVE_TOP_TAKES_MESSAGE_TYPE,
+              tweetId: "2",
+              bearerToken: "test-token",
+              apiBaseUrl: "https://proxy.example.test/2"
+            });
+            portListener({ type: "progress", progress: { phase: "collecting_quote_tweets" } });
+            portListener({
+              type: "result",
+              artifact: {
+                sourceTweet: { id: "2" },
+                takes: [{ tweetId: "10" }],
+                groupedRoles: [{ role: "skepticism" }],
+                representativeTakes: [{ tweetId: "10" }],
+                people: [{ handle: "alice" }],
+                stats: { representativeTakeCount: 1 },
+                modelMetadata: { model: "gpt-5-mini" }
+              }
+            });
+          },
+          disconnect() {
+            disconnected = true;
+            if (disconnectListener) {
+              disconnectListener();
+            }
+          }
+        };
+      }
+    }
+  };
+
+  const artifact = await content.resolveTopTakesArtifact("2", chromeStub, (progress) => {
+    progressEvents.push(progress);
+  });
+
+  assert.deepEqual(progressEvents, [{ phase: "collecting_quote_tweets" }]);
+  assert.deepEqual(artifact.groupedRoles, [{ role: "skepticism" }]);
+  assert.equal(artifact.stats.representativeTakeCount, 1);
+  assert.equal(disconnected, true);
+  delete global.window.AriadexXApiSettings;
+});
+
+test("resolveTopTakesArtifact rejects when the streaming port disconnects before a result", async () => {
+  let disconnectListener;
+  const chromeStub = {
+    runtime: {
+      lastError: null,
+      sendMessage() {},
+      connect() {
+        return {
+          onMessage: {
+            addListener() {}
+          },
+          onDisconnect: {
+            addListener(listener) {
+              disconnectListener = listener;
+            }
+          },
+          postMessage() {
+            disconnectListener();
+          },
+          disconnect() {}
+        };
+      }
+    }
+  };
+
+  await assert.rejects(
+    () => content.resolveTopTakesArtifact("2", chromeStub),
+    /top_takes_port_disconnected/
   );
 });
 

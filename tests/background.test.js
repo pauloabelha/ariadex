@@ -286,6 +286,88 @@ test("buildApiUrl writes stable X API urls", () => {
   assert.equal(url.toString(), "https://api.x.com/2/tweets/10?expansions=author_id&tweet.fields=author_id%2Cconversation_id");
 });
 
+test("Top Takes prompt asks for Expert and Adjacent expertise classification", () => {
+  const systemPrompt = background.buildTopTakesSystemPrompt();
+  const userPrompt = JSON.parse(background.buildTopTakesUserPrompt({
+    sourceTweet: { id: "1", text: "A robot folds laundry." },
+    quoteTweets: [
+      {
+        id: "2",
+        text: "The gripper control is the hard part.",
+        author: "roboticist",
+        authorDescription: "Robotics researcher",
+        topComments: [
+          { id: "3", text: "This matches the failure mode in deployment.", author: "fieldengineer" }
+        ]
+      }
+    ]
+  }));
+
+  assert.match(systemPrompt, /Expert/i);
+  assert.match(systemPrompt, /Adjacent/i);
+  assert.match(systemPrompt, /top direct comments/i);
+  assert.match(systemPrompt, /low-information affective reactions/i);
+  assert.match(systemPrompt, /concrete failure mode/i);
+  assert.match(systemPrompt, /profile metadata only as weak public evidence/i);
+  assert.match(userPrompt.comment_context, /topComments/i);
+  assert.match(userPrompt.scorecard.low_score_guidance, /Short affective reactions/i);
+  assert.equal(userPrompt.quoteTweets[0].topComments[0].text, "This matches the failure mode in deployment.");
+  assert.equal(userPrompt.output_shape.sourceDomain.includes("robotics"), true);
+  assert.equal(userPrompt.output_shape.classifications[0].domainGroup, "expert or adjacent");
+  assert.equal(userPrompt.output_shape.classifications[0].expertiseEvidence.includes("profile"), true);
+});
+
+test("callOpenAiTopTakesBatch parses domain metadata from structured JSON", async () => {
+  let requestBody = null;
+  const result = await background.callOpenAiTopTakesBatch({
+    providerConfig: {
+      apiKey: "openai-key",
+      apiBaseUrl: "https://api.openai.com/v1",
+      model: "gpt-5-mini"
+    },
+    batch: {
+      sourceTweet: { id: "1", text: "A robot folds laundry." },
+      quoteTweets: [{ id: "2", text: "Control latency matters.", authorDescription: "Robotics engineer" }]
+    },
+    async fetchImpl(_url, options) {
+      requestBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  sourceDomain: "robotics",
+                  sourceDomainConfidence: 0.9,
+                  classifications: [{
+                    tweetId: "2",
+                    scorecard: { substance: 0.8, novelty: 0.7, credibility: 0.9 },
+                    role: "technical_explanation",
+                    domainGroup: "expert",
+                    authorDomainRelevance: 0.9,
+                    authorExpertiseSignal: 0.8,
+                    expertiseEvidence: "Profile says robotics engineer.",
+                    isDomainFluentTechnicalTake: true,
+                    explanation: "Explains a robotics constraint.",
+                    confidence: 0.9
+                  }]
+                })
+              }
+            }]
+          };
+        }
+      };
+    }
+  });
+
+  const classificationSchema = requestBody.response_format.json_schema.schema.properties.classifications.items.properties;
+  assert.deepEqual(classificationSchema.domainGroup.enum, ["expert", "adjacent"]);
+  assert.equal(result.sourceDomain, "robotics");
+  assert.equal(result.sourceDomainConfidence, 0.9);
+  assert.equal(result.classifications[0].domainGroup, "expert");
+});
+
 test("normalizeTweet maps only the fields needed for Ariadex", () => {
   const tweet = algo.normalizeTweet({
     id_str: "10",
@@ -1917,4 +1999,71 @@ test("background port handler streams progress and final results back to the cal
     "result"
   ]);
   assert.deepEqual(posted[posted.length - 1].artifact.path.map((entry) => entry.id), ["10", "20"]);
+});
+
+test("background port handler streams Top Takes progress and results", async () => {
+  const chromeStub = createChromeStub({}, {}, {
+    "ariadex.openai_api_key": "openai-key"
+  });
+  const algoApi = {
+    DEFAULT_API_BASE_URL: algo.DEFAULT_API_BASE_URL,
+    TOP_TAKES_ROLES: algo.TOP_TAKES_ROLES,
+    createStorageAdapter: algo.createStorageAdapter,
+    createTweetClient(_fetchImpl, options) {
+      assert.equal(options.bearerToken, "test-token");
+      return { marker: "client" };
+    },
+    async resolveTopTakes(tweetId, deps) {
+      assert.equal(tweetId, "20");
+      assert.deepEqual(deps.client, { marker: "client" });
+      deps.onProgress({ phase: "collecting_quote_tweets" });
+      return {
+        sourceTweet: { id: "20" },
+        takes: [{ tweetId: "30" }],
+        groupedRoles: [{ role: "skepticism" }],
+        representativeTakes: [{ tweetId: "30" }],
+        people: [{ handle: "alice" }],
+        stats: { representativeTakeCount: 1 },
+        modelMetadata: { model: "gpt-5-mini" }
+      };
+    }
+  };
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: async () => ({
+      ok: false,
+      async json() {
+        return {};
+      }
+    }),
+    algoApi
+  });
+  controller.registerPortHandler();
+
+  const posted = [];
+  let onMessage;
+  const port = {
+    name: background.RESOLVE_TOP_TAKES_PORT_NAME,
+    onMessage: {
+      addListener(listener) {
+        onMessage = listener;
+      }
+    },
+    postMessage(message) {
+      posted.push(message);
+    }
+  };
+
+  chromeStub.triggerConnect(port);
+  onMessage({
+    type: background.RESOLVE_TOP_TAKES_MESSAGE_TYPE,
+    tweetId: "20",
+    bearerToken: "test-token"
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(posted.map((message) => message.type), ["progress", "result"]);
+  assert.equal(posted[0].progress.phase, "collecting_quote_tweets");
+  assert.deepEqual(posted[1].artifact.groupedRoles, [{ role: "skepticism" }]);
 });

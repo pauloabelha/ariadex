@@ -2,17 +2,22 @@
   "use strict";
 
   const BUTTON_ATTR = "data-ariadex-button";
+  const TOP_TAKES_BUTTON_ATTR = "data-ariadex-top-takes-button";
   const PANEL_ID = "ariadex-panel";
   const ARTICLE_SELECTOR = 'article[data-testid="tweet"]';
   const MESSAGE_TYPE = "ARIADEX_RESOLVE_ROOT_PATH";
   const CLEAR_CACHE_MESSAGE_TYPE = "ARIADEX_CLEAR_CACHE";
   const GENERATE_REPORT_MESSAGE_TYPE = "ARIADEX_GENERATE_REPORT";
   const GENERATE_GIST_MESSAGE_TYPE = "ARIADEX_GENERATE_GIST";
+  const RESOLVE_TOP_TAKES_MESSAGE_TYPE = "ARIADEX_RESOLVE_TOP_TAKES";
   const RESOLVE_ROOT_PATH_PORT_NAME = "ARIADEX_RESOLVE_ROOT_PATH_PORT";
   const GENERATE_REPORT_PORT_NAME = "ARIADEX_GENERATE_REPORT_PORT";
   const GENERATE_GIST_PORT_NAME = "ARIADEX_GENERATE_GIST_PORT";
+  const RESOLVE_TOP_TAKES_PORT_NAME = "ARIADEX_RESOLVE_TOP_TAKES_PORT";
   const DEFAULT_TAB = "path";
   const PANEL_MARGIN = 20;
+  const TOP_TAKES_INITIAL_RENDER_COUNT = 5;
+  const TOP_TAKES_RENDER_BATCH_SIZE = 10;
   const X_API_BEARER_STORAGE_KEYS = [
     "ariadex.x_api_bearer_token",
     "ariadex.xApiBearerToken"
@@ -399,6 +404,73 @@
     return "Generating gist...";
   }
 
+  function formatTopTakesProgressMessage(progress) {
+    const phase = String(progress?.phase || "").trim();
+    if (phase === "collecting_quote_tweets") {
+      return "Collecting quote tweets from X...";
+    }
+    if (phase === "top_takes_cache_hit") {
+      return "Loading cached Top Takes...";
+    }
+    if (phase === "normalizing_discourse") {
+      const count = Number(progress?.quoteCount || 0);
+      return `Normalizing discourse across ${count} quote tweet${count === 1 ? "" : "s"}...`;
+    }
+    if (phase === "collecting_top_comments") {
+      const count = Number(progress?.candidateQuoteCount || 0);
+      const commentCount = Number(progress?.topCommentsPerQuote || 0);
+      return `Collecting top ${commentCount} comment${commentCount === 1 ? "" : "s"} for ${count} candidate quote${count === 1 ? "" : "s"}...`;
+    }
+    if (phase === "sending_batches_to_openai") {
+      const batchIndex = Number(progress?.batchIndex || 0);
+      const batchCount = Number(progress?.batchCount || 0);
+      return batchCount
+        ? `Sending quote batch ${batchIndex}/${batchCount} to OpenAI...`
+        : "Sending quote batches to OpenAI...";
+    }
+    if (phase === "analyzing_epistemic_roles") {
+      return "Analyzing epistemic roles...";
+    }
+    if (phase === "grouping_perspectives") {
+      return "Grouping perspectives...";
+    }
+    if (phase === "selecting_representative_takes") {
+      return "Selecting representative takes...";
+    }
+    if (phase === "rendering_top_takes") {
+      return "Rendering Top Takes...";
+    }
+    if (phase === "top_takes_ready") {
+      const count = Number(progress?.representativeTakeCount || 0);
+      return `Top Takes ready. Selected ${count} representative take${count === 1 ? "" : "s"}.`;
+    }
+    return "Building Top Takes...";
+  }
+
+  function formatTopTakesErrorMessage(error) {
+    const rawMessage = normalizeText(error?.message || error || "");
+    if (!rawMessage) {
+      return "Top Takes failed.";
+    }
+    const normalized = rawMessage.toLowerCase();
+    if (normalized.includes("missing_openai_api_key")) {
+      return "Top Takes failed: missing OpenAI API key. Set `ariadex.openai_api_key` in chrome.storage.local.";
+    }
+    if (normalized.includes("missing_x_api_bearer_token")) {
+      return "Top Takes failed: missing X API bearer token.";
+    }
+    if (normalized.includes("tweet_fetch_failed_401") || normalized.includes("tweet_fetch_failed_403")) {
+      return "Top Takes failed: X rejected the bearer token or quote-tweet endpoint access.";
+    }
+    if (normalized.includes("top_takes_openai_failed_401") || normalized.includes("top_takes_openai_failed_403")) {
+      return "Top Takes failed: OpenAI rejected the API key or model access.";
+    }
+    if (normalized.includes("top_takes_openai_failed_429")) {
+      return "Top Takes failed: OpenAI rate-limited the request.";
+    }
+    return `Top Takes failed: ${rawMessage}`;
+  }
+
   // Discover tweet cards so we can attach the button to whatever X has rendered.
   function findTweetArticles(root = document) {
     return [...root.querySelectorAll(ARTICLE_SELECTOR)];
@@ -434,6 +506,7 @@
       activeTab: DEFAULT_TAB,
       position: null,
       latestArtifact: null,
+      latestTopTakesArtifact: null,
       latestClickedId: "",
       latestReport: null,
       latestGist: null
@@ -542,13 +615,13 @@
   }
 
   // Shared header renderer for loading, error, and resolved artifact states.
-  function renderHeader(panel, root, metaText) {
+  function renderHeader(panel, root, metaText, titleText = "AriadeX · Root Path") {
     const header = root.createElement("div");
     header.className = "ariadex-panel-header";
 
     const title = root.createElement("div");
     title.className = "ariadex-title";
-    title.textContent = "AriadeX · Root Path";
+    title.textContent = titleText;
 
     const meta = root.createElement("div");
     meta.className = "ariadex-meta";
@@ -700,6 +773,12 @@
     const panel = ensurePanel(root);
     panel.innerHTML = "";
     renderHeader(panel, root, message);
+  }
+
+  function renderTopTakesStatus(message, root = document) {
+    const panel = ensurePanel(root);
+    panel.innerHTML = "";
+    renderHeader(panel, root, message, "AriadeX · Top Takes");
   }
 
   // Build the path tab with relation labels, tweet text, and inline reference markers.
@@ -1054,6 +1133,293 @@
       downloadLabel: "Download Gist",
       filenameBuilder: buildGistFilename
     }, root);
+  }
+
+  function renderTakeCard(take, root = document) {
+    const item = root.createElement("article");
+    item.className = "ariadex-item ariadex-top-take-item";
+    const raw = take?.raw || {};
+
+    const pills = root.createElement("div");
+    pills.className = "ariadex-take-pills";
+
+    function addPill(label, kind = "") {
+      const text = normalizeText(label || "");
+      if (!text) {
+        return;
+      }
+      const pill = root.createElement("span");
+      pill.className = `ariadex-take-pill${kind ? ` ariadex-take-pill-${kind}` : ""}`;
+      pill.textContent = text;
+      pills.appendChild(pill);
+    }
+
+    const domainGroup = String(take?.domainGroup || "").trim();
+    const domainLabel = String(take?.domainGroupLabel || "").trim();
+    if (domainGroup === "expert") {
+      addPill(domainLabel || "Expert", "expert");
+    } else if (domainGroup === "adjacent") {
+      addPill(domainLabel || "Adjacent", "adjacent");
+    }
+
+    const author = root.createElement("div");
+    author.className = "ariadex-item-author";
+    author.textContent = `@${String(raw.author || "unknown").replace(/^@/, "")}`;
+
+    const text = root.createElement("div");
+    text.className = "ariadex-item-text";
+    text.textContent = String(raw.text || "(no text)");
+
+    const explanation = root.createElement("div");
+    explanation.className = "ariadex-take-explanation";
+    explanation.textContent = String(take?.selectedBecause || take?.explanation || "Selected as a high-signal perspective.");
+
+    const topComments = Array.isArray(raw.topComments) ? raw.topComments : [];
+    const comments = root.createElement("div");
+    comments.className = "ariadex-top-comments";
+    for (const comment of topComments.slice(0, 3)) {
+      const commentItem = root.createElement("div");
+      commentItem.className = "ariadex-top-comment";
+      const author = String(comment?.author || "unknown").replace(/^@/, "");
+      commentItem.textContent = `@${author}: ${String(comment?.text || "(no text)")}`;
+      comments.appendChild(commentItem);
+    }
+
+    const expertise = root.createElement("div");
+    expertise.className = "ariadex-domain-signal";
+    const domainParts = [
+      take?.domainGroupLabel ? String(take.domainGroupLabel) : "",
+      Number(take?.authorDomainRelevance || 0) ? `domain ${Number(take.authorDomainRelevance).toFixed(2)}` : "",
+      Number(take?.authorExpertiseSignal || 0) ? `expertise ${Number(take.authorExpertiseSignal).toFixed(2)}` : ""
+    ].filter(Boolean);
+    const expertiseEvidence = normalizeText(take?.expertiseEvidence || "");
+    expertise.textContent = [
+      domainParts.length > 0 ? `Domain signal: ${domainParts.join(" · ")}` : "",
+      expertiseEvidence
+    ].filter(Boolean).join(" — ");
+
+    const scorecard = take?.scorecard || {};
+    const scores = root.createElement("div");
+    scores.className = "ariadex-score-row";
+    for (const [label, value] of [
+      ["Substance", scorecard.substance],
+      ["Novelty", scorecard.novelty],
+      ["Credibility", scorecard.credibility]
+    ]) {
+      const pill = root.createElement("span");
+      pill.className = "ariadex-score-pill";
+      const numeric = Number(value || 0);
+      pill.textContent = `${label} ${Number.isFinite(numeric) ? numeric.toFixed(2) : "0.00"}`;
+      scores.appendChild(pill);
+    }
+
+    const meta = root.createElement("div");
+    meta.className = "ariadex-item-id";
+    const metrics = raw.metrics || {};
+    meta.textContent = [
+      raw.createdAt ? `created ${raw.createdAt}` : "",
+      Number(raw.authorFollowers || 0) ? `${Number(raw.authorFollowers)} followers` : "",
+      Number(metrics.likes || 0) ? `${Number(metrics.likes)} likes` : "",
+      raw.id ? `tweet ${raw.id}` : ""
+    ].filter(Boolean).join(" · ");
+
+    item.appendChild(pills);
+    item.appendChild(author);
+    item.appendChild(text);
+    item.appendChild(explanation);
+    if (comments.children.length > 0) {
+      item.appendChild(comments);
+    }
+    if (expertise.textContent) {
+      item.appendChild(expertise);
+    }
+    item.appendChild(scores);
+    if (meta.textContent) {
+      item.appendChild(meta);
+    }
+    item.addEventListener("click", () => {
+      if (raw.url) {
+        root.defaultView.open(raw.url, "_blank", "noopener,noreferrer");
+      }
+    });
+    return item;
+  }
+
+  function getSortedTopTakes(artifact) {
+    const cachedTakes = Array.isArray(artifact?.takes) ? artifact.takes : [];
+    const representativeTakes = Array.isArray(artifact?.representativeTakes) ? artifact.representativeTakes : [];
+    const fallbackTakes = Array.isArray(artifact?.groupedRoles)
+      ? artifact.groupedRoles.flatMap((group) => Array.isArray(group?.takes) ? group.takes : [])
+      : [];
+
+    return (cachedTakes.length > 0 ? cachedTakes : (representativeTakes.length > 0 ? representativeTakes : fallbackTakes))
+      .filter((take) => take && typeof take === "object")
+      .sort((left, right) => Number(right?.takeScore ?? right?.combinedScore ?? 0) - Number(left?.takeScore ?? left?.combinedScore ?? 0));
+  }
+
+  function renderTopTakesTab(artifact, root = document) {
+    const takes = getSortedTopTakes(artifact);
+
+    if (takes.length === 0) {
+      const empty = root.createElement("div");
+      empty.className = "ariadex-empty";
+      empty.textContent = "No high-signal quote-tweet perspectives were selected.";
+      return empty;
+    }
+
+    const container = root.createElement("div");
+    container.className = "ariadex-list ariadex-top-takes-list";
+
+    let renderedCount = 0;
+    const renderBatch = (count) => {
+      const nextCount = Math.min(takes.length, renderedCount + count);
+      for (let index = renderedCount; index < nextCount; index += 1) {
+        container.appendChild(renderTakeCard(takes[index], root));
+      }
+      renderedCount = nextCount;
+      if (renderedCount >= takes.length) {
+        sentinel.textContent = `Showing all ${takes.length} cached take${takes.length === 1 ? "" : "s"}.`;
+      } else {
+        sentinel.textContent = `Showing ${renderedCount} of ${takes.length} cached takes. Scroll for more.`;
+      }
+    };
+
+    const sentinel = root.createElement("div");
+    sentinel.className = "ariadex-top-takes-sentinel";
+
+    renderBatch(TOP_TAKES_INITIAL_RENDER_COUNT);
+    if (takes.length > TOP_TAKES_INITIAL_RENDER_COUNT) {
+      container.appendChild(sentinel);
+
+      const scrollTarget = root.getElementById?.(PANEL_ID) || root.defaultView || null;
+      const loadMoreIfNearBottom = () => {
+        if (renderedCount >= takes.length) {
+          return;
+        }
+        const target = root.getElementById?.(PANEL_ID) || scrollTarget;
+        const scrollTop = Number(target?.scrollTop ?? root.defaultView?.scrollY ?? 0);
+        const clientHeight = Number(target?.clientHeight ?? root.defaultView?.innerHeight ?? 0);
+        const scrollHeight = Number(target?.scrollHeight ?? root?.documentElement?.scrollHeight ?? 0);
+        if (!scrollHeight || scrollTop + clientHeight >= scrollHeight - 160) {
+          if (sentinel.parentNode) {
+            container.removeChild(sentinel);
+          }
+          renderBatch(TOP_TAKES_RENDER_BATCH_SIZE);
+          if (renderedCount < takes.length) {
+            container.appendChild(sentinel);
+          }
+        }
+      };
+
+      if (scrollTarget?.addEventListener) {
+        scrollTarget.addEventListener("scroll", loadMoreIfNearBottom, { passive: true });
+      }
+      setTimeout(loadMoreIfNearBottom, 0);
+    }
+    return container;
+  }
+
+  function renderTopTakesSourceTab(sourceTweet, stats, root = document, artifact = {}) {
+    const container = root.createElement("div");
+    container.className = "ariadex-list";
+    const item = root.createElement("article");
+    item.className = "ariadex-item";
+
+    const role = root.createElement("div");
+    role.className = "ariadex-item-role";
+    role.textContent = "Source Tweet";
+
+    const author = root.createElement("div");
+    author.className = "ariadex-item-author";
+    author.textContent = `@${String(sourceTweet?.author || "unknown").replace(/^@/, "")}`;
+
+    const text = root.createElement("div");
+    text.className = "ariadex-item-text";
+    text.textContent = String(sourceTweet?.text || "(no text)");
+
+    const meta = root.createElement("div");
+    meta.className = "ariadex-item-id";
+    meta.textContent = [
+      artifact?.sourceDomain ? `domain ${artifact.sourceDomain}` : "",
+      `${Number(stats?.retrievedQuoteCount || 0)} quotes collected`,
+      `${Number(stats?.candidateQuoteCount || 0)} candidates after dedupe`,
+      `${Number(stats?.representativeTakeCount || 0)} representative takes`
+    ].join(" · ");
+
+    item.appendChild(role);
+    item.appendChild(author);
+    item.appendChild(text);
+    item.appendChild(meta);
+    container.appendChild(item);
+    return container;
+  }
+
+  function renderTopTakesArtifact(artifact, clickedId, root = document) {
+    const panel = ensurePanel(root);
+    panel.innerHTML = "";
+    const stats = artifact?.stats || {};
+    const groupedRoles = Array.isArray(artifact?.groupedRoles) ? artifact.groupedRoles : [];
+    const representatives = Array.isArray(artifact?.representativeTakes) ? artifact.representativeTakes : [];
+    const allTopTakes = getSortedTopTakes(artifact);
+    renderHeader(
+      panel,
+      root,
+      `${Number(stats.candidateQuoteCount || 0)} candidates · ${allTopTakes.length} cached takes · ${representatives.length} selected`,
+      "AriadeX · Top Takes"
+    );
+
+    const state = panel.__ariadexV2State && typeof panel.__ariadexV2State === "object"
+      ? panel.__ariadexV2State
+      : { activeTab: "topTakes", position: null };
+    panel.__ariadexV2State = state;
+    state.activeTab = state.activeTab === "sourceTweet" || state.activeTab === "people" ? state.activeTab : "topTakes";
+    state.latestTopTakesArtifact = artifact;
+    state.latestArtifact = artifact;
+    state.latestClickedId = clickedId || "";
+
+    const tabBar = root.createElement("div");
+    tabBar.className = "ariadex-tab-bar";
+    const content = root.createElement("div");
+    content.className = "ariadex-tab-content";
+    const tabs = [
+      { id: "topTakes", label: "Top Takes" },
+      { id: "sourceTweet", label: "Source" },
+      { id: "people", label: "People" }
+    ];
+
+    function paintTab(tabId) {
+      content.innerHTML = "";
+      if (tabId === "sourceTweet") {
+        content.appendChild(renderTopTakesSourceTab(artifact?.sourceTweet || {}, stats, root, artifact));
+        return;
+      }
+      if (tabId === "people") {
+        content.appendChild(renderPeopleTab(Array.isArray(artifact?.people) ? artifact.people : [], root));
+        return;
+      }
+      content.appendChild(renderTopTakesTab(artifact, root));
+    }
+
+    for (const tab of tabs) {
+      const button = root.createElement("button");
+      button.type = "button";
+      button.className = `ariadex-tab-button${state.activeTab === tab.id ? " ariadex-tab-button-active" : ""}`;
+      button.textContent = tab.label;
+      button.addEventListener("click", () => {
+        state.activeTab = tab.id;
+        for (const candidate of tabBar.querySelectorAll(".ariadex-tab-button")) {
+          candidate.classList.remove("ariadex-tab-button-active");
+        }
+        button.classList.add("ariadex-tab-button-active");
+        paintTab(tab.id);
+      });
+      tabBar.appendChild(button);
+    }
+
+    panel.appendChild(tabBar);
+    panel.appendChild(content);
+    paintTab(state.activeTab);
+    return panel;
   }
 
   // Render the full artifact and keep the active tab sticky across rerenders.
@@ -1417,6 +1783,111 @@
     });
   }
 
+  function resolveTopTakesArtifact(clickedTweetId, chromeApi = chrome, onProgress = null) {
+    if (!clickedTweetId) {
+      return Promise.resolve({
+        sourceTweet: null,
+        takes: [],
+        groupedRoles: [],
+        representativeTakes: [],
+        people: [],
+        stats: {},
+        modelMetadata: {}
+      });
+    }
+
+    if (!chromeApi?.runtime?.sendMessage) {
+      return Promise.reject(new Error("extension_runtime_unavailable"));
+    }
+
+    function normalizeArtifact(artifact) {
+      return {
+        sourceTweet: artifact?.sourceTweet || null,
+        takes: Array.isArray(artifact?.takes) ? artifact.takes : [],
+        groupedRoles: Array.isArray(artifact?.groupedRoles) ? artifact.groupedRoles : [],
+        representativeTakes: Array.isArray(artifact?.representativeTakes) ? artifact.representativeTakes : [],
+        people: Array.isArray(artifact?.people) ? artifact.people : [],
+        stats: artifact?.stats && typeof artifact.stats === "object" ? artifact.stats : {},
+        modelMetadata: artifact?.modelMetadata && typeof artifact.modelMetadata === "object" ? artifact.modelMetadata : {}
+      };
+    }
+
+    return awaitDevEnvHydration(globalThis).then(() => Promise.all([
+      readXApiBearerTokenWithFallbacks(chromeApi, globalThis.window),
+      Promise.resolve(readConfiguredApiBaseUrl(globalThis.window))
+    ])).then(([bearerToken, apiBaseUrl]) => {
+      return new Promise((resolve, reject) => {
+        if (chromeApi?.runtime?.connect) {
+          const port = chromeApi.runtime.connect({ name: RESOLVE_TOP_TAKES_PORT_NAME });
+          let settled = false;
+          const finishResolve = (value) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            resolve(value);
+          };
+          const finishReject = (error) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            reject(error);
+          };
+
+          port.onMessage.addListener((message) => {
+            if (message?.type === "progress") {
+              if (typeof onProgress === "function") {
+                onProgress(message.progress || {});
+              }
+              return;
+            }
+            if (message?.type === "result") {
+              finishResolve(normalizeArtifact(message?.artifact || {}));
+              port.disconnect();
+              return;
+            }
+            if (message?.type === "error") {
+              finishReject(new Error(message?.error || "top_takes_failed"));
+              port.disconnect();
+            }
+          });
+          if (port.onDisconnect?.addListener) {
+            port.onDisconnect.addListener(() => {
+              const runtimeMessage = chromeApi?.runtime?.lastError?.message || "";
+              finishReject(new Error(runtimeMessage || "top_takes_port_disconnected"));
+            });
+          }
+          port.postMessage({
+            type: RESOLVE_TOP_TAKES_MESSAGE_TYPE,
+            tweetId: clickedTweetId,
+            bearerToken,
+            apiBaseUrl
+          });
+          return;
+        }
+
+        chromeApi.runtime.sendMessage({
+          type: RESOLVE_TOP_TAKES_MESSAGE_TYPE,
+          tweetId: clickedTweetId,
+          bearerToken,
+          apiBaseUrl
+        }, (response) => {
+          const runtimeError = chromeApi.runtime?.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || "extension_message_failed"));
+            return;
+          }
+          if (!response?.ok) {
+            reject(new Error(response?.error || "top_takes_failed"));
+            return;
+          }
+          resolve(normalizeArtifact(response?.artifact || {}));
+        });
+      });
+    });
+  }
+
   // Ask the background worker to clear the tweet cache used during recursive resolution.
   function clearTweetCache(chromeApi = chrome) {
     if (!chromeApi?.runtime?.sendMessage) {
@@ -1478,9 +1949,41 @@
     return button;
   }
 
+  function createTopTakesButton(article, root = document, chromeApi = chrome) {
+    const button = root.createElement("button");
+    button.type = "button";
+    button.className = "ariadex-button ariadex-top-takes-button";
+    button.setAttribute(TOP_TAKES_BUTTON_ATTR, "true");
+    button.textContent = "Top Takes";
+
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const tweetArticle = findClosestTweetArticle(button) || article;
+      const clickedId = extractTweetId(tweetArticle);
+      if (!clickedId) {
+        renderTopTakesStatus("Could not resolve clicked tweet id.", root);
+        return;
+      }
+
+      renderTopTakesStatus(`Collecting quote-tweet discourse for ${clickedId}...`, root);
+      try {
+        const artifact = await resolveTopTakesArtifact(clickedId, chromeApi, (progress) => {
+          renderTopTakesStatus(formatTopTakesProgressMessage(progress), root);
+        });
+        renderTopTakesArtifact(artifact, clickedId, root);
+      } catch (error) {
+        renderTopTakesStatus(formatTopTakesErrorMessage(error), root);
+      }
+    });
+
+    return button;
+  }
+
   // Add the button only once per tweet card.
   function injectButton(article, root = document, chromeApi = chrome) {
-    if (!article || article.querySelector(`[${BUTTON_ATTR}="true"]`)) {
+    if (!article) {
       return;
     }
 
@@ -1489,7 +1992,12 @@
       return;
     }
 
-    toolbar.appendChild(createExploreButton(article, root, chromeApi));
+    if (!article.querySelector(`[${BUTTON_ATTR}="true"]`)) {
+      toolbar.appendChild(createExploreButton(article, root, chromeApi));
+    }
+    if (!article.querySelector(`[${TOP_TAKES_BUTTON_ATTR}="true"]`)) {
+      toolbar.appendChild(createTopTakesButton(article, root, chromeApi));
+    }
   }
 
   // Re-scan the current DOM slice and attach buttons to newly rendered tweets.
@@ -1514,14 +2022,17 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = {
       BUTTON_ATTR,
+      TOP_TAKES_BUTTON_ATTR,
       PANEL_ID,
       ARTICLE_SELECTOR,
       MESSAGE_TYPE,
       CLEAR_CACHE_MESSAGE_TYPE,
       GENERATE_REPORT_MESSAGE_TYPE,
       GENERATE_GIST_MESSAGE_TYPE,
+      RESOLVE_TOP_TAKES_MESSAGE_TYPE,
       GENERATE_REPORT_PORT_NAME,
       GENERATE_GIST_PORT_NAME,
+      RESOLVE_TOP_TAKES_PORT_NAME,
       normalizeText,
       readLocalStorageValue,
       readXApiBearerToken,
@@ -1533,6 +2044,8 @@
       formatReportErrorMessage,
       formatReportProgressMessage,
       formatGistProgressMessage,
+      formatTopTakesProgressMessage,
+      formatTopTakesErrorMessage,
       baseLabelForIndex,
       relationLabel,
       buildPathEntries,
@@ -1546,6 +2059,7 @@
       applyPanelPosition,
       makePanelMovable,
       renderStatus,
+      renderTopTakesStatus,
       buildReferenceBadgeText,
       buildExportFilename,
       buildReportFilename,
@@ -1562,12 +2076,18 @@
       renderGeneratedTextTab,
       renderGistTab,
       renderReportTab,
+      renderTakeCard,
+      renderTopTakesTab,
+      renderTopTakesSourceTab,
+      renderTopTakesArtifact,
       renderArtifact,
       resolveRootArtifact,
+      resolveTopTakesArtifact,
       generateReportArtifact,
       generateGistArtifact,
       clearTweetCache,
       createExploreButton,
+      createTopTakesButton,
       injectButton,
       scan,
       start

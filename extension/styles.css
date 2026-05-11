@@ -14,6 +14,16 @@
   border-color: rgba(29, 155, 240, 0.5);
 }
 
+.ariadex-top-takes-button {
+  background: rgba(18, 26, 23, 0.9);
+  border-color: rgba(0, 186, 124, 0.34);
+}
+
+.ariadex-top-takes-button:hover {
+  background: rgba(0, 186, 124, 0.16);
+  border-color: rgba(0, 186, 124, 0.56);
+}
+
 .ariadex-panel {
   position: fixed;
   top: 20px;
@@ -52,6 +62,7 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .ariadex-header-button {
@@ -210,4 +221,91 @@
   padding: 16px;
   color: #8b98a5;
   font: 500 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+}
+
+.ariadex-top-takes-list {
+  padding-top: 10px;
+}
+
+.ariadex-top-take-item {
+  border-color: rgba(0, 186, 124, 0.18);
+}
+
+.ariadex-top-takes-sentinel {
+  padding: 8px 2px 2px;
+  color: #8b98a5;
+  font: 600 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+
+.ariadex-take-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ariadex-take-pill {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #d7dbdf;
+  font: 800 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 5px 7px;
+  text-transform: uppercase;
+}
+
+.ariadex-take-pill-expert {
+  background: rgba(0, 186, 124, 0.16);
+  border-color: rgba(0, 186, 124, 0.48);
+  color: #bff4df;
+}
+
+.ariadex-take-pill-adjacent {
+  background: rgba(29, 155, 240, 0.16);
+  border-color: rgba(29, 155, 240, 0.48);
+  color: #c7e7ff;
+}
+
+.ariadex-take-explanation {
+  margin-top: 9px;
+  border-left: 2px solid rgba(0, 186, 124, 0.65);
+  padding-left: 9px;
+  color: #c7d0d8;
+  font: 500 12px/1.45 ui-sans-serif, system-ui, sans-serif;
+}
+
+.ariadex-top-comments {
+  margin-top: 9px;
+  display: grid;
+  gap: 6px;
+}
+
+.ariadex-top-comment {
+  border-left: 2px solid rgba(139, 152, 165, 0.45);
+  padding-left: 9px;
+  color: #aeb8c2;
+  font: 500 12px/1.4 ui-sans-serif, system-ui, sans-serif;
+}
+
+.ariadex-domain-signal {
+  margin-top: 8px;
+  color: #9ac7b6;
+  font: 600 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.ariadex-score-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.ariadex-score-pill {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #d7dbdf;
+  font: 700 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 5px 7px;
 }

@@ -19,12 +19,16 @@ test("parseDotEnv handles comments, blank lines, quoted values, and invalid line
 
 test("buildGeneratedConfig reads the X bearer token from environment input", () => {
   const config = syncScript.buildGeneratedConfig({
-    X_BEARER_TOKEN: "token-from-env"
+    X_BEARER_TOKEN: "token-from-env",
+    OPENAI_API_KEY: "openai-key",
+    OPENAI_MODEL: "gpt-5-mini"
   });
 
   assert.deepEqual(config, {
     bearerToken: "token-from-env",
-    reportBackendBaseUrl: "http://127.0.0.1:8787"
+    reportBackendBaseUrl: "http://127.0.0.1:8787",
+    openAiApiKey: "openai-key",
+    openAiModel: "gpt-5-mini"
   });
 });
 

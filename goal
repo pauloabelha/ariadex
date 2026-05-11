@@ -1,28 +1,55 @@
-# Goal: AriadeX Root Promotion
+# Goal: AriadeX Top Takes Ranking
 
-Status: complete.
+Status: active.
 
-AriadeX has been promoted from the former nested prototype layout into the repository root. The repo now has one active product version and no nested product folder.
+AriadeX Top Takes should surface the highest-signal quote-tweet discourse around a selected tweet as one compact ranked list. It should feel like a small intelligence feed: the best takes first, with pill labels explaining why each take is worth reading.
 
-## Final State
+## Current Architecture
 
 - `extension/` is the loadable Chrome extension.
 - `server/` contains the local report and gist backend.
 - `scripts/` contains root-level developer commands.
 - `tests/` runs from the repository root.
 - `docs/` describes the current root product.
-- `README.md` is the user and developer entry point.
-- Old root experiments are removed from the active tree and remain available through git history.
+- `extension/algo.js` owns quote retrieval normalization, scoring, selection, grouping, and artifact assembly.
+- `extension/background.js` owns runtime orchestration, X/OpenAI calls, caching, and progress streaming.
+- `extension/content.js` owns button injection and panel rendering.
 
 ## Current Product Goal
 
-AriadeX should help a user understand one tweet by turning it into a compact, inspectable artifact:
+AriadeX should help a user rapidly form an informed opinion about one tweet by surfacing quote tweets that are likely to contain actual takes.
 
-- the root-to-explored path
-- references cited on that path
-- people who authored or were mentioned on that path
-- reply chains where path authors participate
-- optional generated report and gist
+Top Takes should rank candidate quote tweets using only three first-pass dimensions:
+
+- `author_score`: how close the author appears to the source tweet's domain.
+- `length_score`: whether the quote text is long enough to plausibly contain reasoning.
+- `reference_score`: whether the quote tweet brings relevant external references.
+
+Author scoring should keep two expert notions separate:
+
+- `domain_expert_score`: author appears directly fluent in the source tweet's core domain.
+- `adjacent_expert_score`: author appears expert in a useful neighboring domain, such as economics, policy, commercialization, deployment, operations, manufacturing, safety, ethics, investing, or field practice.
+
+The displayed `author_score` is the stronger of those two scores, but the artifact should preserve both.
+
+Initial ranking formula:
+
+```text
+take_score =
+  author_score * 0.45
++ length_score * 0.30
++ reference_score * 0.25
+```
+
+Top Takes should render as a single list, not separate top-level sections. Each card should use pill labels such as:
+
+- `Expert`
+- `Adjacent`
+- adjacent domain, e.g. `Economics`, `Policy`, `Deployment`
+- epistemic role, e.g. `Technical`, `Skepticism`, `Evidence`, `Operational`
+- `Reference` when the take cites an external source
+
+The list should still preserve diversity by avoiding duplicate authors, near-identical takes, and repetitive consensus posts.
 
 ## Non-Goals
 
@@ -30,21 +57,32 @@ AriadeX should help a user understand one tweet by turning it into a compact, in
 - Do not bring back old root architecture unless a specific feature needs to be deliberately rebuilt.
 - Do not hide generated text behind uninspectable model output.
 - Do not commit generated config or credentials.
+- Do not optimize Top Takes for likes, virality, or agreement.
+- Do not treat profile metadata as credential verification.
+- Do not equate follower count or verification with expertise.
+- Do not let long vague posts outrank shorter concrete posts only because they are long.
+- Do not replace or alter Explore Path, deterministic root traversal, or reply-chain logic.
 
 ## Acceptance Criteria
 
 - `npm test` passes from `/home/pauloabelha/ariadex`.
 - The extension loads from `/home/pauloabelha/ariadex/extension`.
-- Runtime source and docs do not refer to a nested product version.
-- Report and gist prompts resolve from `/home/pauloabelha/ariadex/prompts`.
 - Generated runtime config remains local-only.
+- Top Takes retrieves up to 200 quote tweets for the selected source tweet.
+- Top Takes caches quote retrieval, OpenAI classifications, and final artifacts.
+- OpenAI receives author profile metadata from the X API.
+- Top Takes artifacts include `domain_expert_score`, `adjacent_expert_score`, `author_score`, `length_score`, `reference_score`, and `take_score`.
+- Top Takes UI renders one compact list with pill labels instead of top-level Expert/Adjacent sections.
+- Expert/Adjacent labels remain explainable via profile and quote-text evidence.
+- Existing Explore Path behavior remains unchanged.
 
 ## Next Product Direction
 
-Keep AriadeX narrow and excellent:
+Implement the simplified scoring and presentation:
 
-- make the root path unmistakably clear
-- keep references and people easy to scan
-- make reply chains feel anchored, not noisy
-- make report and gist generation useful but secondary
-- preserve exportable evidence at every step
+- compute deterministic text length features
+- compute deterministic reference features from tweet URL entities
+- ask OpenAI for author/domain scoring and role labels
+- combine the three scores into `take_score`
+- render a single Top Takes list with compact pills
+- keep the full artifact exportable for debugging and notebooks

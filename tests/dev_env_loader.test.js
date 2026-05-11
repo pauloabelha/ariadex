@@ -15,9 +15,13 @@ test("normalizeConfig drops blank and non-string values", () => {
   assert.deepEqual(loader.normalizeConfig({
     bearerToken: " token ",
     apiBaseUrl: "",
-    reportBackendBaseUrl: 123
+    reportBackendBaseUrl: 123,
+    openAiApiKey: " openai-key ",
+    openAiModel: "gpt-5-mini"
   }), {
-    bearerToken: "token"
+    bearerToken: "token",
+    openAiApiKey: "openai-key",
+    openAiModel: "gpt-5-mini"
   });
 });
 
@@ -35,7 +39,10 @@ test("persistBearerToken hydrates window state, localStorage, and chrome storage
     storage: {
       local: {
         set(values, callback) {
-          chromeValues = values;
+          chromeValues = {
+            ...(chromeValues || {}),
+            ...values
+          };
           callback();
         }
       }
@@ -74,7 +81,10 @@ test("loadGeneratedConfig reads and persists the generated config", async () => 
     storage: {
       local: {
         set(values, callback) {
-          chromeValues = values;
+          chromeValues = {
+            ...(chromeValues || {}),
+            ...values
+          };
           callback();
         }
       }
@@ -93,7 +103,10 @@ test("loadGeneratedConfig reads and persists the generated config", async () => 
           return {
             bearerToken: "token-abc",
             apiBaseUrl: "https://api.x.com/2",
-            reportBackendBaseUrl: "http://127.0.0.1:8787"
+            reportBackendBaseUrl: "http://127.0.0.1:8787",
+            openAiApiKey: "openai-key",
+            openAiModel: "gpt-5-mini",
+            openAiBaseUrl: "https://api.openai.com/v1"
           };
         }
       };
@@ -105,13 +118,25 @@ test("loadGeneratedConfig reads and persists the generated config", async () => 
     options: { cache: "no-store" }
   }]);
   assert.equal(config.bearerToken, "token-abc");
+  assert.equal(config.openAiApiKey, "openai-key");
   assert.equal(view.AriadexXApiSettings.bearerToken, "token-abc");
   assert.equal(view.AriadexXApiSettings.apiBaseUrl, "https://api.x.com/2");
   assert.equal(view.AriadexReportSettings.backendBaseUrl, "http://127.0.0.1:8787");
+  assert.equal(view.AriadexOpenAiSettings.apiKey, "openai-key");
+  assert.equal(view.AriadexOpenAiSettings.model, "gpt-5-mini");
   assert.equal(localValues["ariadex.x_api_bearer_token"], "token-abc");
+  assert.equal(localValues["ariadex.openai_api_key"], "openai-key");
+  assert.equal(localValues["ariadex.openai_model"], "gpt-5-mini");
   assert.deepEqual(chromeValues, {
     "ariadex.x_api_bearer_token": "token-abc",
-    "ariadex.xApiBearerToken": "token-abc"
+    "ariadex.xApiBearerToken": "token-abc",
+    "ariadex.openai_api_key": "openai-key",
+    "ariadex.openAiApiKey": "openai-key",
+    OPENAI_API_KEY: "openai-key",
+    "ariadex.openai_model": "gpt-5-mini",
+    "ariadex.openAiModel": "gpt-5-mini",
+    "ariadex.openai_base_url": "https://api.openai.com/v1",
+    "ariadex.openAiBaseUrl": "https://api.openai.com/v1"
   });
 });
 

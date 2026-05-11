@@ -1,5 +1,8 @@
 {
   "bearerToken": "YOUR_X_BEARER_TOKEN",
   "apiBaseUrl": "https://api.x.com/2",
-  "reportBackendBaseUrl": "http://127.0.0.1:8787"
+  "reportBackendBaseUrl": "http://127.0.0.1:8787",
+  "openAiApiKey": "YOUR_OPENAI_API_KEY",
+  "openAiModel": "gpt-5-mini",
+  "openAiBaseUrl": "https://api.openai.com/v1"
 }
