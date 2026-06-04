@@ -18,6 +18,7 @@
   const PANEL_MARGIN = 20;
   const TOP_TAKES_INITIAL_RENDER_COUNT = 5;
   const TOP_TAKES_RENDER_BATCH_SIZE = 10;
+  const TOP_TAKES_FALLBACK_TIMEOUT_MS = 10 * 60 * 1000;
   const X_API_BEARER_STORAGE_KEYS = [
     "ariadex.x_api_bearer_token",
     "ariadex.xApiBearerToken"
@@ -457,7 +458,64 @@
       return "X still rate-limited comment context. Continuing with cached quote tweets only.";
     }
     if (phase === "top_takes_port_reconnecting") {
-      return "Top Takes background connection closed. Reconnecting and resuming from cache...";
+      return "Top Takes background connection closed. Reconnecting; cached stages will be reused when available...";
+    }
+    if (phase === "top_takes_message_fallback") {
+      return "Top Takes is continuing in fallback mode. This may be quiet while X or OpenAI finishes...";
+    }
+    if (phase === "top_takes_reconnect_stream") {
+      return "Reconnected to Top Takes progress stream...";
+    }
+    if (phase === "top_takes_keepalive") {
+      const elapsedMs = Number(progress?.elapsedMs || 0);
+      const lastProgress = progress?.lastProgress && typeof progress.lastProgress === "object"
+        ? progress.lastProgress
+        : {};
+      const lastPhase = String(lastProgress?.phase || "").trim();
+      const elapsedText = elapsedMs > 0 ? ` Elapsed ${formatDuration(elapsedMs)}.` : "";
+      if (lastPhase === "collecting_quote_tweets" || lastPhase === "quote_tweets_cache_miss") {
+        const requested = Number(lastProgress?.requestedQuoteCount || 0);
+        return requested
+          ? `Still fetching quote tweets from X, up to ${requested}.${elapsedText}`
+          : `Still fetching quote tweets from X.${elapsedText}`;
+      }
+      if (lastPhase === "quote_tweets_cache_hit") {
+        const count = Number(lastProgress?.quoteCount || 0);
+        return `Still reading cached quote tweets${count ? ` (${count})` : ""}.${elapsedText}`;
+      }
+      if (lastPhase === "x_rate_limit_wait") {
+        const waitMs = Number(lastProgress?.waitMs || 0);
+        const waitText = waitMs > 0 ? ` Waiting ${formatDuration(waitMs)} for X rate-limit reset.` : " Waiting for X rate-limit reset.";
+        return `Still rate-limited by X.${waitText}${elapsedText}`;
+      }
+      if (lastPhase === "collecting_top_comments") {
+        const count = Number(lastProgress?.candidateQuoteCount || 0);
+        const contextLimit = Number(lastProgress?.contextConversationLimit || 0);
+        return count
+          ? `Still collecting author thread context for up to ${contextLimit || count} of ${count} candidate quotes.${elapsedText}`
+          : `Still collecting author thread context.${elapsedText}`;
+      }
+      if (lastPhase === "sending_batches_to_openai") {
+        const batchIndex = Number(lastProgress?.batchIndex || 0);
+        const batchCount = Number(lastProgress?.batchCount || 0);
+        const estimatedRemainingMs = Number(lastProgress?.estimatedRemainingMs || 0);
+        const batchText = batchCount ? ` batch ${batchIndex}/${batchCount}` : "";
+        const estimateText = estimatedRemainingMs > 0 ? ` Estimated remaining ${formatDuration(estimatedRemainingMs)}.` : "";
+        return `Still waiting on OpenAI${batchText}.${estimateText}${elapsedText}`;
+      }
+      if (lastPhase === "openai_batch_complete") {
+        const batchIndex = Number(lastProgress?.batchIndex || 0);
+        const batchCount = Number(lastProgress?.batchCount || 0);
+        return batchCount
+          ? `OpenAI batch ${batchIndex}/${batchCount} is done; preparing the next stage.${elapsedText}`
+          : `OpenAI returned a batch; preparing the next stage.${elapsedText}`;
+      }
+      if (lastPhase === "analyzing_epistemic_roles" || lastPhase === "grouping_perspectives" || lastPhase === "selecting_representative_takes" || lastPhase === "rendering_top_takes") {
+        return `Still ${formatTopTakesProgressMessage(lastProgress).replace(/\.\.\.$/, "").toLowerCase()}.${elapsedText}`;
+      }
+      return elapsedMs > 0
+        ? `Top Takes is still working. Elapsed ${formatDuration(elapsedMs)}...`
+        : "Top Takes is still working...";
     }
     if (phase === "top_takes_cache_hit") {
       return "Loading cached Top Takes...";
@@ -469,7 +527,9 @@
     if (phase === "collecting_top_comments") {
       const count = Number(progress?.candidateQuoteCount || 0);
       const commentCount = Number(progress?.topCommentsPerQuote || 0);
-      return `Collecting top ${commentCount} comment${commentCount === 1 ? "" : "s"} for ${count} candidate quote${count === 1 ? "" : "s"}...`;
+      const contextLimit = Number(progress?.contextConversationLimit || 0);
+      const continuationCount = Number(progress?.threadContinuationsPerQuote || 0);
+      return `Collecting author thread context for up to ${contextLimit || count} of ${count} candidate quote${count === 1 ? "" : "s"} (${continuationCount} continuation${continuationCount === 1 ? "" : "s"}, ${commentCount} comment${commentCount === 1 ? "" : "s"} each)...`;
     }
     if (phase === "sending_batches_to_openai") {
       const batchIndex = Number(progress?.batchIndex || 0);
@@ -493,6 +553,9 @@
       return averageMs > 0
         ? `Using cached OpenAI timing estimate: about ${formatDuration(averageMs)} per batch.`
         : "Using cached OpenAI timing estimate.";
+    }
+    if (phase === "top_takes_in_flight_join") {
+      return "Joining the Top Takes run already in progress...";
     }
     if (phase === "analyzing_epistemic_roles") {
       return "Analyzing epistemic roles...";
@@ -1247,6 +1310,16 @@
     explanation.className = "ariadex-take-explanation";
     explanation.textContent = String(take?.selectedBecause || take?.explanation || "Selected as a high-signal perspective.");
 
+    const threadContinuations = Array.isArray(raw.threadContinuations) ? raw.threadContinuations : [];
+    const continuations = root.createElement("div");
+    continuations.className = "ariadex-top-comments ariadex-thread-continuations";
+    for (const continuation of threadContinuations.slice(0, 4)) {
+      const continuationItem = root.createElement("div");
+      continuationItem.className = "ariadex-top-comment ariadex-thread-continuation";
+      continuationItem.textContent = `↳ ${String(continuation?.text || "(no text)")}`;
+      continuations.appendChild(continuationItem);
+    }
+
     const topComments = Array.isArray(raw.topComments) ? raw.topComments : [];
     const comments = root.createElement("div");
     comments.className = "ariadex-top-comments";
@@ -1277,11 +1350,12 @@
     for (const [label, value] of [
       ["Take", take?.takeScore],
       ["Author", take?.authorScore],
-      ["Length", take?.lengthScore],
+      ["Reasoning", take?.reasoningDensityScore],
+      ["Grounding", take?.groundingScore],
+      ["Unique", take?.perspectiveUniquenessScore],
       ["Reference", take?.referenceScore],
       ["Substance", scorecard.substance],
-      ["Novelty", scorecard.novelty],
-      ["Credibility", scorecard.credibility]
+      ["Novelty", scorecard.novelty]
     ]) {
       const pill = root.createElement("span");
       pill.className = "ariadex-score-pill";
@@ -1304,6 +1378,9 @@
     item.appendChild(author);
     item.appendChild(text);
     item.appendChild(explanation);
+    if (continuations.children.length > 0) {
+      item.appendChild(continuations);
+    }
     if (comments.children.length > 0) {
       item.appendChild(comments);
     }
@@ -1902,40 +1979,57 @@
           bearerToken,
           apiBaseUrl
         };
-        const requestViaMessage = () => {
+        let settled = false;
+        let reconnectCount = 0;
+        let fallbackTimer = null;
+        const clearFallbackTimer = () => {
+          if (fallbackTimer) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
+        };
+        const finishResolve = (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearFallbackTimer();
+          resolve(value);
+        };
+        const finishReject = (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearFallbackTimer();
+          reject(error);
+        };
+        const requestViaMessage = (options = {}) => {
+          if (options?.fromPortDisconnect && typeof onProgress === "function") {
+            onProgress({ phase: "top_takes_message_fallback" });
+          }
+          if (options?.withTimeout) {
+            clearFallbackTimer();
+            fallbackTimer = setTimeout(() => {
+              finishReject(new Error("top_takes_fallback_timeout"));
+            }, TOP_TAKES_FALLBACK_TIMEOUT_MS);
+          }
           chromeApi.runtime.sendMessage(requestPayload, (response) => {
             const runtimeError = chromeApi.runtime?.lastError;
             if (runtimeError) {
-              reject(new Error(runtimeError.message || "top_takes_port_disconnected"));
+              finishReject(new Error(runtimeError.message || "top_takes_port_disconnected"));
               return;
             }
             if (!response?.ok) {
-              reject(new Error(response?.error || "top_takes_failed"));
+              finishReject(new Error(response?.error || "top_takes_failed"));
               return;
             }
-            resolve(normalizeArtifact(response?.artifact || {}));
+            finishResolve(normalizeArtifact(response?.artifact || {}));
           });
         };
 
-        if (chromeApi?.runtime?.connect) {
+        const requestViaPort = (options = {}) => {
           const port = chromeApi.runtime.connect({ name: RESOLVE_TOP_TAKES_PORT_NAME });
-          let settled = false;
-          let fallbackStarted = false;
-          const finishResolve = (value) => {
-            if (settled) {
-              return;
-            }
-            settled = true;
-            resolve(value);
-          };
-          const finishReject = (error) => {
-            if (settled) {
-              return;
-            }
-            settled = true;
-            reject(error);
-          };
-
           port.onMessage.addListener((message) => {
             if (message?.type === "progress") {
               if (typeof onProgress === "function") {
@@ -1955,10 +2049,10 @@
           });
           if (port.onDisconnect?.addListener) {
             port.onDisconnect.addListener(() => {
-              if (settled || fallbackStarted) {
+              if (settled) {
                 return;
               }
-              fallbackStarted = true;
+              reconnectCount += 1;
               if (typeof onProgress === "function") {
                 onProgress({ phase: "top_takes_port_reconnecting" });
               }
@@ -1967,10 +2061,26 @@
                 finishReject(new Error(runtimeMessage || "top_takes_port_disconnected"));
                 return;
               }
-              requestViaMessage();
+              if (reconnectCount <= 3 && chromeApi?.runtime?.connect) {
+                setTimeout(() => {
+                  if (settled) {
+                    return;
+                  }
+                  if (typeof onProgress === "function") {
+                    onProgress({ phase: "top_takes_reconnect_stream", attempt: reconnectCount });
+                  }
+                  requestViaPort({ reconnect: true });
+                }, 500);
+                return;
+              }
+              requestViaMessage({ fromPortDisconnect: true, withTimeout: true });
             });
           }
           port.postMessage(requestPayload);
+        };
+
+        if (chromeApi?.runtime?.connect) {
+          requestViaPort();
           return;
         }
 

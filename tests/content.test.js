@@ -232,9 +232,23 @@ test("formatTopTakesProgressMessage explains Top Takes phases", () => {
   assert.match(content.formatTopTakesProgressMessage({ phase: "quote_tweets_cache_miss", requestedQuoteCount: 200 }), /up to 200 quote tweets/i);
   assert.match(content.formatTopTakesProgressMessage({ phase: "x_rate_limit_wait", waitMs: 2000, attempt: 1, maxAttempts: 3 }), /Waiting 2s/i);
   assert.match(content.formatTopTakesProgressMessage({ phase: "top_comments_rate_limited" }), /Continuing with cached quote tweets only/i);
-  assert.match(content.formatTopTakesProgressMessage({ phase: "top_takes_port_reconnecting" }), /Reconnecting and resuming from cache/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "top_takes_port_reconnecting" }), /Reconnecting.*cached stages/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "top_takes_message_fallback" }), /fallback mode/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "top_takes_reconnect_stream" }), /Reconnected/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "top_takes_keepalive", elapsedMs: 65_000 }), /1m 5s/i);
+  assert.match(content.formatTopTakesProgressMessage({
+    phase: "top_takes_keepalive",
+    elapsedMs: 65_000,
+    lastProgress: { phase: "sending_batches_to_openai", batchIndex: 2, batchCount: 5, estimatedRemainingMs: 120_000 }
+  }), /OpenAI batch 2\/5.*2m.*1m 5s/i);
+  assert.match(content.formatTopTakesProgressMessage({
+    phase: "top_takes_keepalive",
+    elapsedMs: 30_000,
+    lastProgress: { phase: "x_rate_limit_wait", waitMs: 90_000 }
+  }), /rate-limited by X.*1m 30s.*30s/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "top_takes_in_flight_join" }), /already in progress/i);
   assert.match(content.formatTopTakesProgressMessage({ phase: "normalizing_discourse", quoteCount: 3 }), /3 quote tweets/i);
-  assert.match(content.formatTopTakesProgressMessage({ phase: "collecting_top_comments", candidateQuoteCount: 3, topCommentsPerQuote: 3 }), /top 3 comments/i);
+  assert.match(content.formatTopTakesProgressMessage({ phase: "collecting_top_comments", candidateQuoteCount: 23, contextConversationLimit: 8, threadContinuationsPerQuote: 4, topCommentsPerQuote: 3 }), /author thread context.*8 of 23/i);
   assert.match(content.formatTopTakesProgressMessage({ phase: "sending_batches_to_openai", batchIndex: 1, batchCount: 2, estimatedRemainingMs: 90_000 }), /1\/2.*1m 30s/i);
   assert.match(content.formatTopTakesProgressMessage({ phase: "openai_batch_complete", batchIndex: 1, batchCount: 2, durationMs: 15_000 }), /finished in 15s/i);
   assert.match(content.formatTopTakesProgressMessage({ phase: "openai_timing_cache_hit", averageBatchDurationMs: 45_000 }), /45s per batch/i);
@@ -847,6 +861,9 @@ test("renderTopTakesTab renders one sorted list with only expertise pills", () =
           author: "expert",
           text: "Technical explanation.",
           referenceUrls: ["https://example.com/paper"],
+          threadContinuations: [
+            { id: "thread-1", author: "expert", text: "The follow-up explains the recovery mechanism." }
+          ],
           topComments: [
             { id: "comment-1", author: "reviewer", text: "This correction matters." }
           ]
@@ -868,8 +885,10 @@ test("renderTopTakesTab renders one sorted list with only expertise pills", () =
   assert.deepEqual(firstPills.map(([text]) => text), ["Expert", "Best Technical Explanation", "Reference"]);
   assert.match(firstPills[0][1], /ariadex-take-pill-expert/);
   assert.match(firstPills[2][1], /ariadex-take-pill-reference/);
-  assert.equal(tab.children[0].children[4].className, "ariadex-top-comments");
-  assert.equal(tab.children[0].children[4].children[0].textContent, "@reviewer: This correction matters.");
+  assert.match(tab.children[0].children[4].className, /ariadex-thread-continuations/);
+  assert.equal(tab.children[0].children[4].children[0].textContent, "↳ The follow-up explains the recovery mechanism.");
+  assert.equal(tab.children[0].children[5].className, "ariadex-top-comments");
+  assert.equal(tab.children[0].children[5].children[0].textContent, "@reviewer: This correction matters.");
   const secondPills = tab.children[1].children[0].children.map((child) => [child.textContent, child.className]);
   assert.deepEqual(secondPills.map(([text]) => text), ["Adjacent", "Strongest Skeptical Take"]);
   assert.match(secondPills[0][1], /ariadex-take-pill-adjacent/);
@@ -1232,31 +1251,24 @@ test("resolveTopTakesArtifact uses the streaming port and ignores normal close a
   delete global.window.AriadexXApiSettings;
 });
 
-test("resolveTopTakesArtifact falls back to sendMessage when the streaming port disconnects before a result", async () => {
-  let disconnectListener;
+test("resolveTopTakesArtifact reconnects the streaming port when it disconnects before a result", async () => {
+  let connectCount = 0;
   const progressEvents = [];
   const chromeStub = {
     runtime: {
       lastError: null,
       sendMessage(message, callback) {
-        assert.deepEqual(message, {
-          type: content.RESOLVE_TOP_TAKES_MESSAGE_TYPE,
-          tweetId: "2",
-          bearerToken: "test-token",
-          apiBaseUrl: ""
-        });
-        callback({
-          ok: true,
-          artifact: {
-            sourceTweet: { id: "2" },
-            representativeTakes: [{ tweetId: "10" }]
-          }
-        });
+        assert.fail(`sendMessage fallback should not run before reconnect attempts are exhausted: ${JSON.stringify(message)}`);
       },
       connect() {
+        connectCount += 1;
+        let messageListener;
+        let disconnectListener;
         return {
           onMessage: {
-            addListener() {}
+            addListener(listener) {
+              messageListener = listener;
+            }
           },
           onDisconnect: {
             addListener(listener) {
@@ -1264,7 +1276,17 @@ test("resolveTopTakesArtifact falls back to sendMessage when the streaming port 
             }
           },
           postMessage() {
-            disconnectListener();
+            if (connectCount === 1) {
+              disconnectListener();
+              return;
+            }
+            messageListener({
+              type: "result",
+              artifact: {
+                sourceTweet: { id: "2" },
+                representativeTakes: [{ tweetId: "10" }]
+              }
+            });
           },
           disconnect() {}
         };
@@ -1276,7 +1298,8 @@ test("resolveTopTakesArtifact falls back to sendMessage when the streaming port 
     progressEvents.push(progress.phase);
   });
 
-  assert.deepEqual(progressEvents, ["top_takes_port_reconnecting"]);
+  assert.equal(connectCount, 2);
+  assert.deepEqual(progressEvents, ["top_takes_port_reconnecting", "top_takes_reconnect_stream"]);
   assert.deepEqual(artifact.representativeTakes, [{ tweetId: "10" }]);
 });
 

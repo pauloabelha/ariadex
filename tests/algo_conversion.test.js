@@ -196,7 +196,7 @@ test("normalizeTopTakesClassification preserves author expertise fields", () => 
     explanation: "Mechanistic robotics explanation."
   }, new Map([[
     "10",
-    { id: "10", text: "Control latency matters here.", author: "roboticist" }
+    { id: "10", text: "Control latency matters because it creates a deployment constraint here.", author: "roboticist" }
   ]]));
 
   assert.equal(classification.domainGroup, "expert");
@@ -208,9 +208,72 @@ test("normalizeTopTakesClassification preserves author expertise fields", () => 
   assert.equal(classification.authorScore, 0.9);
   assert.ok(classification.lengthScore > 0);
   assert.equal(classification.referenceScore, 0);
+  assert.ok(classification.reasoningDensityScore > 0);
+  assert.ok(classification.groundingScore > 0);
+  assert.equal(classification.perspectiveUniquenessScore, 1);
+  assert.equal(classification.noveltyScore, 0.6);
+  assert.equal(classification.reasoning_density_score, classification.reasoningDensityScore);
+  assert.equal(classification.grounding_score, classification.groundingScore);
+  assert.equal(classification.perspective_uniqueness_score, classification.perspectiveUniquenessScore);
   assert.ok(classification.takeScore > 0);
   assert.equal(classification.expertiseEvidence, "Profile says robotics researcher; quote explains control latency.");
   assert.equal(classification.isDomainFluentTechnicalTake, true);
+});
+
+test("deterministic discourse scores reward reasoning, grounding, and uniqueness", () => {
+  const grounded = {
+    id: "grounded",
+    text: "Because the benchmark shows a 42% regression, the production bottleneck is likely memory bandwidth, not model size.",
+    referenceUrls: ["https://example.com/benchmark"],
+    topComments: [{ text: "The repo logs confirm the correction." }]
+  };
+  const vague = {
+    id: "vague",
+    text: "This is wild and changes everything.",
+    referenceUrls: []
+  };
+
+  assert.ok(algo.scoreTopTakeReasoningDensity(grounded) > algo.scoreTopTakeReasoningDensity(vague));
+  assert.ok(algo.scoreTopTakeGrounding(grounded) > algo.scoreTopTakeGrounding(vague));
+  assert.ok(algo.scoreTopTakePerspectiveUniqueness(grounded, [
+    grounded,
+    { id: "copy", text: "Because the benchmark shows a regression, the production bottleneck is memory bandwidth." },
+    vague
+  ]) < algo.scoreTopTakePerspectiveUniqueness(vague, [grounded, vague]));
+});
+
+test("groupTopTakes applies light role coverage during representative selection", () => {
+  const grouped = algo.groupTopTakes([
+    {
+      tweetId: "1",
+      role: "technical_explanation",
+      domainGroup: "expert",
+      takeScore: 0.9,
+      explanation: "First mechanism.",
+      raw: { id: "1", text: "The mechanism is retrieval narrowing search under latency constraints.", author: "a" }
+    },
+    {
+      tweetId: "2",
+      role: "technical_explanation",
+      domainGroup: "expert",
+      takeScore: 0.88,
+      explanation: "Second mechanism.",
+      raw: { id: "2", text: "A different mechanism explanation about retrieval and latency constraints.", author: "b" }
+    },
+    {
+      tweetId: "3",
+      role: "skepticism",
+      domainGroup: "adjacent",
+      takeScore: 0.84,
+      explanation: "Concrete caveat.",
+      raw: { id: "3", text: "This misses the deployment caveat: operators need recovery paths.", author: "c" }
+    }
+  ], {
+    representativeTakeCount: 2,
+    minTakeScore: 0.5
+  });
+
+  assert.deepEqual(grouped.representativeTakes.map((take) => take.tweetId), ["1", "3"]);
 });
 
 test("normalizeTopTakesClassification penalizes low-information affective reactions", () => {
@@ -260,13 +323,42 @@ test("selectTopCommentsForTweet keeps the top three direct replies by engagement
   assert.deepEqual(comments.map((comment) => comment.id), ["12", "14", "15"]);
 });
 
-test("buildTopTakesCandidateBatch includes top comments as quote context", () => {
+test("selectThreadContinuationsForTweet follows same-author reply chains", () => {
+  const continuations = algo.selectThreadContinuationsForTweet(
+    { id: "10", author: "expert" },
+    [
+      { id: "11", repliedToId: "10", text: "first continuation", author: "expert", createdAt: "2026-05-01T00:00:01.000Z" },
+      { id: "12", repliedToId: "11", text: "second continuation", author: "expert", createdAt: "2026-05-01T00:00:02.000Z" },
+      { id: "13", repliedToId: "10", text: "outside reply", author: "other", createdAt: "2026-05-01T00:00:03.000Z" }
+    ],
+    { threadContinuationsPerQuote: 4 }
+  );
+
+  assert.deepEqual(continuations.map((continuation) => continuation.id), ["11", "12"]);
+});
+
+test("selectQuotesForConversationContext prioritizes likely thread continuations and caps fetches", () => {
+  const selected = algo.selectQuotesForConversationContext([
+    { id: "1", text: "short", metrics: { replies: 0 } },
+    { id: "2", text: "Thread: the deployment constraint matters because operators need recovery.", metrics: { replies: 0 } },
+    { id: "3", text: "This has a longer explanation because the benchmark measures the wrong bottleneck.", metrics: { replies: 4 } }
+  ], {
+    maxContextConversationFetches: 2
+  });
+
+  assert.deepEqual(selected.map((tweet) => tweet.id), ["2", "3"]);
+});
+
+test("buildTopTakesCandidateBatch includes thread continuations and top comments as quote context", () => {
   const batch = algo.buildTopTakesCandidateBatch(
     { id: "1", text: "source" },
     [{
       id: "2",
       author: "expert",
       text: "quote",
+      threadContinuations: [
+        { id: "4", author: "expert", text: "continued mechanism", metrics: { likes: 2 } }
+      ],
       topComments: [
         { id: "3", author: "commenter", text: "useful correction", metrics: { likes: 5 } }
       ]
@@ -275,6 +367,17 @@ test("buildTopTakesCandidateBatch includes top comments as quote context", () =>
     10
   );
 
+  assert.deepEqual(batch.quoteTweets[0].threadContinuations, [{
+    id: "4",
+    author: "expert",
+    authorName: undefined,
+    text: "continued mechanism",
+    metrics: { likes: 2 },
+    createdAt: undefined,
+    authorFollowers: undefined,
+    authorVerified: undefined,
+    authorDescription: undefined
+  }]);
   assert.deepEqual(batch.quoteTweets[0].topComments, [{
     id: "3",
     author: "commenter",
@@ -328,6 +431,7 @@ test("attachTopCommentsToQuoteTweets skips comment context when X rate-limits co
     conversationId: "10",
     author: "expert",
     text: "quote",
+    threadContinuations: [],
     topComments: []
   }]);
 });

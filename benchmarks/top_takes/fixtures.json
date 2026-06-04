@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "robotics_launch",
+      "domain": "robotics",
+      "sourceTweetUrl": "",
+      "status": "needs_source",
+      "retrieval": {
+        "maxQuoteTweets": 200,
+        "topCommentsPerQuote": 3
+      },
+      "expectedHighSignalPatterns": [
+        "mechanistic explanation of hardware, controls, data, or deployment constraints",
+        "operational caveat from manufacturing, field deployment, safety, or maintenance",
+        "evidence-bearing comparison to prior robotics systems"
+      ],
+      "expectedLowSignalPatterns": [
+        "short awe or fear reaction without a concrete mechanism",
+        "generic futurism",
+        "duplicated quote spam"
+      ],
+      "missingPerspectiveNotes": [],
+      "uxComprehensionNotes": []
+    },
+    {
+      "id": "ai_model_launch",
+      "domain": "AI research",
+      "sourceTweetUrl": "",
+      "status": "needs_source",
+      "retrieval": {
+        "maxQuoteTweets": 200,
+        "topCommentsPerQuote": 3
+      },
+      "expectedHighSignalPatterns": [
+        "benchmark-method caveat",
+        "capability boundary or failure-mode analysis",
+        "grounded comparison to prior model releases"
+      ],
+      "expectedLowSignalPatterns": [
+        "leaderboard celebration without method context",
+        "vague AGI claims",
+        "engagement-bait predictions"
+      ],
+      "missingPerspectiveNotes": [],
+      "uxComprehensionNotes": []
+    },
+    {
+      "id": "infrastructure_failure",
+      "domain": "software infrastructure",
+      "sourceTweetUrl": "",
+      "status": "needs_source",
+      "retrieval": {
+        "maxQuoteTweets": 200,
+        "topCommentsPerQuote": 3
+      },
+      "expectedHighSignalPatterns": [
+        "root-cause hypothesis with operational evidence",
+        "incident-response caveat",
+        "historical comparison to similar outages"
+      ],
+      "expectedLowSignalPatterns": [
+        "brand dunking without technical content",
+        "unfounded blame",
+        "repeated status screenshots with no new information"
+      ],
+      "missingPerspectiveNotes": [],
+      "uxComprehensionNotes": []
+    }
+  ]
+}

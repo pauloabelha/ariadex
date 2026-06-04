@@ -5,7 +5,7 @@ const CONVERSATION_CACHE_KEY = "ariadex_conversation_cache";
 const QUOTE_TWEET_CACHE_KEY = "ariadex_quote_tweet_cache";
 const TOP_TAKES_ANALYSIS_CACHE_KEY = "ariadex_top_takes_analysis_cache";
 const TOP_TAKES_ARTIFACT_CACHE_KEY = "ariadex_top_takes_artifact_cache";
-const TOP_TAKES_CACHE_VERSION = 7;
+const TOP_TAKES_CACHE_VERSION = 8;
 const DEFAULT_API_BASE_URL = "https://api.x.com/2";
 const DEFAULT_TWEET_FIELDS = [
   "author_id",
@@ -38,6 +38,8 @@ const DEFAULT_OPTIONS = {
   maxQuotePages: 3,
   quoteBatchSize: 40,
   representativesPerRole: 3,
+  maxContextConversationFetches: 8,
+  threadContinuationsPerQuote: 4,
   topCommentsPerQuote: 3,
   maxRateLimitRetries: 2,
   rateLimitRetryDelayMs: 60_000,
@@ -835,17 +837,132 @@ function selectTopCommentsForTweet(tweet, conversationTweets, options = {}) {
     }));
 }
 
+function hasThreadContinuationHint(tweet) {
+  const text = String(tweet?.text || "");
+  return /\b(thread|continued|continuing|more below|follow-?up|adding context|couple thoughts|few thoughts)\b|(?:^|\s)\d+\/\d*|🧵|👇/i.test(text);
+}
+
+function scoreConversationContextPriority(tweet) {
+  const metrics = tweet?.metrics || {};
+  return (
+    (hasThreadContinuationHint(tweet) ? 100 : 0)
+    + scoreTopTakeLength(tweet) * 20
+    + scoreTopTakeReferences(tweet) * 10
+    + Math.min(10, normalizeMetric(metrics.replies))
+    + Math.min(5, normalizeMetric(metrics.likes) / 20)
+  );
+}
+
+function selectQuotesForConversationContext(quoteTweets, options = {}) {
+  const limit = Math.max(0, Math.min(100, Number(options?.maxContextConversationFetches ?? DEFAULT_OPTIONS.maxContextConversationFetches)));
+  if (limit === 0) {
+    return [];
+  }
+
+  return ensureArray(quoteTweets)
+    .filter((tweet) => tweet?.id)
+    .map((tweet, index) => ({
+      tweet,
+      index,
+      priority: scoreConversationContextPriority(tweet)
+    }))
+    .sort((left, right) => {
+      const priorityDelta = right.priority - left.priority;
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+      return left.index - right.index;
+    })
+    .slice(0, limit)
+    .map((entry) => entry.tweet);
+}
+
+function selectThreadContinuationsForTweet(tweet, conversationTweets, options = {}) {
+  const tweetId = normalizeTweetId(tweet?.id || "");
+  const author = canonicalizeHandle(tweet?.author || "");
+  if (!tweetId || !author) {
+    return [];
+  }
+  const limit = Math.max(0, Math.min(10, Number(options?.threadContinuationsPerQuote ?? DEFAULT_OPTIONS.threadContinuationsPerQuote)));
+  if (limit === 0) {
+    return [];
+  }
+
+  const childrenByParentId = new Map();
+  for (const entry of ensureArray(conversationTweets)) {
+    const parentId = normalizeTweetId(entry?.repliedToId || "");
+    if (!parentId) {
+      continue;
+    }
+    const children = childrenByParentId.get(parentId) || [];
+    children.push(entry);
+    childrenByParentId.set(parentId, children);
+  }
+  for (const children of childrenByParentId.values()) {
+    children.sort((left, right) => {
+      const leftTime = left?.createdAt ? Date.parse(left.createdAt) : NaN;
+      const rightTime = right?.createdAt ? Date.parse(right.createdAt) : NaN;
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+      return String(left?.id || "").localeCompare(String(right?.id || ""), "en");
+    });
+  }
+
+  const continuations = [];
+  const visited = new Set([tweetId]);
+  const queue = [tweetId];
+  while (queue.length > 0 && continuations.length < limit) {
+    const parentId = queue.shift();
+    const children = childrenByParentId.get(parentId) || [];
+    for (const child of children) {
+      const childId = normalizeTweetId(child?.id || "");
+      if (!childId || visited.has(childId)) {
+        continue;
+      }
+      visited.add(childId);
+      if (canonicalizeHandle(child?.author || "") !== author) {
+        continue;
+      }
+      continuations.push({
+        id: child.id,
+        author: child.author,
+        authorName: child.authorName,
+        text: child.text,
+        url: child.url,
+        createdAt: child.createdAt,
+        metrics: child.metrics,
+        authorFollowers: child.authorFollowers,
+        authorVerified: child.authorVerified,
+        authorDescription: child.authorDescription
+      });
+      queue.push(childId);
+      if (continuations.length >= limit) {
+        break;
+      }
+    }
+  }
+
+  return continuations;
+}
+
 async function attachTopCommentsToQuoteTweets(quoteTweets, deps, options = {}) {
   const tweets = ensureArray(quoteTweets).filter(Boolean);
   const onProgress = typeof options?.onProgress === "function" ? options.onProgress : null;
   const commentCount = Math.max(0, Math.min(10, Number(options?.topCommentsPerQuote ?? DEFAULT_OPTIONS.topCommentsPerQuote)));
-  if (tweets.length === 0 || commentCount === 0) {
-    return tweets.map((tweet) => ({ ...tweet, topComments: [] }));
+  const continuationCount = Math.max(0, Math.min(10, Number(options?.threadContinuationsPerQuote ?? DEFAULT_OPTIONS.threadContinuationsPerQuote)));
+  if (tweets.length === 0 || (commentCount === 0 && continuationCount === 0)) {
+    return tweets.map((tweet) => ({ ...tweet, threadContinuations: [], topComments: [] }));
   }
 
+  const contextTweets = selectQuotesForConversationContext(tweets, options);
+  const contextTweetIds = new Set(contextTweets.map((tweet) => normalizeTweetId(tweet?.id || "")).filter(Boolean));
   const conversationIds = [...new Set(
-    tweets.map((tweet) => normalizeTweetId(tweet?.conversationId || tweet?.id || "")).filter(Boolean)
+    contextTweets.map((tweet) => normalizeTweetId(tweet?.conversationId || tweet?.id || "")).filter(Boolean)
   )];
+  if (conversationIds.length === 0) {
+    return tweets.map((tweet) => ({ ...tweet, threadContinuations: [], topComments: [] }));
+  }
   let conversationPayloads = [];
   try {
     conversationPayloads = await fetchConversations(conversationIds, deps);
@@ -856,10 +973,11 @@ async function attachTopCommentsToQuoteTweets(quoteTweets, deps, options = {}) {
     if (onProgress) {
       onProgress({
         phase: "top_comments_rate_limited",
-        candidateQuoteCount: tweets.length
+        candidateQuoteCount: tweets.length,
+        contextConversationCount: conversationIds.length
       });
     }
-    return tweets.map((tweet) => ({ ...tweet, topComments: [] }));
+    return tweets.map((tweet) => ({ ...tweet, threadContinuations: [], topComments: [] }));
   }
   const conversationTweets = conversationPayloads
     .map((payload) => normalizeQuoteTweet(payload))
@@ -877,9 +995,12 @@ async function attachTopCommentsToQuoteTweets(quoteTweets, deps, options = {}) {
 
   return tweets.map((tweet) => {
     const conversationId = normalizeTweetId(tweet?.conversationId || tweet?.id || "");
+    const shouldAttachContext = contextTweetIds.has(normalizeTweetId(tweet?.id || ""));
+    const conversationEntries = shouldAttachContext ? byConversationId.get(conversationId) || [] : [];
     return {
       ...tweet,
-      topComments: selectTopCommentsForTweet(tweet, byConversationId.get(conversationId) || [], { topCommentsPerQuote: commentCount })
+      threadContinuations: selectThreadContinuationsForTweet(tweet, conversationEntries, { threadContinuationsPerQuote: continuationCount }),
+      topComments: selectTopCommentsForTweet(tweet, conversationEntries, { topCommentsPerQuote: commentCount })
     };
   });
 }
@@ -895,6 +1016,17 @@ function buildTopTakesCandidateBatch(sourceTweet, quoteTweets, batchIndex, batch
       text: tweet.text,
       urls: tweet.referenceUrls,
       metrics: tweet.metrics,
+      threadContinuations: ensureArray(tweet.threadContinuations).map((continuation) => ({
+        id: continuation.id,
+        author: continuation.author,
+        authorName: continuation.authorName,
+        text: continuation.text,
+        metrics: continuation.metrics,
+        createdAt: continuation.createdAt,
+        authorFollowers: continuation.authorFollowers,
+        authorVerified: continuation.authorVerified,
+        authorDescription: continuation.authorDescription
+      })),
       topComments: ensureArray(tweet.topComments).map((comment) => ({
         id: comment.id,
         author: comment.author,
@@ -962,6 +1094,89 @@ function scoreTopTakeReferences(tweet) {
   return references.length === 1 ? 0.75 : 1;
 }
 
+function scoreTopTakeReasoningDensity(tweet) {
+  const rawText = String(tweet?.text || "");
+  const words = normalizeTextForDedupe(rawText).split(/\s+/).filter(Boolean);
+  if (words.length === 0) {
+    return 0;
+  }
+
+  const reasoningMarkers = [
+    /\bbecause\b/i,
+    /\bsince\b/i,
+    /\bdue to\b/i,
+    /\btherefore\b/i,
+    /\bso that\b/i,
+    /\bif\b/i,
+    /\bthen\b/i,
+    /\bunless\b/i,
+    /\bcaus/i,
+    /\bmechanism\b/i,
+    /\bconstraint\b/i,
+    /\bbottleneck\b/i,
+    /\btrade-?off\b/i,
+    /\bfailure mode\b/i,
+    /\bassumption\b/i,
+    /\bevidence\b/i,
+    /\bdata\b/i,
+    /\bbenchmark\b/i,
+    /\bmeasured\b/i,
+    /\bcompared\b/i,
+    /\bproduction\b/i,
+    /\bdeployment\b/i,
+    /\boperational\b/i,
+    /\bscale\b/i
+  ];
+  const markerCount = reasoningMarkers.reduce((count, pattern) => count + (pattern.test(rawText) ? 1 : 0), 0);
+  const structuralBonus = /[;:]/.test(rawText) || /\bbut\b|\bhowever\b|\bwhereas\b|\bexcept\b/i.test(rawText) ? 0.15 : 0;
+  const wordBudget = Math.min(0.35, words.length / 120);
+  return clampScore((markerCount * 0.14) + structuralBonus + wordBudget);
+}
+
+function scoreTopTakeGrounding(tweet) {
+  const rawText = String(tweet?.text || "");
+  const references = ensureArray(tweet?.referenceUrls).filter(Boolean);
+  const hasNumber = /\d/.test(rawText);
+  const hasEvidenceLanguage = /\b(source|paper|study|repo|dataset|benchmark|chart|filing|demo|logs?|incident|postmortem|measurement|measured|according to|cites?|shows?|data)\b/i.test(rawText);
+  const hasConcreteEntity = /\b[A-Z][A-Za-z0-9&.-]{2,}\b/.test(rawText.replace(/^RT\s+/i, ""));
+  const commentGrounding = ensureArray(tweet?.topComments).some((comment) => /\b(source|data|paper|correction|actually|benchmark|repo|logs?)\b/i.test(String(comment?.text || "")));
+  const continuationGrounding = ensureArray(tweet?.threadContinuations).some((continuation) => /\b(source|data|paper|benchmark|because|constraint|mechanism|actually|repo|logs?)\b/i.test(String(continuation?.text || "")));
+
+  return clampScore(
+    (references.length > 0 ? 0.45 : 0)
+    + (references.length > 1 ? 0.15 : 0)
+    + (hasNumber ? 0.18 : 0)
+    + (hasEvidenceLanguage ? 0.18 : 0)
+    + (hasConcreteEntity ? 0.08 : 0)
+    + (commentGrounding ? 0.08 : 0)
+    + (continuationGrounding ? 0.10 : 0)
+  );
+}
+
+function scoreTopTakePerspectiveUniqueness(tweet, quoteTweets = []) {
+  const targetWords = new Set(normalizeTextForDedupe(tweet?.text || "").split(/\s+/).filter((word) => word.length > 2));
+  if (targetWords.size === 0) {
+    return 0;
+  }
+
+  let maxSimilarity = 0;
+  for (const candidate of ensureArray(quoteTweets)) {
+    if (!candidate || normalizeTweetId(candidate?.id || "") === normalizeTweetId(tweet?.id || "")) {
+      continue;
+    }
+    const candidateWords = new Set(normalizeTextForDedupe(candidate?.text || "").split(/\s+/).filter((word) => word.length > 2));
+    if (candidateWords.size === 0) {
+      continue;
+    }
+    const intersection = [...targetWords].filter((word) => candidateWords.has(word)).length;
+    const union = new Set([...targetWords, ...candidateWords]).size;
+    const similarity = union > 0 ? intersection / union : 0;
+    maxSimilarity = Math.max(maxSimilarity, similarity);
+  }
+
+  return clampScore(1 - maxSimilarity);
+}
+
 function normalizeTopTakesClassification(rawEntry, quoteById) {
   const tweetId = normalizeTweetId(rawEntry?.tweetId || rawEntry?.id || "");
   const tweet = quoteById.get(tweetId);
@@ -985,6 +1200,10 @@ function normalizeTopTakesClassification(rawEntry, quoteById) {
   const authorScore = Math.max(domainExpertScore, adjacentExpertScore);
   const lengthScore = scoreTopTakeLength(tweet);
   const referenceScore = scoreTopTakeReferences(tweet);
+  const reasoningDensityScore = scoreTopTakeReasoningDensity(tweet);
+  const groundingScore = scoreTopTakeGrounding(tweet);
+  const perspectiveUniquenessScore = scoreTopTakePerspectiveUniqueness(tweet, [...quoteById.values()]);
+  const noveltyScore = scorecard.novelty;
   const isDomainFluentTechnicalTake = Boolean(rawEntry?.isDomainFluentTechnicalTake);
   const confidence = clampScore(rawEntry?.confidence);
   const domainBoostRoles = new Set(["technical_explanation", "methodological_criticism", "operational_caveat", "evidence"]);
@@ -1003,9 +1222,12 @@ function normalizeTopTakesClassification(rawEntry, quoteById) {
   const contentMultiplier = topTakesContentMultiplier(tweet);
   const combinedScore = baseScore * contentMultiplier;
   const takeScore = (
-    authorScore * 0.45
-    + lengthScore * 0.30
-    + referenceScore * 0.25
+    authorScore * 0.32
+    + lengthScore * 0.14
+    + referenceScore * 0.10
+    + reasoningDensityScore * 0.16
+    + groundingScore * 0.13
+    + perspectiveUniquenessScore * 0.15
   ) * contentMultiplier;
 
   return {
@@ -1024,12 +1246,20 @@ function normalizeTopTakesClassification(rawEntry, quoteById) {
     authorScore,
     lengthScore,
     referenceScore,
+    reasoningDensityScore,
+    groundingScore,
+    perspectiveUniquenessScore,
+    noveltyScore,
     takeScore,
     domain_expert_score: domainExpertScore,
     adjacent_expert_score: adjacentExpertScore,
     author_score: authorScore,
     length_score: lengthScore,
     reference_score: referenceScore,
+    reasoning_density_score: reasoningDensityScore,
+    grounding_score: groundingScore,
+    perspective_uniqueness_score: perspectiveUniquenessScore,
+    novelty_score: noveltyScore,
     take_score: takeScore,
     confidence,
     contentMultiplier,
@@ -1037,6 +1267,15 @@ function normalizeTopTakesClassification(rawEntry, quoteById) {
     combinedScore,
     raw: tweet
   };
+}
+
+function scoreTopTakeSelection(entry, selectedTakes) {
+  const selected = ensureArray(selectedTakes);
+  const selectedRoleCount = selected.filter((take) => take?.role === entry?.role).length;
+  const selectedDomainCount = selected.filter((take) => take?.domainGroup === entry?.domainGroup).length;
+  const roleCoverageBonus = selectedRoleCount === 0 ? 0.08 : Math.max(-0.12, selectedRoleCount * -0.04);
+  const domainCoverageBonus = selectedDomainCount === 0 ? 0.03 : 0;
+  return Number(entry?.takeScore ?? entry?.combinedScore ?? 0) + roleCoverageBonus + domainCoverageBonus;
 }
 
 function groupTopTakes(classifications, options = {}) {
@@ -1052,7 +1291,16 @@ function groupTopTakes(classifications, options = {}) {
     .sort((left, right) => Number(right?.takeScore ?? right?.combinedScore ?? 0) - Number(left?.takeScore ?? left?.combinedScore ?? 0));
 
   const selectedAuthors = new Set();
-  for (const entry of entries) {
+  const remaining = [...entries];
+  while (remaining.length > 0 && representativeTakes.length < representativeLimit) {
+    remaining.sort((left, right) => {
+      const selectionDelta = scoreTopTakeSelection(right, representativeTakes) - scoreTopTakeSelection(left, representativeTakes);
+      if (selectionDelta !== 0) {
+        return selectionDelta;
+      }
+      return Number(right?.takeScore ?? right?.combinedScore ?? 0) - Number(left?.takeScore ?? left?.combinedScore ?? 0);
+    });
+    const entry = remaining.shift();
     if (representativeTakes.length >= representativeLimit) {
       break;
     }
@@ -1237,7 +1485,13 @@ async function resolveTopTakes(tweetId, deps, options = {}) {
   const normalizedQuotes = quotePayloads.map((payload) => normalizeQuoteTweet(payload)).filter(Boolean);
   const dedupedQuotes = dedupeQuoteTweets(normalizedQuotes);
   if (onProgress) {
-    onProgress({ phase: "collecting_top_comments", candidateQuoteCount: dedupedQuotes.length, topCommentsPerQuote: Math.max(0, Math.min(10, Number(options?.topCommentsPerQuote ?? DEFAULT_OPTIONS.topCommentsPerQuote))) });
+    onProgress({
+      phase: "collecting_top_comments",
+      candidateQuoteCount: dedupedQuotes.length,
+      contextConversationLimit: Math.max(0, Math.min(100, Number(options?.maxContextConversationFetches ?? DEFAULT_OPTIONS.maxContextConversationFetches))),
+      threadContinuationsPerQuote: Math.max(0, Math.min(10, Number(options?.threadContinuationsPerQuote ?? DEFAULT_OPTIONS.threadContinuationsPerQuote))),
+      topCommentsPerQuote: Math.max(0, Math.min(10, Number(options?.topCommentsPerQuote ?? DEFAULT_OPTIONS.topCommentsPerQuote)))
+    });
   }
   const candidateQuotes = await attachTopCommentsToQuoteTweets(dedupedQuotes, deps, {
     ...options,
@@ -1344,6 +1598,26 @@ async function resolveTopTakes(tweetId, deps, options = {}) {
             scorecard: entry.scorecard,
             confidence: entry.confidence,
             contentMultiplier: entry.contentMultiplier,
+            domainExpertScore: entry.domainExpertScore,
+            adjacentExpertScore: entry.adjacentExpertScore,
+            authorScore: entry.authorScore,
+            lengthScore: entry.lengthScore,
+            referenceScore: entry.referenceScore,
+            reasoningDensityScore: entry.reasoningDensityScore,
+            groundingScore: entry.groundingScore,
+            perspectiveUniquenessScore: entry.perspectiveUniquenessScore,
+            noveltyScore: entry.noveltyScore,
+            takeScore: entry.takeScore,
+            domain_expert_score: entry.domain_expert_score,
+            adjacent_expert_score: entry.adjacent_expert_score,
+            author_score: entry.author_score,
+            length_score: entry.length_score,
+            reference_score: entry.reference_score,
+            reasoning_density_score: entry.reasoning_density_score,
+            grounding_score: entry.grounding_score,
+            perspective_uniqueness_score: entry.perspective_uniqueness_score,
+            novelty_score: entry.novelty_score,
+            take_score: entry.take_score,
             explanation: entry.explanation,
             combinedScore: entry.combinedScore
           }))
@@ -2122,6 +2396,14 @@ const api = {
   isLowInformationAffectiveReaction,
   topTakesContentMultiplier,
   scoreTopTakeComment,
+  hasThreadContinuationHint,
+  scoreConversationContextPriority,
+  selectQuotesForConversationContext,
+  selectThreadContinuationsForTweet,
+  scoreTopTakeReasoningDensity,
+  scoreTopTakeGrounding,
+  scoreTopTakePerspectiveUniqueness,
+  scoreTopTakeSelection,
   selectTopCommentsForTweet,
   attachTopCommentsToQuoteTweets,
   buildTopTakesCandidateBatch,

@@ -296,6 +296,9 @@ test("Top Takes prompt asks for Expert and Adjacent expertise classification", (
         text: "The gripper control is the hard part.",
         author: "roboticist",
         authorDescription: "Robotics researcher",
+        threadContinuations: [
+          { id: "4", text: "More context: the hard part is contact-rich recovery.", author: "roboticist" }
+        ],
         topComments: [
           { id: "3", text: "This matches the failure mode in deployment.", author: "fieldengineer" }
         ]
@@ -305,12 +308,15 @@ test("Top Takes prompt asks for Expert and Adjacent expertise classification", (
 
   assert.match(systemPrompt, /Expert/i);
   assert.match(systemPrompt, /Adjacent/i);
+  assert.match(systemPrompt, /threadContinuations/i);
   assert.match(systemPrompt, /top direct comments/i);
   assert.match(systemPrompt, /low-information affective reactions/i);
   assert.match(systemPrompt, /concrete failure mode/i);
   assert.match(systemPrompt, /profile metadata only as weak public evidence/i);
   assert.match(userPrompt.comment_context, /topComments/i);
+  assert.match(userPrompt.comment_context, /threadContinuations/i);
   assert.match(userPrompt.scorecard.low_score_guidance, /Short affective reactions/i);
+  assert.equal(userPrompt.quoteTweets[0].threadContinuations[0].text, "More context: the hard part is contact-rich recovery.");
   assert.equal(userPrompt.quoteTweets[0].topComments[0].text, "This matches the failure mode in deployment.");
   assert.equal(userPrompt.output_shape.sourceDomain.includes("robotics"), true);
   assert.equal(userPrompt.output_shape.classifications[0].domainGroup, "expert or adjacent");
@@ -2116,4 +2122,160 @@ test("background port handler streams Top Takes progress and results", async () 
   assert.deepEqual(posted.map((message) => message.type), ["progress", "result"]);
   assert.equal(posted[0].progress.phase, "collecting_quote_tweets");
   assert.deepEqual(posted[1].artifact.groupedRoles, [{ role: "skepticism" }]);
+});
+
+test("background Top Takes keepalive includes the last progress phase", async () => {
+  const previousSetInterval = global.setInterval;
+  const previousClearInterval = global.clearInterval;
+  const intervalCallbacks = [];
+  global.setInterval = (callback) => {
+    intervalCallbacks.push(callback);
+    return intervalCallbacks.length;
+  };
+  global.clearInterval = () => {};
+
+  try {
+    const chromeStub = createChromeStub({}, {}, {
+      "ariadex.openai_api_key": "openai-key"
+    });
+    let releaseRun;
+    const runGate = new Promise((resolve) => {
+      releaseRun = resolve;
+    });
+    const algoApi = {
+      DEFAULT_API_BASE_URL: algo.DEFAULT_API_BASE_URL,
+      TOP_TAKES_ROLES: algo.TOP_TAKES_ROLES,
+      createStorageAdapter: algo.createStorageAdapter,
+      createTweetClient() {
+        return { marker: "client" };
+      },
+      async resolveTopTakes(_tweetId, deps) {
+        deps.onProgress({
+          phase: "sending_batches_to_openai",
+          batchIndex: 2,
+          batchCount: 5
+        });
+        await runGate;
+        return {
+          sourceTweet: { id: "20" },
+          takes: [],
+          groupedRoles: [],
+          representativeTakes: [],
+          people: [],
+          stats: {}
+        };
+      }
+    };
+    const controller = background.createBackgroundController({
+      chromeApi: chromeStub,
+      fetchImpl: async () => ({
+        ok: false,
+        async json() {
+          return {};
+        }
+      }),
+      algoApi
+    });
+    controller.registerPortHandler();
+
+    const posted = [];
+    let onMessage;
+    const port = {
+      name: background.RESOLVE_TOP_TAKES_PORT_NAME,
+      onMessage: {
+        addListener(listener) {
+          onMessage = listener;
+        }
+      },
+      postMessage(message) {
+        posted.push(message);
+      }
+    };
+
+    chromeStub.triggerConnect(port);
+    onMessage({
+      type: background.RESOLVE_TOP_TAKES_MESSAGE_TYPE,
+      tweetId: "20",
+      bearerToken: "test-token"
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    intervalCallbacks[0]();
+    releaseRun();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const keepalive = posted.find((message) => message?.progress?.phase === "top_takes_keepalive");
+    assert.equal(keepalive.progress.lastProgress.phase, "sending_batches_to_openai");
+    assert.equal(keepalive.progress.lastProgress.batchIndex, 2);
+    assert.equal(keepalive.progress.lastProgress.batchCount, 5);
+  } finally {
+    global.setInterval = previousSetInterval;
+    global.clearInterval = previousClearInterval;
+  }
+});
+
+test("background controller coalesces concurrent Top Takes requests for the same run", async () => {
+  const chromeStub = createChromeStub({}, {}, {
+    "ariadex.openai_api_key": "openai-key"
+  });
+  let resolveCallCount = 0;
+  let releaseRun;
+  const runGate = new Promise((resolve) => {
+    releaseRun = resolve;
+  });
+  const artifact = {
+    sourceTweet: { id: "20" },
+    takes: [],
+    groupedRoles: [],
+    representativeTakes: [],
+    people: [],
+    stats: {}
+  };
+  const algoApi = {
+    DEFAULT_API_BASE_URL: algo.DEFAULT_API_BASE_URL,
+    createStorageAdapter: algo.createStorageAdapter,
+    createTweetClient() {
+      return { marker: "client" };
+    },
+    async resolveTopTakes() {
+      resolveCallCount += 1;
+      await runGate;
+      return artifact;
+    }
+  };
+  const controller = background.createBackgroundController({
+    chromeApi: chromeStub,
+    fetchImpl: async () => ({
+      ok: false,
+      async json() {
+        return {};
+      }
+    }),
+    algoApi
+  });
+
+  const first = controller.resolveTopTakes("20", {
+    bearerToken: "test-token",
+    openAiApiKey: "openai-key",
+    maxQuoteTweets: 200,
+    maxQuotePages: 3
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const joinedProgress = [];
+  const second = controller.resolveTopTakes("20", {
+    bearerToken: "test-token",
+    openAiApiKey: "openai-key",
+    maxQuoteTweets: 200,
+    maxQuotePages: 3,
+    onProgress(progress) {
+      joinedProgress.push(progress.phase);
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(resolveCallCount, 1);
+  assert.deepEqual(joinedProgress, ["top_takes_in_flight_join"]);
+  releaseRun();
+  assert.equal(await first, artifact);
+  assert.equal(await second, artifact);
 });

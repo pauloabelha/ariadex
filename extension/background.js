@@ -128,6 +128,7 @@ function buildTopTakesSystemPrompt() {
     "Penalize low-information affective reactions, including short posts whose main contribution is revulsion, excitement, fear, disgust, vibes, or other emotional posture without reasoning, evidence, mechanism, or domain detail.",
     "Skepticism is valuable only when it names a concrete failure mode, assumption, constraint, evidence gap, operational risk, or causal mechanism.",
     "Each quote may include up to three top direct comments. Use those comments as weak context for whether the quote surfaced a useful objection, clarification, correction, or supporting evidence.",
+    "Each quote may also include threadContinuations: same-author replies that continue the quote author's own take. Treat these as part of the discourse artifact, not as outside social feedback.",
     "Do not let comment engagement override the quote's substance. Comments should adjust the score only when they materially clarify or challenge the quote.",
     "Infer the source tweet's broad domain, then classify each quote author as either Expert or Adjacent for that domain.",
     "Expert means the quote author appears directly domain-fluent for the source tweet's subject based on the quote text and public X profile metadata.",
@@ -143,7 +144,7 @@ function buildTopTakesSystemPrompt() {
 function buildTopTakesUserPrompt(batch) {
   return JSON.stringify({
     task: "Classify quote tweets by how much they improve a reader's understanding of the source tweet and its discourse.",
-    comment_context: "Each quote tweet may include topComments: up to three direct replies sorted by visible engagement. Consider them as discourse context, not as popularity evidence.",
+    comment_context: "Each quote tweet may include threadContinuations from the quote author and topComments from other direct replies. Treat threadContinuations as quote-author context; treat topComments as weak discourse context, not popularity evidence.",
     scorecard: {
       substance: "0 to 1: meaningful reasoning, evidence, specificity, or informative content.",
       novelty: "0 to 1: non-obvious information or a distinct perspective.",
@@ -291,6 +292,7 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
   const effectiveFetch = typeof fetchImpl === "function"
     ? fetchImpl
     : (typeof fetch === "function" ? fetch.bind(globalThis) : null);
+  const inFlightTopTakesByKey = new Map();
 
   return {
     // Share one resolver entry point across one-shot requests and streaming progress ports.
@@ -366,8 +368,23 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
         apiBaseUrl: openAiBaseUrl || DEFAULT_OPENAI_BASE_URL,
         model: openAiModel || DEFAULT_TOP_TAKES_MODEL
       };
+      const inFlightKey = [
+        "top_takes",
+        String(tweetId || "").trim(),
+        apiBaseUrl,
+        providerConfig.apiBaseUrl,
+        providerConfig.model,
+        Number(options?.maxQuoteTweets || 0),
+        Number(options?.maxQuotePages || 0)
+      ].join(":");
+      if (inFlightTopTakesByKey.has(inFlightKey)) {
+        if (typeof options?.onProgress === "function") {
+          options.onProgress({ phase: "top_takes_in_flight_join" });
+        }
+        return inFlightTopTakesByKey.get(inFlightKey);
+      }
 
-      return algoApi.resolveTopTakes(tweetId, {
+      const topTakesPromise = algoApi.resolveTopTakes(tweetId, {
         storage,
         client,
         onProgress: typeof options?.onProgress === "function" ? options.onProgress : null,
@@ -389,7 +406,11 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
         rateLimitRetryDelayMs: options?.rateLimitRetryDelayMs,
         rateLimitMaxWaitMs: options?.rateLimitMaxWaitMs,
         model: providerConfig.model
+      }).finally(() => {
+        inFlightTopTakesByKey.delete(inFlightKey);
       });
+      inFlightTopTakesByKey.set(inFlightKey, topTakesPromise);
+      return topTakesPromise;
     },
 
     async clearCache() {
@@ -546,20 +567,39 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
           return;
         }
 
+        let portClosed = false;
+        if (port.onDisconnect?.addListener) {
+          port.onDisconnect.addListener(() => {
+            portClosed = true;
+          });
+        }
+        const postToPort = (message) => {
+          if (portClosed) {
+            return false;
+          }
+          try {
+            port.postMessage(message);
+            return true;
+          } catch {
+            portClosed = true;
+            return false;
+          }
+        };
+
         port.onMessage.addListener((message) => {
           if (message?.type === RESOLVE_ROOT_PATH_MESSAGE_TYPE) {
             this.resolveRootPath(message.tweetId, {
               bearerToken: message?.bearerToken || "",
               apiBaseUrl: message?.apiBaseUrl || "",
               onProgress(progress) {
-                port.postMessage({ type: "progress", progress });
+                postToPort({ type: "progress", progress });
               }
             })
               .then((artifact) => {
-                port.postMessage({ type: "result", artifact });
+                postToPort({ type: "result", artifact });
               })
               .catch((error) => {
-                port.postMessage({ type: "error", error: error?.message || "root_path_resolution_failed" });
+                postToPort({ type: "error", error: error?.message || "root_path_resolution_failed" });
               });
             return;
           }
@@ -568,14 +608,14 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
             this.generateReport(message?.artifact || {}, {
               reportBackendBaseUrl: message?.reportBackendBaseUrl || "",
               onProgress(progress) {
-                port.postMessage({ type: "progress", progress });
+                postToPort({ type: "progress", progress });
               }
             })
               .then((report) => {
-                port.postMessage({ type: "result", report });
+                postToPort({ type: "result", report });
               })
               .catch((error) => {
-                port.postMessage({ type: "error", error: error?.message || "report_generation_failed" });
+                postToPort({ type: "error", error: error?.message || "report_generation_failed" });
               });
             return;
           }
@@ -584,19 +624,38 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
             this.generateGist(message?.artifact || {}, {
               reportBackendBaseUrl: message?.reportBackendBaseUrl || "",
               onProgress(progress) {
-                port.postMessage({ type: "progress", progress });
+                postToPort({ type: "progress", progress });
               }
             })
               .then((report) => {
-                port.postMessage({ type: "result", report });
+                postToPort({ type: "result", report });
               })
               .catch((error) => {
-                port.postMessage({ type: "error", error: error?.message || "gist_generation_failed" });
+                postToPort({ type: "error", error: error?.message || "gist_generation_failed" });
               });
             return;
           }
 
           if (message?.type === RESOLVE_TOP_TAKES_MESSAGE_TYPE) {
+            const startedAt = Date.now();
+            let lastProgress = { phase: "starting_top_takes" };
+            const heartbeat = typeof setInterval === "function"
+              ? setInterval(() => {
+                postToPort({
+                  type: "progress",
+                  progress: {
+                    phase: "top_takes_keepalive",
+                    elapsedMs: Date.now() - startedAt,
+                    lastProgress
+                  }
+                });
+              }, 15_000)
+              : null;
+            const clearHeartbeat = () => {
+              if (heartbeat && typeof clearInterval === "function") {
+                clearInterval(heartbeat);
+              }
+            };
             this.resolveTopTakes(message.tweetId, {
               bearerToken: message?.bearerToken || "",
               apiBaseUrl: message?.apiBaseUrl || "",
@@ -606,14 +665,19 @@ function createBackgroundController({ chromeApi, fetchImpl, algoApi = algo }) {
               maxQuoteTweets: message?.maxQuoteTweets,
               maxQuotePages: message?.maxQuotePages,
               onProgress(progress) {
-                port.postMessage({ type: "progress", progress });
+                lastProgress = progress && typeof progress === "object"
+                  ? { ...progress }
+                  : { phase: String(progress || "") };
+                postToPort({ type: "progress", progress });
               }
             })
               .then((artifact) => {
-                port.postMessage({ type: "result", artifact });
+                clearHeartbeat();
+                postToPort({ type: "result", artifact });
               })
               .catch((error) => {
-                port.postMessage({ type: "error", error: error?.message || "top_takes_failed" });
+                clearHeartbeat();
+                postToPort({ type: "error", error: error?.message || "top_takes_failed" });
               });
           }
         });

@@ -77,14 +77,17 @@ Implementation stages:
 6. Read OpenAI analysis cache.
 7. Classify uncached batches with OpenAI.
 8. Record OpenAI batch timing.
-9. Score and select representative quote tweets.
-10. Write analysis and artifact caches.
+9. Add deterministic discourse-quality scores for reasoning density, grounding, and perspective uniqueness.
+10. Score and select representative quote tweets with a small role/domain coverage bonus.
+11. Write analysis and artifact caches.
 
 Important helpers:
 
 - `readQuoteTweetsForSource(...)`
 - `dedupeQuoteTweets(...)`
 - `attachTopCommentsToQuoteTweets(...)`
+- `selectThreadContinuationsForTweet(...)`
+- `selectQuotesForConversationContext(...)`
 - `buildTopTakesCandidateBatch(...)`
 - `normalizeTopTakesClassification(...)`
 - `groupTopTakes(...)`

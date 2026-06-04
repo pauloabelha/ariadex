@@ -288,6 +288,11 @@
   font: 500 12px/1.4 ui-sans-serif, system-ui, sans-serif;
 }
 
+.ariadex-thread-continuation {
+  border-left-color: rgba(0, 186, 124, 0.5);
+  color: #c8d5cf;
+}
+
 .ariadex-domain-signal {
   margin-top: 8px;
   color: #9ac7b6;

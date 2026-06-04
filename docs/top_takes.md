@@ -41,7 +41,8 @@ Collected evidence:
 - source tweet
 - quote tweets of the source tweet
 - public author metadata exposed by X API
-- optional top direct replies to each quote tweet
+- optional same-author thread continuations for selected quote tweets
+- optional top direct replies for selected quote tweets
 
 Default quote retrieval:
 
@@ -51,9 +52,12 @@ Default quote retrieval:
 
 Default reply context:
 
+- `maxContextConversationFetches`: `8`
+- `threadContinuationsPerQuote`: `4`
 - `topCommentsPerQuote`: `3`
-- only direct replies to the quote tweet
-- sorted by visible engagement
+- selected quote conversations are prioritized by thread-continuation hints, substance, references, and reply activity
+- same-author replies are treated as quote-author thread continuation
+- broader direct replies are sorted by visible engagement and treated as weak discourse context
 - skipped if X remains rate-limited
 
 The ranked candidate set remains quote tweets even when replies are attached as context.
@@ -100,9 +104,12 @@ The final ranking formula is:
 
 ```text
 take_score =
-  author_score * 0.45
-+ length_score * 0.30
-+ reference_score * 0.25
+  author_score * 0.32
++ length_score * 0.14
++ reference_score * 0.10
++ reasoning_density_score * 0.16
++ grounding_score * 0.13
++ perspective_uniqueness_score * 0.15
 ```
 
 Fields:
@@ -112,6 +119,10 @@ Fields:
 - `author_score`: stronger of direct and adjacent expertise.
 - `length_score`: deterministic estimate that the quote has enough substance to contain reasoning.
 - `reference_score`: deterministic signal from non-X external references.
+- `reasoning_density_score`: deterministic signal for causal, mechanistic, operational, comparative, or evidence-oriented language.
+- `grounding_score`: deterministic signal for references, numbers, evidence terms, named concrete artifacts, and useful corrective comment context.
+- `perspective_uniqueness_score`: deterministic estimate that the quote is not semantically crowded by nearby candidates.
+- `novelty_score`: model-estimated non-obviousness, preserved from the OpenAI scorecard for inspection.
 - `take_score`: final objective rank score.
 
 Artifacts preserve both camelCase and snake_case forms:
@@ -121,6 +132,10 @@ Artifacts preserve both camelCase and snake_case forms:
 - `authorScore` / `author_score`
 - `lengthScore` / `length_score`
 - `referenceScore` / `reference_score`
+- `reasoningDensityScore` / `reasoning_density_score`
+- `groundingScore` / `grounding_score`
+- `perspectiveUniquenessScore` / `perspective_uniqueness_score`
+- `noveltyScore` / `novelty_score`
 - `takeScore` / `take_score`
 
 ## Objective Ranking Rules
@@ -145,6 +160,7 @@ Representative selection:
 - requires a minimum score threshold
 - avoids duplicate authors
 - avoids near-duplicate text
+- applies a small role/domain coverage bonus while selecting representatives
 - favors concrete evidence, mechanism, caveats, synthesis, or domain fluency
 - downranks vague hype, link-only reactions, and purely affective reactions
 
